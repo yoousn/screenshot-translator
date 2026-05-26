@@ -6,6 +6,17 @@ use base64::{prelude::BASE64_STANDARD, Engine};
 use tauri::Manager;
 use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code, ShortcutState};
+
+struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
+
+#[tauri::command]
+fn get_shortcut_status(state: tauri::State<'_, AppShortcutStatus>) -> Result<(), String> {
+    match &*state.0.lock().unwrap() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.clone()),
+    }
+}
 
 #[tauri::command]
 fn get_config() -> Result<String, String> {
@@ -99,14 +110,59 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+mod win32 {
+    #[repr(C)]
+    pub struct POINT {
+        pub x: i32,
+        pub y: i32,
+    }
+    
+    extern "system" {
+        pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_cursor_position() -> Option<(i32, i32)> {
+    let mut point = win32::POINT { x: 0, y: 0 };
+    unsafe {
+        if win32::GetCursorPos(&mut point) != 0 {
+            Some((point.x, point.y))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
 #[tauri::command]
 fn start_screenshot(app: tauri::AppHandle) -> Result<(), String> {
+    // 1. Hide main window first if it is visible
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.hide();
+        // Wait a bit for window to actually disappear
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
     let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
     if screens.is_empty() {
         return Err("未检测到显示器".to_string());
     }
-    // 暂取第一个显示器作为主显示器
-    let screen = screens[0];
+
+    // Capture the screen that has the cursor
+    let screen = if let Some((cx, cy)) = get_cursor_position() {
+        Screen::from_point(cx, cy).unwrap_or_else(|_| {
+            screens[0]
+        })
+    } else {
+        screens[0]
+    };
+
     let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
     image.write_to(&mut buffer, screenshots::image::ImageFormat::Png)
@@ -133,6 +189,10 @@ fn start_screenshot(app: tauri::AppHandle) -> Result<(), String> {
         let _ = screenshot_win.set_always_on_top(true);
         let _ = screenshot_win.show();
         let _ = screenshot_win.set_focus();
+        
+        // Notify the frontend to reload the new screenshot image
+        use tauri::Emitter;
+        let _ = screenshot_win.emit("screenshot-updated", ());
     } else {
         return Err("未获取到名为 screenshot 的窗口句柄".to_string());
     }
@@ -213,6 +273,9 @@ fn save_image_to_file(image_base64: String) -> Result<String, String> {
     
     if let Some(path) = file_path {
         fs::write(&path, &bytes).map_err(|e| format!("写入文件失败：{}", e))?;
+        if !path.exists() {
+            return Err("文件未成功写入磁盘".to_string());
+        }
         Ok(path.to_string_lossy().to_string())
     } else {
         Err("用户取消了保存".to_string())
@@ -223,7 +286,9 @@ fn save_image_to_file(image_base64: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            get_shortcut_status,
             get_config,
             save_config,
             is_autostart_enabled,
@@ -234,6 +299,94 @@ pub fn run() {
             copy_image_to_clipboard,
             save_image_to_file
         ])
+        .setup(|app| {
+            // Register Alt+A shortcut
+            let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyA);
+            let reg_res = app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
+                if event.state() == ShortcutState::Pressed {
+                    let app_h = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = start_screenshot(app_h) {
+                            eprintln!("Failed to start screenshot: {}", e);
+                        }
+                    });
+                }
+            });
+
+            let shortcut_status = match reg_res {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            };
+
+            app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
+
+            // Build Tray Icon
+            let screenshot_item = tauri::menu::MenuItemBuilder::new("立即截图")
+                .id("screenshot")
+                .build(app)?;
+            let show_item = tauri::menu::MenuItemBuilder::new("显示主窗口")
+                .id("show")
+                .build(app)?;
+            let exit_item = tauri::menu::MenuItemBuilder::new("退出")
+                .id("exit")
+                .build(app)?;
+            
+            let tray_menu = tauri::menu::MenuBuilder::new(app)
+                .item(&screenshot_item)
+                .item(&show_item)
+                .separator()
+                .item(&exit_item)
+                .build()?;
+
+            let _tray = tauri::tray::TrayIconBuilder::new()
+                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).unwrap())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "screenshot" => {
+                            let app_h = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = start_screenshot(app_h) {
+                                    eprintln!("Failed to start screenshot: {}", e);
+                                }
+                            });
+                        }
+                        "show" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        "exit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    window.app_handle().exit(0);
+                } else if window.label() == "screenshot" {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

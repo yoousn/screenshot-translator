@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -27,4 +27,5 @@ arboard = "3.4.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22.1"
 rfd = "0.14.1"
+tauri-plugin-global-shortcut = "2.0.1"
 

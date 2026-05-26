@@ -47,9 +47,10 @@ interface Config {
 
 interface DashboardProps {
   onStartScreenshot: () => void;
+  shortcutError?: string | null;
 }
 
-export default function Dashboard({ onStartScreenshot }: DashboardProps) {
+export default function Dashboard({ onStartScreenshot, shortcutError }: DashboardProps) {
   const [config, setConfig] = useState<Config>({});
   const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
   const [responseTime, setResponseTime] = useState<number | null>(null);
@@ -264,7 +265,25 @@ export default function Dashboard({ onStartScreenshot }: DashboardProps) {
               }}
               actions={[
                 <Space size="middle" align="center" key="actions">
-                  {item.hotkey === "未设置" ? (
+                  {item.title === "截图" && shortcutError ? (
+                    <Tooltip title={`快捷键 Alt+A 注册失败: ${shortcutError}。可能是热键冲突，请重启以重新尝试。`}>
+                      <Tag
+                        color="error"
+                        style={{
+                          margin: 0,
+                          border: "1px dashed #ffa39e",
+                          backgroundColor: "#fff2f0",
+                          color: "#ff4d4f",
+                          fontWeight: "600",
+                          height: 22,
+                          display: "inline-flex",
+                          alignItems: "center"
+                        }}
+                      >
+                        {item.hotkey} (冲突)
+                      </Tag>
+                    </Tooltip>
+                  ) : item.hotkey === "未设置" ? (
                     <Tag style={{ margin: 0, border: "1px solid #d9d9d9", color: "#bfbfbf", height: 22, display: "inline-flex", alignItems: "center" }}>
                       未设置
                     </Tag>

@@ -33,11 +33,29 @@ function AppContent() {
   const [serverUrl, setServerUrl] = useState<string>("https://ocr.yousn.me");
   const [isOnline, setIsOnline] = useState<"checking" | "online" | "offline">("checking");
   const [isChecking, setIsChecking] = useState(false);
-  const { message } = AntdApp.useApp();
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const { message, notification } = AntdApp.useApp();
 
   useEffect(() => {
     fetchServerUrl();
+    checkShortcutStatus();
   }, []);
+
+  const checkShortcutStatus = async () => {
+    try {
+      await invoke("get_shortcut_status");
+      setShortcutError(null);
+    } catch (e: any) {
+      const errMsg = e.toString();
+      setShortcutError(errMsg);
+      notification.error({
+        message: "全局快捷键 (Alt + A) 注册失败",
+        description: `无法成功在系统中注册截图快捷键 Alt+A。该热键可能已被微信、QQ 或其他运行中的软件占用。请尝试关闭相应软件后重新运行本程序以激活快捷键。`,
+        duration: 0,
+        placement: "topRight"
+      });
+    }
+  };
 
   const fetchServerUrl = async () => {
     try {
@@ -114,7 +132,7 @@ function AppContent() {
   const renderContent = () => {
     switch (activeKey) {
       case "dashboard":
-        return <Dashboard onStartScreenshot={handleStartScreenshot} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} />;
       case "settings":
         return <Settings onConfigSaved={fetchServerUrl} />;
       case "history":
@@ -122,7 +140,7 @@ function AppContent() {
       case "about":
         return <About />;
       default:
-        return <Dashboard onStartScreenshot={handleStartScreenshot} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} />;
     }
   };
 
