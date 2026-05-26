@@ -61,7 +61,7 @@ async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)
     if processor.ocr is None:
         processor.ocr = PaddleOCR(lang="ch")
         
-    ocr_result = processor.ocr.ocr(img_cv, cls=True)
+    ocr_result = processor.ocr.ocr(img_cv)
     
     results = []
     if ocr_result and ocr_result[0]:

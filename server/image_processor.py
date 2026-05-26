@@ -57,7 +57,7 @@ class ImageProcessor:
                 self.ocr = PaddleOCR(lang="ch")
                 
             # 1. OCR 提取文字与区域
-            ocr_result = self.ocr.ocr(img_cv, cls=True)
+            ocr_result = self.ocr.ocr(img_cv)
             if not ocr_result or not ocr_result[0]:
                 return img_bytes # 无文字，直接返回原图
                 
