@@ -1,0 +1,86 @@
+name: Build and Package Client
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.5.3'
+        arch: 'win64_mingw'
+
+    - name: Setup MinGW
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        platform: x64
+
+    - name: Configure CMake
+      run: |
+        cmake -S client -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=ninja
+
+    - name: Build Application
+      run: |
+        cmake --build build --config Release
+
+    - name: Prepare Release Directory
+      run: |
+        mkdir dist
+        copy release\ScreenshotTranslator.exe dist\
+
+    - name: Deploy Qt DLLs
+      run: |
+        windeployqt --dir dist dist\ScreenshotTranslator.exe
+
+    - name: Download PaddleOCR-json
+      shell: powershell
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/hiroi-sora/PaddleOCR-json/releases/download/v1.4.1/PaddleOCR-json_v1.4.1_windows_x64.7z" -OutFile "PaddleOCR-json.7z"
+
+    - name: Extract PaddleOCR-json
+      shell: powershell
+      run: |
+        # Use 7z to extract to dist/ocr/
+        & "7z" x PaddleOCR-json.7z -odist\ocr\
+
+    - name: Rename OCR folder
+      shell: powershell
+      run: |
+        # Locate the extracted folder and rename it to "PaddleOCR-json_v1.4.1" to match C++ defaults
+        $extractedDir = Get-ChildItem -Path dist\ocr -Directory | Select-Object -First 1
+        if ($extractedDir) {
+            Rename-Item -Path $extractedDir.FullName -NewName "PaddleOCR-json_v1.4.1"
+        }
+
+    - name: Create Release Zip
+      shell: powershell
+      run: |
+        Compress-Archive -Path dist\* -DestinationPath ScreenshotTranslator_Windows.zip
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreenshotTranslator_Windows
+        path: ScreenshotTranslator_Windows.zip
+
+    - name: Create Release (Only on tags)
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ScreenshotTranslator_Windows.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,7 +12,13 @@ void ClientConfig::load() {
     QDir().mkpath(path);
     QFile file(path + "/config.json");
     
-    QString defaultPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../server/ocr/PaddleOCR-json_v1.4.1/PaddleOCR-json.exe");
+    QString releasePath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/ocr/PaddleOCR-json_v1.4.1/PaddleOCR-json.exe");
+    QString devPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../server/ocr/PaddleOCR-json_v1.4.1/PaddleOCR-json.exe");
+    
+    QString defaultPath = releasePath;
+    if (!QFile::exists(releasePath) && QFile::exists(devPath)) {
+        defaultPath = devPath;
+    }
     
     if (!file.open(QIODevice::ReadOnly)) {
         localOcrExecutablePath = defaultPath;
