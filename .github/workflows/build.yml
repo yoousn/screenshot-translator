@@ -25,11 +25,16 @@ jobs:
         arch: 'win64_mingw'
 
     - name: Setup MinGW
-      uses: egor-tensin/setup-mingw@v2
+      uses: msys2/setup-msys2@v2
       with:
-        platform: x64
+        msystem: MINGW64
+        update: false
+        install: mingw-w64-x86_64-gcc mingw-w64-x86_64-ninja
 
     - name: Configure CMake
+      env:
+        CC: gcc
+        CXX: g++
       run: |
         cmake -S client -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=ninja
 
