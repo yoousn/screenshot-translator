@@ -59,7 +59,7 @@ async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)
     img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if processor.ocr is None:
-        processor.ocr = PaddleOCR(lang="ch", enable_mkldnn=False, ir_optim=False)
+        processor.ocr = PaddleOCR(lang="ch")
         
     ocr_result = processor.ocr.ocr(img_cv, cls=True)
     

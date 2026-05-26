@@ -8,7 +8,7 @@ class ImageProcessor:
     def __init__(self, load_ocr: bool = True):
         # 启动时加载 PaddleOCR 模型，可选以便加速测试
         if load_ocr:
-            self.ocr = PaddleOCR(lang="ch", enable_mkldnn=False, ir_optim=False)
+            self.ocr = PaddleOCR(lang="ch")
         else:
             self.ocr = None
 
@@ -54,7 +54,7 @@ class ImageProcessor:
                 
             # 如果 self.ocr 还没被加载，则动态加载它（懒加载）
             if self.ocr is None:
-                self.ocr = PaddleOCR(lang="ch", enable_mkldnn=False, ir_optim=False)
+                self.ocr = PaddleOCR(lang="ch")
                 
             # 1. OCR 提取文字与区域
             ocr_result = self.ocr.ocr(img_cv, cls=True)

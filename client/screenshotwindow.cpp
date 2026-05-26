@@ -239,15 +239,12 @@ ScreenshotWindow::ScreenshotWindow(QWidget *parent) : QWidget(parent) {
     
     fullScreenImage = fullScreenPixmap.toImage();
     
-    // 初始化旋转加载定时器
+    // 初始化旋转加载定时器（仅在 loading 时启动）
     spinnerTimer = new QTimer(this);
     connect(spinnerTimer, &QTimer::timeout, this, [=]() {
         spinnerAngle = (spinnerAngle + 12) % 360;
-        if (isLoading) {
-            update();
-        }
+        update();
     });
-    spinnerTimer->start(50);
     
     // 窗口探测 (Win32 API)
 #ifdef Q_OS_WIN
@@ -694,12 +691,14 @@ void ScreenshotWindow::triggerTranslation() {
     
     isLoading = true;
     if (toolbar) toolbar->setTranslateEnabled(false);
+    if (spinnerTimer) spinnerTimer->start(50); // 开始旋转动画
     update();
     
     QPixmap originalCrop = fullScreenPixmap.copy(croppedRect);
     
     netClient->translateImage(originalCrop, config, [=](bool success, const QPixmap &resPixmap) {
         isLoading = false;
+        if (spinnerTimer) spinnerTimer->stop(); // 停止旋转动画
         if (success && !resPixmap.isNull()) {
             currentImage = resPixmap;
             isTranslated = true;
