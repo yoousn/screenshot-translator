@@ -7,4 +7,6 @@ class OcrResultWindow : public QWidget {
 public:
     explicit OcrResultWindow(const QString &text, const QPixmap &pixmap, QWidget *parent = nullptr);
     ~OcrResultWindow() override;
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
 };

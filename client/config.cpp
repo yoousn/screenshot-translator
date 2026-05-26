@@ -37,7 +37,7 @@ void ClientConfig::load() {
     useLocalOcr = obj.value("useLocalOcr").toBool(useLocalOcr);
     
     localOcrExecutablePath = obj.value("localOcrExecutablePath").toString();
-    if (localOcrExecutablePath.isEmpty()) {
+    if (localOcrExecutablePath.isEmpty() || !QFile::exists(localOcrExecutablePath)) {
         localOcrExecutablePath = defaultPath;
     }
     

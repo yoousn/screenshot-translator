@@ -9,11 +9,12 @@
 #include <QScrollArea>
 #include <QLabel>
 #include <QPushButton>
+#include <QKeyEvent>
 
 OcrResultWindow::OcrResultWindow(const QString &text, const QPixmap &pixmap, QWidget *parent)
     : QWidget(parent) {
     setWindowTitle("文字识别结果");
-    resize(500, 650);
+    resize(400, 300);
     setWindowFlags(Qt::Window | Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint);
     
     // Set modern white stylesheet matching the system theme
@@ -122,4 +123,13 @@ OcrResultWindow::OcrResultWindow(const QString &text, const QPixmap &pixmap, QWi
 }
 
 OcrResultWindow::~OcrResultWindow() {
+}
+
+void OcrResultWindow::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Escape) {
+        close();
+        event->accept();
+    } else {
+        QWidget::keyPressEvent(event);
+    }
 }

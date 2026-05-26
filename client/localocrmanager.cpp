@@ -115,9 +115,22 @@ void LocalOcrManager::finishRequest(bool success, const QJsonArray &ocrResults, 
 
 QJsonArray LocalOcrManager::normalizeResult(const QByteArray &data, bool *ok) const {
     *ok = false;
+    
+    QList<QByteArray> lines = data.split('\n');
+    QJsonDocument doc;
     QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+    
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        QByteArray line = lines[i].trimmed();
+        if (line.startsWith('{') && line.endsWith('}')) {
+            doc = QJsonDocument::fromJson(line, &parseError);
+            if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+                break;
+            }
+        }
+    }
+
+    if (doc.isNull() || !doc.isObject()) {
         return QJsonArray();
     }
 
