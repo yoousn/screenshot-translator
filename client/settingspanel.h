@@ -1,5 +1,4 @@
 #pragma once
-#include <QCheckBox>
 #include <QDialog>
 #include <QLineEdit>
 #include <QComboBox>
@@ -7,8 +6,11 @@
 #include <QLabel>
 #include <QSpinBox>
 #include <QKeySequenceEdit>
+#include <QListWidget>
+#include <QStackedWidget>
 #include "config.h"
 #include "networkclient.h"
+#include "switchbutton.h"
 
 class SettingsPanel : public QDialog {
     Q_OBJECT
@@ -17,6 +19,9 @@ public:
     ~SettingsPanel() override;
     static SettingsPanel* activeInstance;
 private:
+    QListWidget *sidebarList;
+    QStackedWidget *stackedWidget;
+
     QLineEdit *serverUrlEdit;
     QLineEdit *clientTokenEdit;
     QComboBox *channelCombo;
@@ -32,14 +37,17 @@ private:
     QLineEdit *baiduSecretKeyEdit;
 
     // Local OCR settings
-    QCheckBox *useLocalOcrCheck;
+    SwitchButton *useLocalOcrCheck;
     QLineEdit *localOcrPathEdit;
     QPushButton *browseLocalOcrBtn;
     QSpinBox *localOcrTimeoutSpin;
-    QCheckBox *fallbackToRemoteOcrCheck;
+    SwitchButton *fallbackToRemoteOcrCheck;
 
     // Hotkey settings
     QKeySequenceEdit *hotkeyEdit;
+
+    // System settings
+    SwitchButton *autostartCheck;
 
     QPushButton *verifyBtn;
     QLabel *statusLabel;
@@ -49,4 +57,6 @@ private:
     
     void loadFields();
     void saveFields();
+    bool isAutostartEnabled();
+    void setAutostartEnabled(bool enabled);
 };

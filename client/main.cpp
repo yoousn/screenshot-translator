@@ -4,6 +4,7 @@
 #include <QMessageBox>
 #include <QStyle>
 #include <QWidget>
+#include <QTimer>
 #include <functional>
 #include "screenshotwindow.h"
 #include "settingspanel.h"
@@ -166,29 +167,45 @@ int main(int argc, char *argv[]) {
     g_trayIcon->setContextMenu(trayMenu);
     g_trayIcon->show();
     
-    // 创建全局快捷键辅助窗口
-    g_hotkeyHelper = new HotkeyHelper([]() {
-        if (SettingsPanel::activeInstance) {
-            SettingsPanel::activeInstance->close();
+    // Helper to trigger screenshot while managing settings panel visibility
+    auto triggerScreenshot = []() {
+        bool settingsVisible = false;
+        if (SettingsPanel::activeInstance && SettingsPanel::activeInstance->isVisible()) {
+            settingsVisible = true;
+            SettingsPanel::activeInstance->hide();
         }
-        new ScreenshotWindow();
-    });
+        
+        ScreenshotWindow *win = new ScreenshotWindow();
+        if (settingsVisible) {
+            QObject::connect(win, &QWidget::destroyed, []() {
+                if (SettingsPanel::activeInstance) {
+                    SettingsPanel::activeInstance->show();
+                    SettingsPanel::activeInstance->raise();
+                    SettingsPanel::activeInstance->activateWindow();
+                }
+            });
+        }
+    };
+
+    // 创建全局快捷键辅助窗口
+    g_hotkeyHelper = new HotkeyHelper(triggerScreenshot);
     
     // 连接信号
     QObject::connect(settingsAct, &QAction::triggered, []() {
-        SettingsPanel panel;
-        panel.exec();
+        if (!SettingsPanel::activeInstance) {
+            SettingsPanel::activeInstance = new SettingsPanel();
+        }
+        SettingsPanel::activeInstance->show();
+        SettingsPanel::activeInstance->raise();
+        SettingsPanel::activeInstance->activateWindow();
     });
     
     QObject::connect(quitAct, &QAction::triggered, &a, &QApplication::quit);
     
     // 双击托盘图标直接触发截图
-    QObject::connect(g_trayIcon, &QSystemTrayIcon::activated, [](QSystemTrayIcon::ActivationReason reason) {
+    QObject::connect(g_trayIcon, &QSystemTrayIcon::activated, [=](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
-            if (SettingsPanel::activeInstance) {
-                SettingsPanel::activeInstance->close();
-            }
-            new ScreenshotWindow();
+            triggerScreenshot();
         }
     });
     
@@ -199,6 +216,12 @@ int main(int argc, char *argv[]) {
         QSystemTrayIcon::Information,
         5000
     );
+
+    // Check command line arguments
+    QStringList args = a.arguments();
+    if (args.contains("--screenshot")) {
+        QTimer::singleShot(0, triggerScreenshot);
+    }
     
     int ret = a.exec();
     delete g_hotkeyHelper;

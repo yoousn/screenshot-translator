@@ -21,6 +21,7 @@ add_executable(ScreenshotTranslator WIN32
     ocrresultwindow.h ocrresultwindow.cpp
     screenshotwindow.h screenshotwindow.cpp
     settingspanel.h settingspanel.cpp
+    switchbutton.h switchbutton.cpp
     resource.rc
     resources.qrc
 )

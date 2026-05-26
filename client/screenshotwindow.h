@@ -13,7 +13,25 @@
 #include "config.h"
 #include "localocrmanager.h"
 #include "networkclient.h"
+#include <QVariantAnimation>
+#include <QEasingCurve>
 
+
+#include <QToolButton>
+
+class VectorToolButton : public QToolButton {
+    Q_OBJECT
+public:
+    enum IconType {
+        IconGrip, IconRect, IconCircle, IconArrow, IconPen, IconUndo, IconRedo,
+        IconOcr, IconTranslate, IconPin, IconSave, IconSettings, IconClose, IconCopy
+    };
+    VectorToolButton(IconType type, QWidget *parent = nullptr);
+protected:
+    void paintEvent(QPaintEvent *event) override;
+private:
+    IconType m_type;
+};
 
 // 悬浮工具栏组件
 class FloatingToolbar : public QWidget {
@@ -21,6 +39,7 @@ class FloatingToolbar : public QWidget {
 public:
     explicit FloatingToolbar(QWidget *parent = nullptr);
     void setTranslateEnabled(bool enabled);
+    void updateUndoRedo(bool canUndo, bool canRedo);
 signals:
     void translateRequested();
     void ocrRequested();
@@ -29,10 +48,25 @@ signals:
     void pinRequested();
     void settingsRequested();
     void closeRequested();
+    
+    // Annotation signals
+    void toolChanged(int toolType);
+    void colorChanged(const QColor &color);
+    void widthChanged(int width);
+    void undoRequested();
+    void redoRequested();
 protected:
     void keyPressEvent(QKeyEvent *event) override;
 private:
-    QPushButton *transBtn = nullptr;
+    QWidget *mainBar = nullptr;
+    QWidget *styleBar = nullptr;
+    VectorToolButton *rectBtn = nullptr;
+    VectorToolButton *circleBtn = nullptr;
+    VectorToolButton *arrowBtn = nullptr;
+    VectorToolButton *penBtn = nullptr;
+    VectorToolButton *undoBtn = nullptr;
+    VectorToolButton *redoBtn = nullptr;
+    VectorToolButton *transBtn = nullptr;
 };
 
 class ScreenshotWindow : public QWidget {
@@ -73,6 +107,9 @@ private:
     // 窗口边界探测与捕捉
     QList<QRect> detectedWindowRects;
     QRect hoveredSnapRect;
+    QRectF currentHighlightRect;
+    QRectF targetHighlightRect;
+    QVariantAnimation *snapAnimation = nullptr;
     QRect getSnappedRect(const QPoint &pos);
     
     // 屏幕坐标与 RGB 颜色指示器
@@ -96,6 +133,26 @@ private:
     QPoint endPoint;
     QRect croppedRect;
     
+    // Annotation layer properties
+    enum AnnotationType { AnnotateNone, AnnotateRect, AnnotateCircle, AnnotateArrow, AnnotatePen };
+    struct Annotation {
+        AnnotationType type = AnnotateNone;
+        QRect rect;
+        QList<QPoint> points;
+        QColor color = QColor(229, 62, 62);
+        int width = 3;
+    };
+    
+    AnnotationType activeAnnotationTool = AnnotateNone;
+    QColor activeAnnotationColor = QColor(229, 62, 62);
+    int activeAnnotationWidth = 3;
+    QList<Annotation> annotations;
+    QList<Annotation> undoHistory;
+    Annotation currentDraftAnnotation;
+    bool isDrawingAnnotation = false;
+    
+    void drawArrow(QPainter &painter, const QPoint &start, const QPoint &end, const QColor &color, int width);
+
     FloatingToolbar *toolbar = nullptr;
     NetworkClient *netClient = nullptr;
     LocalOcrManager *localOcrManager = nullptr;

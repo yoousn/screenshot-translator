@@ -18,6 +18,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 # 默认不加载 heavy OCR 模型以加速服务启动，首个翻译请求来时会触发懒加载
 processor = ImageProcessor(load_ocr=False)
 
