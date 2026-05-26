@@ -68,16 +68,23 @@ jobs:
         Write-Host "windeployqt path: $windeployqt"
         # windeployqt needs MinGW DLLs and Qt bin in PATH to find tools and copy compiler DLLs
         $env:PATH = "$mingwBin;$qtDir\bin;$env:PATH"
-        Write-Host "Testing qtpaths..."
-        & "$qtDir\bin\qtpaths.exe" --query QT_INSTALL_PLUGINS
-        & "$qtDir\bin\qtpaths.exe" --query QT_INSTALL_LIBS
         Push-Location dist
-        & $windeployqt --release --no-translations `
+        # Run windeployqt with --no-plugins to deploy core libraries and compiler runtime without failing on plugins
+        & $windeployqt --release --no-translations --no-plugins `
           --no-system-d3d-compiler --no-opengl-sw `
           --qtpaths "$qtDir\bin\qtpaths.exe" `
-          --verbose 2 `
           ScreenshotTranslator.exe
         Pop-Location
+        
+        # Manually copy plugins since windeployqt has matching bugs on MinGW plugins
+        $pluginDirs = @("platforms", "styles", "imageformats", "tls", "iconengines", "generic")
+        foreach ($dir in $pluginDirs) {
+            $srcDir = "$qtDir\plugins\$dir"
+            if (Test-Path $srcDir) {
+                New-Item -ItemType Directory -Force -Path "dist\$dir"
+                Copy-Item -Path "$srcDir\*" -Destination "dist\$dir\" -Force -Recurse
+            }
+        }
 
     - name: Download PaddleOCR-json
       shell: pwsh
