@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# C++ build directories
+/client/build/
+/client/out/
+*.user
+*.suo
+*.userosscache
+*.sln
+*.vcxproj
+*.filters
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+.vs/
+
+# Testing caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration files
+server/config.yaml
+client/config.json
+
+# Scratch directories and internal system logs
+.superpowers/
+.gemini/
+*tmp*
