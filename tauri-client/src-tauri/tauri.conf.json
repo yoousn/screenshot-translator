@@ -14,8 +14,9 @@
       {
         "title": "YSN 截图翻译",
         "label": "main",
-        "width": 800,
-        "height": 600,
+        "width": 1200,
+        "height": 800,
+        "visible": false,
         "resizable": true
       },
       {

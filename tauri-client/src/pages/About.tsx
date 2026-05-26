@@ -139,7 +139,7 @@ export default function About() {
             <Button
               type="link"
               icon={<GithubOutlined />}
-              href="https://github.com"
+              href="https://github.com/yoousn/screenshot-translator"
               target="_blank"
               style={{ fontSize: 12, padding: 0 }}
             >

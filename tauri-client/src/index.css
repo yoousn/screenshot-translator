@@ -65,6 +65,10 @@
   animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Custom inputs styling */
 input, select, textarea {
   outline: none;

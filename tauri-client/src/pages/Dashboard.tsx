@@ -62,6 +62,10 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
+  // Delayed screenshot state
+  const [delayedCountdown, setDelayedCountdown] = useState<number | null>(null);
+  const [delayedActive, setDelayedActive] = useState(false);
+
   useEffect(() => {
     loadConfig();
 
@@ -90,6 +94,36 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
+
+  // Delayed screenshot countdown effect
+  useEffect(() => {
+    if (!delayedActive || delayedCountdown === null) return;
+    if (delayedCountdown <= 0) {
+      setDelayedCountdown(null);
+      setDelayedActive(false);
+      onStartScreenshot();
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDelayedCountdown(prev => (prev !== null ? prev - 1 : null));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [delayedCountdown, delayedActive]);
+
+  const handleDelayedScreenshot = () => {
+    setDelayedCountdown(3);
+    setDelayedActive(true);
+    message.info("3 秒倒计时开始，请准备好要截取的内容...");
+  };
+
+  const handleFullscreenCapture = async () => {
+    try {
+      await invoke("quick_fullscreen_capture");
+      message.success("全屏截图已复制到剪贴板");
+    } catch (e: any) {
+      message.error("全屏截图失败: " + e.toString());
+    }
+  };
 
   const loadConfig = async () => {
     try {
@@ -188,60 +222,82 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
       onClick: onStartScreenshot,
     },
     {
+      title: "截图翻译",
+      description: "按 Alt+T 直接进入翻译模式，框选后自动调用翻译接口并原位重绘译文。",
+      icon: <TranslationOutlined style={{ fontSize: 18, color: "#1677ff" }} />,
+      hotkey: "Alt+T",
+      disabled: false,
+      buttonText: "截图翻译",
+      onClick: async () => {
+        try {
+          await invoke("start_screenshot", { mode: "translate" });
+        } catch (e: any) {
+          message.error("启动截图翻译失败: " + e.toString());
+        }
+      },
+    },
+    {
       title: "延迟截图",
-      description: "倒计时 3 秒后自动调出截图选区，用于捕获悬浮菜单或下拉状态。",
-      icon: <ClockCircleOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
+      description: delayedActive ? `倒计时 ${delayedCountdown} 秒后自动调出截图选区…` : "倒计时 3 秒后自动调出截图选区，用于捕获悬浮菜单或下拉状态。",
+      icon: <ClockCircleOutlined style={{ fontSize: 18, color: delayedActive ? "#1677ff" : "#fa8c16" }} />,
       hotkey: "未设置",
-      disabled: true,
-      buttonText: "延迟执行",
+      disabled: false,
+      buttonText: delayedActive ? `⏱ ${delayedCountdown}s` : "延迟截图",
+      onClick: handleDelayedScreenshot,
     },
     {
       title: "固定到屏幕 (Pin)",
-      description: "将已完成翻译或框选的区域作为独立的无边框贴图固定于屏幕最前端。",
-      icon: <PushpinOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
-      hotkey: "未设置",
-      disabled: true,
-      buttonText: "固定贴图",
+      description: "在截图框选后，点击悬浮工具栏中的「贴图」按钮，将选区作为独立无边框置顶窗口固定。",
+      icon: <PushpinOutlined style={{ fontSize: 18, color: "#52c41a" }} />,
+      hotkey: "悬浮工具栏",
+      disabled: false,
+      buttonText: "需要先截图",
+      onClick: onStartScreenshot,
     },
     {
       title: "文本识别 (OCR)",
-      description: "识别截图区域内的所有英文与中文字符，支持一键导出到剪贴板。",
-      icon: <ScanOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
-      hotkey: "未设置",
-      disabled: true,
-      buttonText: "提取文本",
+      description: "在截图框选后，点击悬浮工具栏中的「识字」按钮，识别文字并自动复制到剪贴板。",
+      icon: <ScanOutlined style={{ fontSize: 18, color: "#722ed1" }} />,
+      hotkey: "悬浮工具栏",
+      disabled: false,
+      buttonText: "需要先截图",
+      onClick: onStartScreenshot,
     },
     {
       title: "文本识别翻译",
       description: "框选屏幕物理像素后，在原地重绘渲染替换为对应的译文。",
-      icon: <TranslationOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
-      hotkey: "未设置",
-      disabled: true,
-      buttonText: "自动翻译",
+      icon: <TranslationOutlined style={{ fontSize: 18, color: "#eb2f96" }} />,
+      hotkey: "Ctrl+Q",
+      disabled: false,
+      buttonText: "需要先截图",
+      onClick: onStartScreenshot,
     },
     {
       title: "复制到剪贴板",
       description: "截图后自动将截图或翻译后的像素流以图片数据写入剪贴板。",
-      icon: <CopyOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
-      hotkey: "未设置",
-      disabled: true,
-      buttonText: "一键复制",
+      icon: <CopyOutlined style={{ fontSize: 18, color: "#13c2c2" }} />,
+      hotkey: "Enter",
+      disabled: false,
+      buttonText: "需要先截图",
+      onClick: onStartScreenshot,
     },
     {
       title: "截取全屏",
-      description: "快速截取主监视器（或多显示器）的当前完整物理画面。",
-      icon: <DesktopOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
+      description: "快速截取主显示器的当前完整物理画面，直接复制到剪贴板。",
+      icon: <DesktopOutlined style={{ fontSize: 18, color: "#2f54eb" }} />,
       hotkey: "未设置",
-      disabled: true,
+      disabled: false,
       buttonText: "截取全屏",
+      onClick: handleFullscreenCapture,
     },
     {
       title: "当前活动窗口截图",
-      description: "智能识别当前获取输入焦点的窗口边界并自动捕获其内容。",
-      icon: <BorderInnerOutlined style={{ fontSize: 18, color: "#bfbfbf" }} />,
-      hotkey: "未设置",
-      disabled: true,
-      buttonText: "截取窗口",
+      description: "打开截图模式后，通过框选捕捉焦点窗口的内容（目前使用框选方式）。",
+      icon: <BorderInnerOutlined style={{ fontSize: 18, color: "#a0d911" }} />,
+      hotkey: "Alt+A → 框选",
+      disabled: false,
+      buttonText: "框选窗口",
+      onClick: onStartScreenshot,
     },
   ];
 
@@ -270,14 +326,10 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
                       <Tag
                         color="error"
                         style={{
-                          margin: 0,
-                          border: "1px dashed #ffa39e",
-                          backgroundColor: "#fff2f0",
-                          color: "#ff4d4f",
-                          fontWeight: "600",
-                          height: 22,
-                          display: "inline-flex",
-                          alignItems: "center"
+                          margin: 0, border: "1px dashed #ffa39e",
+                          backgroundColor: "#fff2f0", color: "#ff4d4f",
+                          fontWeight: "600", height: 22,
+                          display: "inline-flex", alignItems: "center"
                         }}
                       >
                         {item.hotkey} (冲突)
@@ -289,16 +341,12 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
                     </Tag>
                   ) : (
                     <Tag
-                      color="error"
                       style={{
-                        margin: 0,
-                        border: "1px dashed #ffa39e",
-                        backgroundColor: "#fff2f0",
-                        color: "#ff4d4f",
-                        fontWeight: "600",
-                        height: 22,
-                        display: "inline-flex",
-                        alignItems: "center"
+                        margin: 0, border: "1px solid #91d5ff",
+                        backgroundColor: "#e6f7ff", color: "#1677ff",
+                        fontWeight: "600", height: 22,
+                        display: "inline-flex", alignItems: "center",
+                        fontFamily: "Consolas, Monaco, monospace"
                       }}
                     >
                       {item.hotkey}

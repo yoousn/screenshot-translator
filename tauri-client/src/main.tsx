@@ -3,12 +3,28 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import ScreenshotPage from "./pages/ScreenshotPage";
+import PinPage from "./pages/PinPage";
 import "./index.css";
 
 const label = getCurrentWindow().label;
 
+// Set transparent background BEFORE React renders for screenshot/pin windows
+if (label === "screenshot" || label.startsWith("pin_")) {
+  document.body.style.backgroundColor = "transparent";
+  document.documentElement.style.backgroundColor = "transparent";
+}
+
+let Component: React.ComponentType;
+if (label === "screenshot") {
+  Component = ScreenshotPage;
+} else if (label.startsWith("pin_")) {
+  Component = PinPage;
+} else {
+  Component = App;
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {label === "screenshot" ? <ScreenshotPage /> : <App />}
+    <Component />
   </React.StrictMode>,
 );
