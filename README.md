@@ -1,4 +1,4 @@
-﻿# YSN 截图翻译 (SaaS-like Screenshot Translator)
+# YSN 截图翻译 (SaaS-like Screenshot Translator)
 
 这是一个受 **PixPin** 启发的、专为 N100 服务器和 Windows 客户端设计的“极致轻量级”截图翻译系统。
 
@@ -65,6 +65,43 @@ $env:PYTHONPATH="server"; .venv/Scripts/python -m pytest
 
 #### 编译与运行
 使用 Qt Creator 直接打开 `client/CMakeLists.txt`，配置并点击 **Run** 编译运行。
+
+#### 命令行编译 & 打包发布
+
+> 以下命令在项目根目录的 PowerShell 中执行。需要本地已安装 Qt（含 MinGW 工具链）。
+
+**1. 编译**
+```powershell
+# 设置编译环境（根据本机 Qt 安装路径调整）
+$env:PATH = "C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\Ninja;$env:PATH"
+
+# CMake 配置
+cmake -S client -B build -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_PREFIX_PATH="C:\Qt\6.11.1\mingw_64" `
+  -DCMAKE_CXX_COMPILER="C:\Qt\Tools\mingw1310_64\bin\g++.exe"
+
+# 编译（产物输出到 release/）
+cmake --build build --config Release
+```
+
+**2. 部署 Qt 依赖 DLL**
+```powershell
+$env:PATH = "C:\Qt\Tools\mingw1310_64\bin;C:\Qt\6.11.1\mingw_64\bin;$env:PATH"
+& "C:\Qt\6.11.1\mingw_64\bin\windeployqt.exe" --release --no-translations `
+  --no-system-d3d-compiler --no-opengl-sw release\ScreenshotTranslator.exe
+```
+
+**3. 一键打包 & 发布到 GitHub**
+```powershell
+# 仅打包 zip（不发布）
+.\pack_release.ps1
+
+# 打包 + 创建 GitHub Release 并上传（自动打 tag、推送、上传 zip）
+.\pack_release.ps1 -Version v0.4.0
+```
+
+---
 
 #### 客户端核心交互功能
 1. **后台运行**：启动后程序自动缩小到系统托盘，并弹出气泡提示。
