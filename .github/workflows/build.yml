@@ -67,7 +67,7 @@ jobs:
       run: |
         # Locate the extracted folder and rename it to "PaddleOCR-json_v1.4.1" to match C++ defaults
         $extractedDir = Get-ChildItem -Path dist\ocr -Directory | Select-Object -First 1
-        if ($extractedDir) {
+        if ($extractedDir -and $extractedDir.Name -ne "PaddleOCR-json_v1.4.1") {
             Rename-Item -Path $extractedDir.FullName -NewName "PaddleOCR-json_v1.4.1"
         }
 
