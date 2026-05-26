@@ -33,7 +33,7 @@ jobs:
         if (-not $qtDir) {
             $qtDir = (Get-ChildItem -Path "$env:IQTA_TOOLS\..\6.5.3" -Recurse -Filter "qmake.exe" | Select-Object -First 1).Directory.Parent.FullName
         }
-        $mingwBin = "$env:IQTA_TOOLS\mingw900_64\bin"
+        $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
         Write-Host "Qt dir: $qtDir"
         Write-Host "MinGW bin: $mingwBin"
 
@@ -46,7 +46,7 @@ jobs:
     - name: Build Application
       shell: pwsh
       run: |
-        $mingwBin = "$env:IQTA_TOOLS\mingw900_64\bin"
+        $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
         $env:PATH = "$mingwBin;$env:PATH"
         cmake --build build --config Release
 
@@ -64,7 +64,7 @@ jobs:
             $qtDir = (Get-ChildItem -Path "$env:IQTA_TOOLS\..\6.5.3" -Recurse -Filter "qmake.exe" | Select-Object -First 1).Directory.Parent.FullName
         }
         $windeployqt = "$qtDir\bin\windeployqt.exe"
-        $mingwBin = "$env:IQTA_TOOLS\mingw900_64\bin"
+        $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
         Write-Host "windeployqt path: $windeployqt"
         # windeployqt needs MinGW DLLs in PATH to copy them
         $env:PATH = "$mingwBin;$env:PATH"
