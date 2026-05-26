@@ -54,7 +54,6 @@ private:
     void copyToClipboard();
     void saveToFile();
     void pinImage();
-    void checkForText();
 
     // 拖动/缩放状态机与手柄
     enum CaptureState { StateIdle, StateSelecting, StateMoving, StateResizing };

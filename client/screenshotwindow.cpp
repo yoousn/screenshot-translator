@@ -69,11 +69,10 @@ FloatingToolbar::FloatingToolbar(QWidget *parent) : QWidget(parent) {
     transBtn = new QPushButton("文 翻译", container);
     transBtn->setToolTip("翻译选区并嵌字 (Ctrl+Q)");
     transBtn->setStyleSheet(btnStyle);
-    transBtn->setEnabled(false); // 默认禁用，等OCR检测到文字后再启用
+    transBtn->setEnabled(true);
     connect(transBtn, &QPushButton::clicked, this, &FloatingToolbar::translateRequested);
     containerLayout->addWidget(transBtn);
-    // 初始为灰色禁用状态
-    setTranslateEnabled(false);
+    setTranslateEnabled(true);
     
     QPushButton *pinBtn = new QPushButton("📌 钉图", container);
     pinBtn->setToolTip("将图片钉在桌面上");
@@ -361,11 +360,13 @@ void ScreenshotWindow::mousePressEvent(QMouseEvent *event) {
             activeHandle = handle;
             isDragging = true;
             hideToolbar();
+            if (isTranslated) isTranslated = false;
         } else if (!croppedRect.isEmpty() && croppedRect.contains(event->pos())) {
             captureState = StateMoving;
             dragOffset = event->pos() - croppedRect.topLeft();
             isDragging = true;
             hideToolbar();
+            if (isTranslated) isTranslated = false;
         } else {
             captureState = StateSelecting;
             isDragging = true;
@@ -632,13 +633,11 @@ void ScreenshotWindow::showToolbar() {
         });
         connect(toolbar, &FloatingToolbar::closeRequested, this, &ScreenshotWindow::close);
     }
-    // 每次显示工具栏时，翻译按钮默认禁用灰色，异步OCR检测后再启用
-    hasDetectedText = false;
-    toolbar->setTranslateEnabled(false);
+    // 直接允许翻译，无需等待 OCR 检测
+    hasDetectedText = true;
+    toolbar->setTranslateEnabled(true);
     updateToolbarPosition();
     toolbar->show();
-    // 异步检测选区是否包含可翻译文字
-    checkForText();
 }
 
 void ScreenshotWindow::hideToolbar() {
@@ -666,25 +665,6 @@ void ScreenshotWindow::updateToolbarPosition() {
     toolbar->move(x, y);
 }
 
-void ScreenshotWindow::checkForText() {
-    if (croppedRect.isEmpty()) return;
-    QPixmap crop = fullScreenPixmap.copy(croppedRect);
-    netClient->ocrImage(crop, config, [this](bool success, const QJsonArray &ocrResults) {
-        if (success) {
-            if (ocrResults.size() > 0) {
-                hasDetectedText = true;
-                if (toolbar) toolbar->setTranslateEnabled(true);
-            } else {
-                hasDetectedText = false;
-                if (toolbar) toolbar->setTranslateEnabled(false);
-            }
-        } else {
-            // OCR 接口调用失败（比如 404 或 500 等），降级处理：默认允许翻译，不作限制
-            hasDetectedText = true;
-            if (toolbar) toolbar->setTranslateEnabled(true);
-        }
-    });
-}
 
 void ScreenshotWindow::triggerTranslation() {
     if (isLoading || croppedRect.isEmpty() || !hasDetectedText) return;

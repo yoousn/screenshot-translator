@@ -67,6 +67,14 @@ class ImageProcessor:
             # 加载中文字体，若无则使用系统默认或打包 of 开源字体
             font_paths = [
                 "C:\\Windows\\Fonts\\msyh.ttc", # 微软雅黑
+                "C:\\Windows\\Fonts\\simhei.ttf", # 黑体
+                "C:\\Windows\\Fonts\\simsun.ttc", # 宋体
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", # Linux 文泉驿微米黑
+                "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", # Linux 文泉驿正黑
+                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", # Linux Droid
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", # Linux Noto
+                "/usr/share/fonts/truetype/arphic/uming.ttc",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", # Linux 备用
                 "arial.ttf"
             ]
