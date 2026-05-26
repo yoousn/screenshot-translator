@@ -25,6 +25,10 @@ void ClientConfig::load() {
     newApiModel = obj.value("newApiModel").toString(newApiModel);
     baiduAppId = obj.value("baiduAppId").toString(baiduAppId);
     baiduSecretKey = obj.value("baiduSecretKey").toString(baiduSecretKey);
+    useLocalOcr = obj.value("useLocalOcr").toBool(useLocalOcr);
+    localOcrExecutablePath = obj.value("localOcrExecutablePath").toString(localOcrExecutablePath);
+    localOcrTimeoutMs = obj.value("localOcrTimeoutMs").toInt(localOcrTimeoutMs);
+    fallbackToRemoteOcr = obj.value("fallbackToRemoteOcr").toBool(fallbackToRemoteOcr);
 }
 
 void ClientConfig::save() {
@@ -42,5 +46,9 @@ void ClientConfig::save() {
     obj["newApiModel"] = newApiModel;
     obj["baiduAppId"] = baiduAppId;
     obj["baiduSecretKey"] = baiduSecretKey;
+    obj["useLocalOcr"] = useLocalOcr;
+    obj["localOcrExecutablePath"] = localOcrExecutablePath;
+    obj["localOcrTimeoutMs"] = localOcrTimeoutMs;
+    obj["fallbackToRemoteOcr"] = fallbackToRemoteOcr;
     file.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
 }

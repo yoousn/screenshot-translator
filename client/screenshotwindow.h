@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include "config.h"
+#include "localocrmanager.h"
 #include "networkclient.h"
 
 
@@ -120,7 +121,9 @@ protected:
     void changeEvent(QEvent *event) override;
 private:
     void queryOcr();
-    
+    void applyOcrResults(const QJsonArray &ocrResults);
+    void queryRemoteOcr();
+
     QPixmap m_pixmap;
     QPoint m_dragPosition;
     
@@ -132,7 +135,8 @@ private:
     
     bool m_hasSelection = false;
     QRect m_selectedRect;
-    
+
     NetworkClient *netClient = nullptr;
+    LocalOcrManager *localOcrManager = nullptr;
     ClientConfig config;
 };

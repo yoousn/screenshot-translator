@@ -1,9 +1,11 @@
 #pragma once
+#include <QCheckBox>
 #include <QDialog>
 #include <QLineEdit>
 #include <QComboBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QSpinBox>
 #include "config.h"
 #include "networkclient.h"
 
@@ -27,6 +29,13 @@ private:
     // Baidu settings
     QLineEdit *baiduAppIdEdit;
     QLineEdit *baiduSecretKeyEdit;
+
+    // Local OCR settings
+    QCheckBox *useLocalOcrCheck;
+    QLineEdit *localOcrPathEdit;
+    QPushButton *browseLocalOcrBtn;
+    QSpinBox *localOcrTimeoutSpin;
+    QCheckBox *fallbackToRemoteOcrCheck;
 
     QPushButton *verifyBtn;
     QLabel *statusLabel;

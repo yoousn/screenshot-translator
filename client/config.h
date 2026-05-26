@@ -11,6 +11,10 @@ struct ClientConfig {
     QString newApiModel = "gemini-3.5-flash";
     QString baiduAppId = "";
     QString baiduSecretKey = "";
+    bool useLocalOcr = false;
+    QString localOcrExecutablePath = "";
+    int localOcrTimeoutMs = 5000;
+    bool fallbackToRemoteOcr = true;
 
     void load();
     void save();

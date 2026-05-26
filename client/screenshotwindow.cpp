@@ -733,7 +733,8 @@ PinWindow::PinWindow(const QPixmap &pixmap, const QPoint &pos, QWidget *parent)
     
     config.load();
     netClient = new NetworkClient(this);
-    
+    localOcrManager = new LocalOcrManager(this);
+
     // Support ESC to close the pinned window bulletproofly
     QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(escShortcut, &QShortcut::activated, this, &QWidget::close);
@@ -746,29 +747,51 @@ PinWindow::~PinWindow() {
 }
 
 void PinWindow::queryOcr() {
+    if (config.useLocalOcr) {
+        localOcrManager->ocrImage(m_pixmap, config, [this](bool success, const QJsonArray &ocrResults, const QString &) {
+            if (success) {
+                applyOcrResults(ocrResults);
+                return;
+            }
+            if (config.fallbackToRemoteOcr) {
+                queryRemoteOcr();
+            }
+        });
+        return;
+    }
+
+    queryRemoteOcr();
+}
+
+void PinWindow::queryRemoteOcr() {
     netClient->ocrImage(m_pixmap, config, [this](bool success, const QJsonArray &ocrResults) {
         if (success) {
-            ocrItems.clear();
-            for (const auto &val : ocrResults) {
-                QJsonObject obj = val.toObject();
-                QJsonArray box = obj.value("box").toArray();
-                if (box.size() >= 4) {
-                    QJsonArray p1 = box.at(0).toArray();
-                    QJsonArray p3 = box.at(2).toArray();
-                    int x1 = p1.at(0).toDouble();
-                    int y1 = p1.at(1).toDouble();
-                    int x3 = p3.at(0).toDouble();
-                    int y3 = p3.at(1).toDouble();
-                    
-                    OcrTextItem item;
-                    // Translate coordinates by +10 because the image is painted at (10, 10)
-                    item.rect = QRect(QPoint(x1, y1), QPoint(x3, y3)).translated(10, 10);
-                    item.text = obj.value("text").toString();
-                    ocrItems.append(item);
-                }
-            }
+            applyOcrResults(ocrResults);
         }
     });
+}
+
+void PinWindow::applyOcrResults(const QJsonArray &ocrResults) {
+    ocrItems.clear();
+    for (const auto &val : ocrResults) {
+        QJsonObject obj = val.toObject();
+        QJsonArray box = obj.value("box").toArray();
+        if (box.size() == 4 && box.at(0).isArray() && box.at(2).isArray()) {
+            QJsonArray p1 = box.at(0).toArray();
+            QJsonArray p3 = box.at(2).toArray();
+            if (p1.size() < 2 || p3.size() < 2) continue;
+            int x1 = p1.at(0).toDouble();
+            int y1 = p1.at(1).toDouble();
+            int x3 = p3.at(0).toDouble();
+            int y3 = p3.at(1).toDouble();
+
+            OcrTextItem item;
+            // Translate coordinates by +10 because the image is painted at (10, 10)
+            item.rect = QRect(QPoint(x1, y1), QPoint(x3, y3)).translated(10, 10);
+            item.text = obj.value("text").toString();
+            ocrItems.append(item);
+        }
+    }
 }
 
 void PinWindow::paintEvent(QPaintEvent *) {

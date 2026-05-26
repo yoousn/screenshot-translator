@@ -1,17 +1,20 @@
 #include "settingspanel.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
-#include <QJsonObject>
+#include <QHBoxLayout>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QMessageBox>
+#include <QVBoxLayout>
 
 SettingsPanel* SettingsPanel::activeInstance = nullptr;
 
 SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
     activeInstance = this;
     setWindowTitle("截图翻译配置面板");
-    resize(550, 480);
+    resize(620, 620);
     
     config.load();
     netClient = new NetworkClient(this);
@@ -81,7 +84,32 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
     
     transVBox->addWidget(baiduSubGroup);
     mainLayout->addWidget(transGroup);
-    
+
+    QGroupBox *localOcrGroup = new QGroupBox("本地 OCR 设置", this);
+    QFormLayout *localOcrForm = new QFormLayout(localOcrGroup);
+    useLocalOcrCheck = new QCheckBox("优先使用本地 OCR", this);
+    useLocalOcrCheck->setChecked(config.useLocalOcr);
+    localOcrForm->addRow(useLocalOcrCheck);
+
+    QHBoxLayout *localOcrPathHBox = new QHBoxLayout();
+    localOcrPathEdit = new QLineEdit(config.localOcrExecutablePath, this);
+    browseLocalOcrBtn = new QPushButton("浏览...", this);
+    localOcrPathHBox->addWidget(localOcrPathEdit);
+    localOcrPathHBox->addWidget(browseLocalOcrBtn);
+    localOcrForm->addRow("引擎路径:", localOcrPathHBox);
+
+    localOcrTimeoutSpin = new QSpinBox(this);
+    localOcrTimeoutSpin->setRange(1000, 60000);
+    localOcrTimeoutSpin->setSingleStep(500);
+    localOcrTimeoutSpin->setValue(config.localOcrTimeoutMs);
+    localOcrTimeoutSpin->setSuffix(" ms");
+    localOcrForm->addRow("超时时间:", localOcrTimeoutSpin);
+
+    fallbackToRemoteOcrCheck = new QCheckBox("本地失败时回退云端 OCR", this);
+    fallbackToRemoteOcrCheck->setChecked(config.fallbackToRemoteOcr);
+    localOcrForm->addRow(fallbackToRemoteOcrCheck);
+    mainLayout->addWidget(localOcrGroup);
+
     // 3. 测试与保存
     QHBoxLayout *btnHBox = new QHBoxLayout();
     verifyBtn = new QPushButton("点击验证", this);
@@ -105,7 +133,19 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
     };
     connect(channelCombo, &QComboBox::currentTextChanged, updateVisibility);
     updateVisibility();
-    
+
+    connect(browseLocalOcrBtn, &QPushButton::clicked, [=]() {
+        QString path = QFileDialog::getOpenFileName(
+            this,
+            "选择 PaddleOCR-json 引擎",
+            localOcrPathEdit->text(),
+            "Executable (*.exe);;All Files (*.*)"
+        );
+        if (!path.isEmpty()) {
+            localOcrPathEdit->setText(path);
+        }
+    });
+
     // 连接信号事件
     connect(fetchModelsBtn, &QPushButton::clicked, [=]() {
         fetchModelsBtn->setEnabled(false);
@@ -161,6 +201,13 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
     
     connect(saveBtn, &QPushButton::clicked, [=]() {
         saveFields();
+        if (config.useLocalOcr) {
+            QFileInfo engineFile(config.localOcrExecutablePath);
+            if (!engineFile.exists() || !engineFile.isFile() || !engineFile.isExecutable() || engineFile.isRelative()) {
+                QMessageBox::warning(this, "本地 OCR 配置错误", "启用本地 OCR 时必须选择有效的 PaddleOCR-json.exe 绝对路径。");
+                return;
+            }
+        }
         config.save();
         accept();
     });
@@ -178,6 +225,10 @@ void SettingsPanel::loadFields() {
     newApiModelCombo->addItem(config.newApiModel);
     baiduAppIdEdit->setText(config.baiduAppId);
     baiduSecretKeyEdit->setText(config.baiduSecretKey);
+    useLocalOcrCheck->setChecked(config.useLocalOcr);
+    localOcrPathEdit->setText(config.localOcrExecutablePath);
+    localOcrTimeoutSpin->setValue(config.localOcrTimeoutMs);
+    fallbackToRemoteOcrCheck->setChecked(config.fallbackToRemoteOcr);
 }
 
 void SettingsPanel::saveFields() {
@@ -189,6 +240,10 @@ void SettingsPanel::saveFields() {
     config.newApiModel = newApiModelCombo->currentText();
     config.baiduAppId = baiduAppIdEdit->text();
     config.baiduSecretKey = baiduSecretKeyEdit->text();
+    config.useLocalOcr = useLocalOcrCheck->isChecked();
+    config.localOcrExecutablePath = localOcrPathEdit->text();
+    config.localOcrTimeoutMs = localOcrTimeoutSpin->value();
+    config.fallbackToRemoteOcr = fallbackToRemoteOcrCheck->isChecked();
 }
 
 SettingsPanel::~SettingsPanel() {
