@@ -682,6 +682,9 @@ void ScreenshotWindow::triggerTranslation() {
         if (success && !resPixmap.isNull()) {
             currentImage = resPixmap;
             isTranslated = true;
+            // 翻译成功后自动转为“钉图”固定在屏幕上，支持自由拖动且永不失真退色
+            pinImage();
+            return;
         }
         if (toolbar) toolbar->setTranslateEnabled(hasDetectedText);
         update();

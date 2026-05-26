@@ -28,13 +28,17 @@ def verify_token(x_api_key: str):
 
 def get_active_translator():
     cfg = load_server_config()
-    channel = cfg["active_channel"]
+    channel = cfg.get("active_channel", "google")
+    print(f"[Active Translator] 服务器当前激活的翻译通道为: '{channel}'")
     if channel == "new-api":
         c = cfg["channels"]["new-api"]
+        print(f"[Active Translator] 正在调用大模型翻译 (中转: {c.get('base_url')}, 模型: {c.get('model')})")
         return LLMTranslator(c["base_url"], c["api_key"], c["model"])
     elif channel == "baidu":
         c = cfg["channels"]["baidu"]
+        print(f"[Active Translator] 正在调用百度翻译 (AppID: {c.get('app_id')})")
         return BaiduTranslator(c["app_id"], c["secret_key"])
+    print("[Active Translator] 未识别或默认通道，正在回退调用 Google 免费翻译接口 (无凭证)")
     return GoogleTranslator()
 
 @app.post("/api/translate")
@@ -59,7 +63,14 @@ async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)
     img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if processor.ocr is None:
-        processor.ocr = PaddleOCR(lang="ch", enable_mkldnn=False, ir_optim=False)
+        processor.ocr = PaddleOCR(
+            lang="ch", 
+            enable_mkldnn=False, 
+            ir_optim=False,
+            det_db_box_thresh=0.3,
+            det_db_thresh=0.2,
+            det_db_unclip_ratio=1.6
+        )
         
     ocr_result = processor.ocr.ocr(img_cv, cls=True)
     

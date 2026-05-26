@@ -76,3 +76,33 @@ $env:PYTHONPATH="server"; .venv/Scripts/python -m pytest
 7. **设置面板**：服务器和中转地址上方均有内网的浅灰色 Hint 字样引导。
    * 点击 **“获取模型”**：客户端会向 N100 发起模型提取代理，实时拉取 new-api 的所有可用模型，自动更新下拉框。
    * 点击 **“点击验证”**：对当前填入的所有翻译账户进行在线连通性验证。若通畅，后端会将此通道直接锁定为当前激活的主力翻译器并完成持久化，客户端右侧会回显绿色的“验证成功”字样！
+
+---
+
+## 🖥️ N100 服务器运维与部署自动化 (SSH & SCP Guide for Agents)
+
+为了让未来的 AI 助手或维护者无需任何外部提示即可瞬间连接服务器并完成部署，以下是 N100 服务器的详细运维资料：
+
+### 1. 连接凭证清单 (Credentials)
+* **SSH 密钥**：本地路径为 `~/.ssh/n100_key` (Windows 主机下为 `C:\Users\Administrator\.ssh\n100_key`)
+* **连接命令**：可以通过本地 SSH 别名 `ssh n100` 或执行直连命令：
+  * **公网 SSH（穿透）**：`ssh -i ~/.ssh/n100_key -p 56001 ysn@47.76.135.185`
+  * **内网 SSH**：`ssh -i ~/.ssh/n100_key -p 22 ysn@192.168.1.3`
+* **服务端项目目录**：`/vol1/1000/项目/自制截图/server`
+* **服务端端口**：`8318`
+
+### 2. 自动化代码同步与重启服务 (Deploy Commands)
+当更新了 `server/` 文件夹的代码（如 `image_processor.py`、`app.py`）后，在**本地控制台**依次执行以下 PowerShell 命令即可实现“一键同步与热重载”：
+
+```powershell
+# A. 上传最新代码文件到 N100
+scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/image_processor.py ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/image_processor.py
+scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/app.py ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/app.py
+
+# B. 强杀 8318 端口旧进程，等待 3 秒释放 socket 后，后台静默启动新版服务
+ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "fuser -k 8318/tcp; sleep 3; cd /vol1/1000/项目/自制截图/server && nohup .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8318 > uvicorn.log 2>&1 &"
+
+# C. 验证服务是否成功启动并监听
+ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "tail -n 20 /vol1/1000/项目/自制截图/server/uvicorn.log"
+```
+
