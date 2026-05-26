@@ -18,36 +18,27 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install Qt (with bundled MinGW)
+    - name: Install Qt (MSVC)
       uses: jurplel/install-qt-action@v3
       with:
         version: '6.5.3'
-        arch: 'win64_mingw'
-        tools: 'tools_mingw112'
-        add-tools-to-path: true
+        arch: 'win64_msvc2019_64'
 
-    - name: Configure CMake (use Qt-bundled MinGW)
+    - name: Setup MSVC environment
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Configure CMake
       shell: pwsh
       run: |
         $qtDir = $env:QT_ROOT_DIR
-        if (-not $qtDir) {
-            $qtDir = (Get-ChildItem -Path "$env:IQTA_TOOLS\..\6.5.3" -Recurse -Filter "qmake.exe" | Select-Object -First 1).Directory.Parent.FullName
-        }
-        $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
         Write-Host "Qt dir: $qtDir"
-        Write-Host "MinGW bin: $mingwBin"
-
         cmake -S client -B build -G Ninja `
           -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_PREFIX_PATH="$qtDir" `
-          -DCMAKE_CXX_COMPILER="$mingwBin\g++.exe" `
-          -DCMAKE_C_COMPILER="$mingwBin\gcc.exe"
+          -DCMAKE_PREFIX_PATH="$qtDir"
 
     - name: Build Application
       shell: pwsh
       run: |
-        $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
-        $env:PATH = "$mingwBin;$env:PATH"
         cmake --build build --config Release
 
     - name: Prepare dist directory
@@ -60,18 +51,12 @@ jobs:
       shell: pwsh
       run: |
         $qtDir = $env:QT_ROOT_DIR
-        if (-not $qtDir) {
-            $qtDir = (Get-ChildItem -Path "$env:IQTA_TOOLS\..\6.5.3" -Recurse -Filter "qmake.exe" | Select-Object -First 1).Directory.Parent.FullName
-        }
         $windeployqt = "$qtDir\bin\windeployqt.exe"
-        $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
         Write-Host "windeployqt path: $windeployqt"
-        # windeployqt needs MinGW DLLs and Qt bin in PATH to find tools and copy compiler DLLs
-        $env:PATH = "$mingwBin;$qtDir\bin;$env:PATH"
+        $env:PATH = "$qtDir\bin;$env:PATH"
         Push-Location dist
         & $windeployqt --release --no-translations `
           --no-system-d3d-compiler --no-opengl-sw `
-          --qtpaths "$qtDir\bin\qtpaths.exe" `
           ScreenshotTranslator.exe
         Pop-Location
 
