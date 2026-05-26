@@ -23,7 +23,7 @@ jobs:
       with:
         version: '6.5.3'
         arch: 'win64_mingw'
-        tools: 'tools_mingw1120'
+        tools: 'tools_mingw112'
         add-tools-to-path: true
 
     - name: Configure CMake (use Qt-bundled MinGW)
