@@ -48,10 +48,12 @@ int main(int argc, char *argv[]) {
     ClientConfig config;
     config.load();
     
-    // 创建系统托盘
+    // 创建系统托盘并加载应用图标资源
+    QIcon appIcon(":/app.ico");
+    a.setWindowIcon(appIcon);
+    
     QSystemTrayIcon *trayIcon = new QSystemTrayIcon(&a);
-    // 使用 Qt 内置标准图标作为临时图标（高级计算机样式）
-    trayIcon->setIcon(a.style()->standardIcon(QStyle::SP_ComputerIcon));
+    trayIcon->setIcon(appIcon);
     trayIcon->setToolTip("YSN 截图翻译 (双击截图 / Alt+A)");
     
     // 托盘菜单
@@ -70,11 +72,17 @@ int main(int argc, char *argv[]) {
     
     // 创建全局快捷键辅助窗口
     HotkeyHelper *hotkey = new HotkeyHelper([]() {
+        if (SettingsPanel::activeInstance) {
+            SettingsPanel::activeInstance->close();
+        }
         new ScreenshotWindow();
     });
     
     // 连接信号
     QObject::connect(screenshotAct, &QAction::triggered, []() {
+        if (SettingsPanel::activeInstance) {
+            SettingsPanel::activeInstance->close();
+        }
         // 创建并显示截图窗口
         new ScreenshotWindow();
     });
@@ -89,6 +97,9 @@ int main(int argc, char *argv[]) {
     // 双击托盘图标直接触发截图
     QObject::connect(trayIcon, &QSystemTrayIcon::activated, [](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
+            if (SettingsPanel::activeInstance) {
+                SettingsPanel::activeInstance->close();
+            }
             new ScreenshotWindow();
         }
     });

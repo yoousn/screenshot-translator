@@ -11,6 +11,8 @@ class SettingsPanel : public QDialog {
     Q_OBJECT
 public:
     explicit SettingsPanel(QWidget *parent = nullptr);
+    ~SettingsPanel() override;
+    static SettingsPanel* activeInstance;
 private:
     QLineEdit *serverUrlEdit;
     QLineEdit *clientTokenEdit;

@@ -8,7 +8,7 @@ struct ClientConfig {
     QString channel = "new-api";
     QString newApiBase = "api.yousn.me";
     QString newApiKey = "sk-88AqJeSQhfrmVTDcSAOTZDb6NqEbG3X8C3na3WqolNdasdpb";
-    QString newApiModel = "gemini-1.5-flash";
+    QString newApiModel = "gemini-3.5-flash";
     QString baiduAppId = "";
     QString baiduSecretKey = "";
 

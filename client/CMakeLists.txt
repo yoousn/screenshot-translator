@@ -17,6 +17,8 @@ add_executable(ScreenshotTranslator WIN32
     networkclient.h networkclient.cpp
     screenshotwindow.h screenshotwindow.cpp
     settingspanel.h settingspanel.cpp
+    resource.rc
+    resources.qrc
 )
 
 target_link_libraries(ScreenshotTranslator PRIVATE

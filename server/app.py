@@ -2,6 +2,9 @@ from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import json
+import cv2
+import numpy as np
+from paddleocr import PaddleOCR
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
 from image_processor import ImageProcessor
@@ -41,11 +44,38 @@ async def translate_image(image: UploadFile = File(...), x_api_key: str = Header
     
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
-    def translator_fn(text):
-        return translator.translate(text, "auto", "zh")
+    def translator_batch_fn(texts):
+        return translator.translate_batch(texts, "auto", "zh")
         
-    out_bytes = processor.process_and_draw(img_bytes, translator_fn)
+    out_bytes = processor.process_and_draw(img_bytes, translator_batch_fn)
     return Response(content=out_bytes, media_type="image/png")
+
+@app.post("/api/ocr")
+async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    img_bytes = await image.read()
+    
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if processor.ocr is None:
+        processor.ocr = PaddleOCR(lang="ch", enable_mkldnn=False, ir_optim=False)
+        
+    ocr_result = processor.ocr.ocr(img_cv, cls=True)
+    
+    results = []
+    if ocr_result and ocr_result[0]:
+        for line in ocr_result[0]:
+            box = line[0] # [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+            text = line[1][0]
+            confidence = float(line[1][1])
+            results.append({
+                "box": box,
+                "text": text,
+                "confidence": confidence
+            })
+            
+    return {"status": "success", "ocr": results}
 
 @app.post("/api/config/test")
 async def test_and_save_config(payload: dict, x_api_key: str = Header(None)):

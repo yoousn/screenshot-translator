@@ -13,7 +13,7 @@ def load_server_config():
                 "new-api": {
                     "base_url": "api.yousn.me",
                     "api_key": "sk-88AqJeSQhfrmVTDcSAOTZDb6NqEbG3X8C3na3WqolNdasdpb",
-                    "model": "gemini-1.5-flash"
+                    "model": "gemini-3.5-flash"
                 },
                 "baidu": {
                     "app_id": "",
@@ -38,7 +38,7 @@ def load_server_config():
                     "new-api": {
                         "base_url": "api.yousn.me",
                         "api_key": "sk-88AqJeSQhfrmVTDcSAOTZDb6NqEbG3X8C3na3WqolNdasdpb",
-                        "model": "gemini-1.5-flash"
+                        "model": "gemini-3.5-flash"
                     },
                     "baidu": {
                         "app_id": "",

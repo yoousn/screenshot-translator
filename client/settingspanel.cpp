@@ -6,7 +6,10 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 
+SettingsPanel* SettingsPanel::activeInstance = nullptr;
+
 SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
+    activeInstance = this;
     setWindowTitle("截图翻译配置面板");
     resize(550, 480);
     
@@ -187,3 +190,10 @@ void SettingsPanel::saveFields() {
     config.baiduAppId = baiduAppIdEdit->text();
     config.baiduSecretKey = baiduSecretKeyEdit->text();
 }
+
+SettingsPanel::~SettingsPanel() {
+    if (activeInstance == this) {
+        activeInstance = nullptr;
+    }
+}
+

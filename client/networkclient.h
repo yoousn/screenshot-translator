@@ -3,6 +3,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QPixmap>
+#include <QJsonArray>
 #include <functional>
 #include "config.h"
 
@@ -14,6 +15,10 @@ public:
     // 发起翻译截图
     void translateImage(const QPixmap &pixmap, const ClientConfig &cfg, 
                         std::function<void(bool success, const QPixmap &resPixmap)> callback);
+
+    // OCR 识别截图文字位置
+    void ocrImage(const QPixmap &pixmap, const ClientConfig &cfg,
+                  std::function<void(bool success, const QJsonArray &ocrResults)> callback);
 
     // 测试并保存配置
     void testConfig(const ClientConfig &cfg, const QJsonObject &testPayload,

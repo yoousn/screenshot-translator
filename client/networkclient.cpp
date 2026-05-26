@@ -52,6 +52,46 @@ void NetworkClient::translateImage(const QPixmap &pixmap, const ClientConfig &cf
     });
 }
 
+void NetworkClient::ocrImage(const QPixmap &pixmap, const ClientConfig &cfg,
+                             std::function<void(bool success, const QJsonArray &ocrResults)> callback) {
+    QByteArray ba;
+    QBuffer buffer(&ba);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    
+    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart imagePart;
+    imagePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("image/png"));
+    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader, 
+                        QVariant("form-data; name=\"image\"; filename=\"screenshot.png\""));
+    imagePart.setBody(ba);
+    multiPart->append(imagePart);
+    
+    QString fullUrl = cfg.serverUrl;
+    if (!fullUrl.startsWith("http://") && !fullUrl.startsWith("https://")) {
+        fullUrl = "http://" + fullUrl;
+    }
+    QNetworkRequest request(QUrl(fullUrl + "/api/ocr"));
+    request.setRawHeader("X-API-Key", cfg.clientToken.toUtf8());
+    
+    QNetworkReply *reply = manager->post(request, multiPart);
+    multiPart->setParent(reply);
+    
+    connect(reply, &QNetworkReply::finished, [reply, callback]() {
+        if (reply->error() == QNetworkReply::NoError) {
+            QJsonObject res = QJsonDocument::fromJson(reply->readAll()).object();
+            if (res.value("status").toString() == "success") {
+                callback(true, res.value("ocr").toArray());
+            } else {
+                callback(false, QJsonArray());
+            }
+        } else {
+            callback(false, QJsonArray());
+        }
+        reply->deleteLater();
+    });
+}
+
 void NetworkClient::testConfig(const ClientConfig &cfg, const QJsonObject &testPayload,
                                std::function<void(bool success, const QString &msg)> callback) {
     QString fullUrl = cfg.serverUrl;
