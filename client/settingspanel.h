@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QSpinBox>
+#include <QKeySequenceEdit>
 #include "config.h"
 #include "networkclient.h"
 
@@ -36,6 +37,9 @@ private:
     QPushButton *browseLocalOcrBtn;
     QSpinBox *localOcrTimeoutSpin;
     QCheckBox *fallbackToRemoteOcrCheck;
+
+    // Hotkey settings
+    QKeySequenceEdit *hotkeyEdit;
 
     QPushButton *verifyBtn;
     QLabel *statusLabel;

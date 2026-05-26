@@ -15,7 +15,10 @@ struct ClientConfig {
     QString localOcrExecutablePath = "";
     int localOcrTimeoutMs = 5000;
     bool fallbackToRemoteOcr = true;
+    QString hotkey = "Alt+A";
 
     void load();
     void save();
 };
+
+void updateGlobalHotkey();

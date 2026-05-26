@@ -110,6 +110,13 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
     localOcrForm->addRow(fallbackToRemoteOcrCheck);
     mainLayout->addWidget(localOcrGroup);
 
+    // 快捷键设置
+    QGroupBox *hotkeyGroup = new QGroupBox("全局快捷键设置", this);
+    QFormLayout *hotkeyForm = new QFormLayout(hotkeyGroup);
+    hotkeyEdit = new QKeySequenceEdit(this);
+    hotkeyForm->addRow("截图快捷键:", hotkeyEdit);
+    mainLayout->addWidget(hotkeyGroup);
+
     // 3. 测试与保存
     QHBoxLayout *btnHBox = new QHBoxLayout();
     verifyBtn = new QPushButton("点击验证", this);
@@ -209,6 +216,8 @@ SettingsPanel::SettingsPanel(QWidget *parent) : QDialog(parent) {
             }
         }
         config.save();
+        updateGlobalHotkey();
+        QMessageBox::information(this, "保存成功", "配置已成功保存并应用！");
         accept();
     });
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
@@ -229,6 +238,7 @@ void SettingsPanel::loadFields() {
     localOcrPathEdit->setText(config.localOcrExecutablePath);
     localOcrTimeoutSpin->setValue(config.localOcrTimeoutMs);
     fallbackToRemoteOcrCheck->setChecked(config.fallbackToRemoteOcr);
+    hotkeyEdit->setKeySequence(QKeySequence(config.hotkey));
 }
 
 void SettingsPanel::saveFields() {
@@ -244,6 +254,11 @@ void SettingsPanel::saveFields() {
     config.localOcrExecutablePath = localOcrPathEdit->text();
     config.localOcrTimeoutMs = localOcrTimeoutSpin->value();
     config.fallbackToRemoteOcr = fallbackToRemoteOcrCheck->isChecked();
+    
+    QString hotkeyStr = hotkeyEdit->keySequence().toString().split(",").first().trimmed();
+    if (!hotkeyStr.isEmpty()) {
+        config.hotkey = hotkeyStr;
+    }
 }
 
 SettingsPanel::~SettingsPanel() {

@@ -29,6 +29,7 @@ void ClientConfig::load() {
     localOcrExecutablePath = obj.value("localOcrExecutablePath").toString(localOcrExecutablePath);
     localOcrTimeoutMs = obj.value("localOcrTimeoutMs").toInt(localOcrTimeoutMs);
     fallbackToRemoteOcr = obj.value("fallbackToRemoteOcr").toBool(fallbackToRemoteOcr);
+    hotkey = obj.value("hotkey").toString(hotkey);
 }
 
 void ClientConfig::save() {
@@ -50,5 +51,6 @@ void ClientConfig::save() {
     obj["localOcrExecutablePath"] = localOcrExecutablePath;
     obj["localOcrTimeoutMs"] = localOcrTimeoutMs;
     obj["fallbackToRemoteOcr"] = fallbackToRemoteOcr;
+    obj["hotkey"] = hotkey;
     file.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
 }
