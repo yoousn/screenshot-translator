@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { 
   Tabs, 
   Card, 
@@ -62,6 +63,31 @@ export default function Dashboard({ onStartScreenshot }: DashboardProps) {
 
   useEffect(() => {
     loadConfig();
+
+    const unlistenPromise = listen<string>("screenshot-captured", (event) => {
+      try {
+        const base64Data = event.payload;
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: "image/png" });
+        const file = new File([blob], "screenshot.png", { type: "image/png" });
+        
+        setSelectedFile(file);
+        setPreviewUrl(URL.createObjectURL(file));
+        setTranslatedImage(null);
+        message.success("获取原生选区截图成功！可在下方进行连通性测试。");
+      } catch (err) {
+        console.error("处理截图事件失败", err);
+      }
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
   }, []);
 
   const loadConfig = async () => {
