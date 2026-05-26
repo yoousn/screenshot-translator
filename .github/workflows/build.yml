@@ -66,11 +66,14 @@ jobs:
         $windeployqt = "$qtDir\bin\windeployqt.exe"
         $mingwBin = (Get-ChildItem -Path "$env:IQTA_TOOLS" -Recurse -Filter "g++.exe" | Select-Object -First 1).Directory.FullName
         Write-Host "windeployqt path: $windeployqt"
-        # windeployqt needs MinGW DLLs in PATH to copy them
-        $env:PATH = "$mingwBin;$env:PATH"
+        # windeployqt needs MinGW DLLs and Qt bin in PATH to find tools and copy compiler DLLs
+        $env:PATH = "$mingwBin;$qtDir\bin;$env:PATH"
+        Push-Location dist
         & $windeployqt --release --no-translations `
           --no-system-d3d-compiler --no-opengl-sw `
-          --dir dist dist\ScreenshotTranslator.exe
+          --qtpaths "$qtDir\bin\qtpaths.exe" `
+          ScreenshotTranslator.exe
+        Pop-Location
 
     - name: Download PaddleOCR-json
       shell: pwsh
