@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets Network)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets Network)
 
-add_executable(ScreenshotTranslator
+add_executable(ScreenshotTranslator WIN32
     main.cpp
     config.h config.cpp
     networkclient.h networkclient.cpp
