@@ -38,3 +38,6 @@ client/config.json
 .superpowers/
 .gemini/
 *tmp*
+
+# Local OCR Engine Binaries
+/server/ocr/

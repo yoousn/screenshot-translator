@@ -1,5 +1,6 @@
 #include "screenshotwindow.h"
 #include "settingspanel.h"
+#include "ocrresultwindow.h"
 #include <QApplication>
 #include <QScreen>
 #include <QPainter>
@@ -14,6 +15,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QShortcut>
+#include <QMessageBox>
 
 // ----------------------------------------------------
 // 1. FloatingToolbar Implementation
@@ -73,6 +75,12 @@ FloatingToolbar::FloatingToolbar(QWidget *parent) : QWidget(parent) {
     connect(transBtn, &QPushButton::clicked, this, &FloatingToolbar::translateRequested);
     containerLayout->addWidget(transBtn);
     setTranslateEnabled(true);
+    
+    QPushButton *ocrBtn = new QPushButton("🔍 识别文字", container);
+    ocrBtn->setToolTip("识别选区文字并展示");
+    ocrBtn->setStyleSheet(btnStyle);
+    connect(ocrBtn, &QPushButton::clicked, this, &FloatingToolbar::ocrRequested);
+    containerLayout->addWidget(ocrBtn);
     
     QPushButton *pinBtn = new QPushButton("📌 钉图", container);
     pinBtn->setToolTip("将图片钉在桌面上");
@@ -225,6 +233,7 @@ ScreenshotWindow::ScreenshotWindow(QWidget *parent) : QWidget(parent) {
     
     config.load();
     netClient = new NetworkClient(this);
+    localOcrManager = new LocalOcrManager(this);
     
     // Support ESC to close the screenshot window bulletproofly
     QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
@@ -622,6 +631,7 @@ void ScreenshotWindow::showToolbar() {
     if (!toolbar) {
         toolbar = new FloatingToolbar();
         connect(toolbar, &FloatingToolbar::translateRequested, this, &ScreenshotWindow::triggerTranslation);
+        connect(toolbar, &FloatingToolbar::ocrRequested, this, &ScreenshotWindow::triggerOcr);
         connect(toolbar, &FloatingToolbar::copyRequested, this, &ScreenshotWindow::copyToClipboard);
         connect(toolbar, &FloatingToolbar::saveRequested, this, &ScreenshotWindow::saveToFile);
         connect(toolbar, &FloatingToolbar::pinRequested, this, &ScreenshotWindow::pinImage);
@@ -689,6 +699,59 @@ void ScreenshotWindow::triggerTranslation() {
         if (toolbar) toolbar->setTranslateEnabled(hasDetectedText);
         update();
     });
+}
+
+void ScreenshotWindow::triggerOcr() {
+    if (isLoading || croppedRect.isEmpty()) return;
+    
+    isLoading = true;
+    if (toolbar) toolbar->setEnabled(false);
+    if (spinnerTimer) spinnerTimer->start(50); // 开始旋转动画
+    update();
+    
+    QPixmap originalCrop = fullScreenPixmap.copy(croppedRect);
+    
+    auto onOcrFinished = [this, originalCrop](bool success, const QJsonArray &ocrResults, const QString &err) {
+        isLoading = false;
+        if (spinnerTimer) spinnerTimer->stop(); // 停止旋转动画
+        if (success) {
+            QStringList lines;
+            for (const QJsonValue &val : ocrResults) {
+                QJsonObject obj = val.toObject();
+                lines.append(obj.value("text").toString());
+            }
+            QString fullText = lines.join("\n");
+            
+            OcrResultWindow *resultWin = new OcrResultWindow(fullText, originalCrop);
+            resultWin->show();
+            
+            close();
+        } else {
+            if (toolbar) toolbar->setEnabled(true);
+            update();
+            QMessageBox::warning(this, "识别失败", "无法识别选区中的文字：" + err);
+        }
+    };
+    
+    if (config.useLocalOcr) {
+        localOcrManager->ocrImage(originalCrop, config, [=](bool success, const QJsonArray &ocrResults, const QString &err) {
+            if (success) {
+                onOcrFinished(true, ocrResults, "");
+                return;
+            }
+            if (config.fallbackToRemoteOcr) {
+                netClient->ocrImage(originalCrop, config, [=](bool remoteSuccess, const QJsonArray &remoteOcrResults) {
+                    onOcrFinished(remoteSuccess, remoteOcrResults, remoteSuccess ? "" : "云端 OCR 失败");
+                });
+            } else {
+                onOcrFinished(false, QJsonArray(), err);
+            }
+        });
+    } else {
+        netClient->ocrImage(originalCrop, config, [=](bool remoteSuccess, const QJsonArray &remoteOcrResults) {
+            onOcrFinished(remoteSuccess, remoteOcrResults, remoteSuccess ? "" : "云端 OCR 失败");
+        });
+    }
 }
 
 void ScreenshotWindow::copyToClipboard() {

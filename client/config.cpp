@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 #include <QDir>
+#include <QCoreApplication>
 
 void ClientConfig::load() {
     // 保存到用户文档或应用数据目录，确保可写
@@ -11,10 +12,18 @@ void ClientConfig::load() {
     QDir().mkpath(path);
     QFile file(path + "/config.json");
     
-    if (!file.open(QIODevice::ReadOnly)) return;
+    QString defaultPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../server/ocr/PaddleOCR-json_v1.4.1/PaddleOCR-json.exe");
+    
+    if (!file.open(QIODevice::ReadOnly)) {
+        localOcrExecutablePath = defaultPath;
+        return;
+    }
     QByteArray data = file.readAll();
     QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (doc.isNull()) return;
+    if (doc.isNull()) {
+        localOcrExecutablePath = defaultPath;
+        return;
+    }
     QJsonObject obj = doc.object();
     
     serverUrl = obj.value("serverUrl").toString(serverUrl);
@@ -26,7 +35,12 @@ void ClientConfig::load() {
     baiduAppId = obj.value("baiduAppId").toString(baiduAppId);
     baiduSecretKey = obj.value("baiduSecretKey").toString(baiduSecretKey);
     useLocalOcr = obj.value("useLocalOcr").toBool(useLocalOcr);
-    localOcrExecutablePath = obj.value("localOcrExecutablePath").toString(localOcrExecutablePath);
+    
+    localOcrExecutablePath = obj.value("localOcrExecutablePath").toString();
+    if (localOcrExecutablePath.isEmpty()) {
+        localOcrExecutablePath = defaultPath;
+    }
+    
     localOcrTimeoutMs = obj.value("localOcrTimeoutMs").toInt(localOcrTimeoutMs);
     fallbackToRemoteOcr = obj.value("fallbackToRemoteOcr").toBool(fallbackToRemoteOcr);
     hotkey = obj.value("hotkey").toString(hotkey);

@@ -23,6 +23,7 @@ public:
     void setTranslateEnabled(bool enabled);
 signals:
     void translateRequested();
+    void ocrRequested();
     void copyRequested();
     void saveRequested();
     void pinRequested();
@@ -52,6 +53,7 @@ private:
     void hideToolbar();
     void updateToolbarPosition();
     void triggerTranslation();
+    void triggerOcr();
     void copyToClipboard();
     void saveToFile();
     void pinImage();
@@ -96,6 +98,7 @@ private:
     
     FloatingToolbar *toolbar = nullptr;
     NetworkClient *netClient = nullptr;
+    LocalOcrManager *localOcrManager = nullptr;
     ClientConfig config;
 };
 

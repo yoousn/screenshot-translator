@@ -18,6 +18,7 @@ add_executable(ScreenshotTranslator WIN32
     config.h config.cpp
     networkclient.h networkclient.cpp
     localocrmanager.h localocrmanager.cpp
+    ocrresultwindow.h ocrresultwindow.cpp
     screenshotwindow.h screenshotwindow.cpp
     settingspanel.h settingspanel.cpp
     resource.rc
