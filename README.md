@@ -1,4 +1,4 @@
-# YSN 截图翻译 (SaaS-like Screenshot Translator)
+﻿# YSN 截图翻译 (SaaS-like Screenshot Translator)
 
 这是一个受 **PixPin** 启发的、专为 N100 服务器和 Windows 客户端设计的“极致轻量级”截图翻译系统。
 
@@ -81,28 +81,54 @@ $env:PYTHONPATH="server"; .venv/Scripts/python -m pytest
 
 ## 🖥️ N100 服务器运维与部署自动化 (SSH & SCP Guide for Agents)
 
-为了让未来的 AI 助手或维护者无需任何外部提示即可瞬间连接服务器并完成部署，以下是 N100 服务器的详细运维资料：
+为了让未来的 AI 助手或维护者无需任何外部提示即可瞬间连接服务器并完成部署，以下是 N100 服务器的详细运维资料。
+
+> **⚠️ 给所有 AI 助手的重要说明（必读）**
+>
+> - 用户**不会自己去服务器上敲命令**。每次修改 `server/` 下的代码后，AI 必须**主动执行**下方 A/B/C 步骤完成自动部署，不要问用户要不要自己去敲。
+> - SSH 密钥已存在 `C:\Users\ysn\.ssh\n100_key`（PowerShell 中写 `"$env:USERPROFILE\.ssh\n100_key"` 即可），**密钥登录，无需密码**。密码登录已禁用，不要尝试用密码连接。
+> - 部署完成后将 `uvicorn.log` 的 tail 输出反馈给用户，出现 `Application startup complete.` 说明成功。
 
 ### 1. 连接凭证清单 (Credentials)
-* **SSH 密钥**：本地路径为 `~/.ssh/n100_key` (Windows 主机下为 `C:\Users\Administrator\.ssh\n100_key`)
-* **连接命令**：可以通过本地 SSH 别名 `ssh n100` 或执行直连命令：
-  * **公网 SSH（穿透）**：`ssh -i ~/.ssh/n100_key -p 56001 ysn@47.76.135.185`
-  * **内网 SSH**：`ssh -i ~/.ssh/n100_key -p 22 ysn@192.168.1.3`
-* **服务端项目目录**：`/vol1/1000/项目/自制截图/server`
-* **服务端端口**：`8318`
+
+| 项目 | 值 |
+|------|-----|
+| SSH 用户名 | `ysn` |
+| SSH 密钥路径（本地） | `C:\Users\ysn\.ssh\n100_key` |
+| 公网 IP | `47.76.135.185` |
+| 公网 SSH 端口 | `56001` |
+| 内网 IP | `192.168.1.3` |
+| 内网 SSH 端口 | `22` |
+| 服务端项目目录 | `/vol1/1000/项目/自制截图/server` |
+| 服务端 API 端口 | `8318` |
+| 服务日志 | `/vol1/1000/项目/自制截图/server/uvicorn.log` |
 
 ### 2. 自动化代码同步与重启服务 (Deploy Commands)
-当更新了 `server/` 文件夹的代码（如 `image_processor.py`、`app.py`）后，在**本地控制台**依次执行以下 PowerShell 命令即可实现“一键同步与热重载”：
+
+当更新了 `server/` 文件夹的代码后，依次执行以下 PowerShell 命令：
 
 ```powershell
-# A. 上传最新代码文件到 N100
-scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/image_processor.py ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/image_processor.py
-scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/app.py ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/app.py
+# A. 上传最新代码文件到 N100（按需上传改动的文件）
+scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/image_processor.py "ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/image_processor.py"
+scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/app.py "ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/app.py"
+scp -i "$env:USERPROFILE\.ssh\n100_key" -P 56001 -o StrictHostKeyChecking=no server/translator.py "ysn@47.76.135.185:/vol1/1000/项目/自制截图/server/translator.py"
 
-# B. 强杀 8318 端口旧进程，等待 3 秒释放 socket 后，后台静默启动新版服务
+# B. 强杀 8318 端口旧进程，等待 3 秒后后台启动新版服务
 ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "fuser -k 8318/tcp; sleep 3; cd /vol1/1000/项目/自制截图/server && nohup .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8318 > uvicorn.log 2>&1 &"
 
-# C. 验证服务是否成功启动并监听
-ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "tail -n 20 /vol1/1000/项目/自制截图/server/uvicorn.log"
+# C. 验证服务是否成功启动（看到 Application startup complete. 说明成功）
+ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "tail -n 25 /vol1/1000/项目/自制截图/server/uvicorn.log"
 ```
 
+### 3. 其他常用远程命令
+
+```powershell
+# 查看服务实时日志
+ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "tail -f /vol1/1000/项目/自制截图/server/uvicorn.log"
+
+# 检查 8318 端口是否在监听
+ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "ss -tlnp | grep 8318"
+
+# 安装新 Python 包到虚拟环境
+ssh -i "$env:USERPROFILE\.ssh\n100_key" -p 56001 -o StrictHostKeyChecking=no ysn@47.76.135.185 "cd /vol1/1000/项目/自制截图/server && .venv/bin/pip install <包名>"
+```
