@@ -1,125 +1,129 @@
 import React, { useEffect, useRef, useState } from "react";
-import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
+
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 4;
+const SCALE_STEP = 0.1;
 
 export default function PinPage() {
-  const [imgSrc, setImgSrc] = useState<string>("");
-  const [scale, setScale] = useState(1);
-  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [src, setSrc] = useState("");
+  const [hovered, setHovered] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const imageBase64Ref = useRef("");
+  const naturalSizeRef = useRef({ width: 1, height: 1 });
+  const scaleRef = useRef(1);
   const winRef = useRef(getCurrentWindow());
 
-  useEffect(() => {
-    // Make background transparent
-    document.body.style.setProperty("background-color", "transparent", "important");
-    document.documentElement.style.setProperty("background-color", "transparent", "important");
+  const resizeWindow = async (scale: number) => {
+    const width = Math.max(1, Math.round(naturalSizeRef.current.width * scale));
+    const height = Math.max(1, Math.round(naturalSizeRef.current.height * scale));
+    await winRef.current.setSize(new PhysicalSize(width, height));
+  };
 
-    const handleImageData = (base64: string) => {
-      const dataUrl = "data:image/png;base64," + base64;
-      setImgSrc(dataUrl);
+  const setImage = (base64: string) => {
+    imageBase64Ref.current = base64;
+    const dataUrl = `data:image/png;base64,${base64}`;
+    const image = new Image();
 
-      // Auto-size window to image dimensions in physical pixels
-      const img = new Image();
-      img.onload = async () => {
-        try {
-          imgRef.current = img;
-          const factor = await winRef.current.scaleFactor();
-          const screenW = window.screen.width * factor;
-          const screenH = window.screen.height * factor;
-          const maxW = Math.min(img.naturalWidth, screenW * 0.8);
-          const maxH = Math.min(img.naturalHeight, screenH * 0.8);
-          const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
-          setScale(ratio);
-          
-          await winRef.current.setSize(
-            new PhysicalSize(
-              Math.round(img.naturalWidth * ratio),
-              Math.round(img.naturalHeight * ratio)
-            )
-          );
-        } catch (e) {
-          console.error("Failed to size pin window:", e);
-        }
+    image.onload = async () => {
+      naturalSizeRef.current = {
+        width: image.naturalWidth,
+        height: image.naturalHeight,
       };
-      img.src = dataUrl;
+      scaleRef.current = 1;
+      setSrc(dataUrl);
+      await resizeWindow(1);
+      await winRef.current.show();
+      await winRef.current.setAlwaysOnTop(true);
+      await winRef.current.setFocus();
     };
 
-    // 1. Instantly pull image data from Rust using the window label (defeats races!)
-    const loadCachedData = async () => {
-      try {
-        const base64 = await invoke<string>("get_pin_image", { label: winRef.current.label });
-        handleImageData(base64);
-      } catch (err) {
-        console.warn("Direct cache pull failed, waiting for event fallback:", err);
-      }
-    };
-    loadCachedData();
+    image.src = dataUrl;
+  };
 
-    // 2. Listen for pin image data from Rust as a concurrent fallback
-    let unlistenData: (() => void) | null = null;
-    const setupListener = async () => {
-      try {
-        const unsub = await listen<string>("pin-image-data", (event) => {
-          handleImageData(event.payload);
-        });
-        unlistenData = unsub;
-      } catch (err) {
-        console.error("Failed to listen pin-image-data", err);
-      }
-    };
-    setupListener();
+  const scaleBy = (delta: number) => {
+    const nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scaleRef.current + delta));
+    if (Math.abs(nextScale - scaleRef.current) < 0.001) return;
+    scaleRef.current = nextScale;
+    resizeWindow(nextScale).catch(() => {});
+  };
 
-    // Keyboard listener: Esc to close, + to zoom in, - to zoom out
-    const handleCopy = async () => {
-      if (!imgSrc) return;
-      try {
-        const base64 = imgSrc.replace(/^data:image\/[a-z]+;base64,/, "");
-        await invoke("copy_image_to_clipboard", { imageBase64: base64 });
-      } catch (err) {
-        console.error("Copy failed:", err);
+  const copyImage = () => {
+    if (!imageBase64Ref.current) return;
+    invoke("copy_image_to_clipboard", { imageBase64: imageBase64Ref.current }).catch(() => {});
+  };
+
+  const closeWindow = () => {
+    winRef.current.close().catch(() => {});
+  };
+
+  useEffect(() => {
+    const win = winRef.current;
+
+    document.body.style.margin = "0";
+    document.body.style.overflow = "hidden";
+    document.body.style.background = "transparent";
+    document.documentElement.style.background = "transparent";
+
+    invoke<string>("get_pin_image", { label: win.label }).then(setImage).catch(() => {});
+
+    let unlisten: (() => void) | null = null;
+    listen<string>("pin-image-data", (event) => setImage(event.payload))
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      scaleBy(event.deltaY < 0 ? SCALE_STEP : -SCALE_STEP);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeWindow();
+        return;
+      }
+
+      if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        scaleBy(SCALE_STEP);
+        return;
+      }
+
+      if (event.key === "-") {
+        event.preventDefault();
+        scaleBy(-SCALE_STEP);
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key === "0") {
+        event.preventDefault();
+        scaleRef.current = 1;
+        resizeWindow(1).catch(() => {});
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && (event.key === "c" || event.key === "C")) {
+        event.preventDefault();
+        copyImage();
       }
     };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        winRef.current.close();
-      }
-      if (e.key === "+" || e.key === "=") {
-        setScale((s) => Math.min(s + 0.1, 3));
-      }
-      if (e.key === "-") {
-        setScale((s) => Math.max(s - 0.1, 0.3));
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
-        e.preventDefault();
-        handleCopy();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
+    const onDoubleClick = () => closeWindow();
 
-    // Wheel zoom
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      setScale((s) => {
-        const newScale = e.deltaY < 0 ? s + 0.1 : s - 0.1;
-        return Math.max(0.3, Math.min(3, newScale));
-      });
-    };
-    window.addEventListener("wheel", handleWheel, { passive: false });
-
-    // Double-click to close
-    const handleDblClick = () => {
-      winRef.current.close();
-    };
-    window.addEventListener("dblclick", handleDblClick);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("dblclick", onDoubleClick);
 
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("wheel", handleWheel);
-      window.removeEventListener("dblclick", handleDblClick);
-      if (unlistenData) unlistenData();
-      // Clean up cache to prevent memory leak
-      invoke("delete_pin_image", { label: winRef.current.label }).catch(() => {});
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("dblclick", onDoubleClick);
+      if (unlisten) unlisten();
+      invoke("delete_pin_image", { label: win.label }).catch(() => {});
     };
   }, []);
 
@@ -128,53 +132,81 @@ export default function PinPage() {
       style={{
         width: "100vw",
         height: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
+        background: "transparent",
         overflow: "hidden",
         cursor: "move",
-        background: "transparent",
+        boxSizing: "border-box",
+        border: hovered ? "1px solid rgba(0, 0, 0, 0.25)" : "1px solid transparent",
       }}
-      onMouseDown={async () => {
-        // Tauri v2: start dragging the window on mouse down
-        try {
-          await winRef.current.startDragging();
-        } catch (e) {
-          // Silently ignore if dragging not supported
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setMenu(null);
+      }}
+      onMouseDown={(event) => {
+        if (event.button === 0) {
+          setMenu(null);
+          winRef.current.startDragging().catch(() => {});
         }
       }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        winRef.current.close();
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setHovered(true);
+        setMenu({ x: event.clientX, y: event.clientY });
       }}
     >
-      {imgSrc ? (
+      {src && (
         <img
-          src={imgSrc}
-          alt="钉图"
-          style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
-            transform: `scale(${scale})`,
-            transition: "transform 0.15s ease",
-            pointerEvents: "none",
-            userSelect: "none",
-            borderRadius: 4,
-            boxShadow: "0 2px 16px rgba(0,0,0,0.15)",
-          }}
+          src={src}
+          alt="pin"
           draggable={false}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "fill",
+            display: "block",
+            userSelect: "none",
+            pointerEvents: "none",
+          }}
         />
-      ) : (
+      )}
+
+      {hovered && (
         <div
           style={{
-            color: "#fff",
-            background: "rgba(0,0,0,0.5)",
-            padding: "12px 20px",
-            borderRadius: 8,
-            fontSize: 13,
+            position: "fixed",
+            top: 6,
+            right: 6,
+            display: "flex",
+            gap: 6,
+            zIndex: 10,
+            pointerEvents: "auto",
           }}
         >
-          等待钉图数据...
+          <button type="button" title="Copy" onMouseDown={(event) => event.stopPropagation()} onClick={copyImage} style={{ width: 24, height: 24, borderRadius: "50%", border: "1px solid rgba(0,0,0,0.16)", background: "rgba(255,255,255,0.9)", cursor: "pointer", lineHeight: "20px", padding: 0 }}>⧉</button>
+          <button type="button" title="Close" onMouseDown={(event) => event.stopPropagation()} onClick={closeWindow} style={{ width: 24, height: 24, borderRadius: "50%", border: "1px solid rgba(0,0,0,0.16)", background: "rgba(255,255,255,0.9)", cursor: "pointer", lineHeight: "20px", padding: 0 }}>×</button>
+        </div>
+      )}
+
+      {menu && (
+        <div
+          style={{
+            position: "fixed",
+            left: menu.x,
+            top: menu.y,
+            minWidth: 108,
+            background: "#fff",
+            border: "1px solid rgba(0,0,0,0.12)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.16)",
+            borderRadius: 6,
+            overflow: "hidden",
+            zIndex: 20,
+            fontSize: 13,
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div style={{ padding: "7px 12px", cursor: "pointer", whiteSpace: "nowrap" }} onClick={() => { copyImage(); setMenu(null); }}>Copy</div>
+          <div style={{ padding: "7px 12px", cursor: "pointer", whiteSpace: "nowrap" }} onClick={closeWindow}>Close</div>
         </div>
       )}
     </div>
