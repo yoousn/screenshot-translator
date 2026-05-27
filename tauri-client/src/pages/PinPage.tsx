@@ -80,6 +80,10 @@ export default function PinPage() {
       if (e.key === "-") {
         setScale((s) => Math.max(s - 0.1, 0.3));
       }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        handleCopy();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
 
@@ -137,7 +141,7 @@ export default function PinPage() {
       {imgSrc ? (
         <img
           src={imgSrc}
-          alt="贴图"
+          alt="钉图"
           style={{
             maxWidth: "100%",
             maxHeight: "100%",
@@ -160,7 +164,7 @@ export default function PinPage() {
             fontSize: 13,
           }}
         >
-          等待贴图数据...
+          等待钉图数据...
         </div>
       )}
     </div>

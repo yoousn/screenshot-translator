@@ -24,7 +24,7 @@ fn get_pin_image(label: String) -> Result<String, String> {
     let map = get_pin_images().lock().map_err(|e| e.to_string())?;
     map.get(&label)
         .cloned()
-        .ok_or_else(|| "未找到贴图数据".to_string())
+        .ok_or_else(|| "未找到钉图数据".to_string())
 }
 
 #[tauri::command]
@@ -292,7 +292,7 @@ fn create_pin_window(
         &label,
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("YSN 贴图")
+    .title("YSN 钉图")
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
@@ -300,7 +300,7 @@ fn create_pin_window(
     .transparent(true)
     .shadow(false)
     .build()
-    .map_err(|e| format!("创建贴图窗口失败: {}", e))?;
+    .map_err(|e| format!("创建钉图窗口失败: {}", e))?;
 
     // Set position and size in physical pixels
     let _ = webview.set_position(tauri::PhysicalPosition::new(x, y));
@@ -610,18 +610,29 @@ pub fn run() {
                             }
                         }
                         "exit" => {
-                            app.exit(0);
+                            std::process::exit(0);
                         }
                         _ => {}
                     }
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
-                        let app = tray.app_handle();
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
+                    match event {
+                        tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } => {
+                            let app = tray.app_handle();
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
                         }
+                        tauri::tray::TrayIconEvent::DoubleClick { button: tauri::tray::MouseButton::Left, .. } => {
+                            let app = tray.app_handle().clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = start_screenshot(app, None) {
+                                    eprintln!("Failed to start screenshot: {}", e);
+                                }
+                            });
+                        }
+                        _ => {}
                     }
                 })
                 .build(app)?;

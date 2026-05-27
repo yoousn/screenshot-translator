@@ -127,7 +127,19 @@ export default function ScreenshotPage() {
       if (e.key === "Enter" && hasSelectedRef.current) {
         confirmScreenshot("copy");
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "q") {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+        if (hasSelectedRef.current) {
+          e.preventDefault();
+          confirmScreenshot("copy");
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        if (hasSelectedRef.current) {
+          e.preventDefault();
+          confirmScreenshot("save");
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "q" || e.key === "Q")) {
         e.preventDefault();
         if (hasSelectedRef.current) {
           handleTranslate();
@@ -644,10 +656,10 @@ export default function ScreenshotPage() {
         w: physicalW,
         h: physicalH
       });
-      message.success("已创建贴图窗口");
+      message.success("已创建钉图窗口");
       await invoke("cancel_screenshot");
     } catch (e: any) {
-      message.error("贴图失败: " + e.toString());
+      message.error("钉图失败: " + e.toString());
     }
   };
 
@@ -804,7 +816,7 @@ export default function ScreenshotPage() {
             <Button size="small" icon={<TranslationOutlined />} type="primary" ghost
               onClick={handleTranslate} loading={isTranslating}
             >翻译 (Ctrl+Q)</Button>
-            <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>贴图</Button>
+            <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图</Button>
             <Button size="small" icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing}>识字</Button>
             <Button size="small" icon={<CopyOutlined />} onClick={() => confirmScreenshot("copy")}>复制</Button>
             <Button size="small" icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")}>保存</Button>

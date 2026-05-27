@@ -247,7 +247,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
     },
     {
       title: "固定到屏幕 (Pin)",
-      description: "在截图框选后，点击悬浮工具栏中的「贴图」按钮，将选区作为独立无边框置顶窗口固定。",
+      description: "在截图框选后，点击悬浮工具栏中的「钉图」按钮，将选区作为独立无边框置顶窗口固定。",
       icon: <PushpinOutlined style={{ fontSize: 18, color: "#52c41a" }} />,
       hotkey: "悬浮工具栏",
       disabled: false,
