@@ -16,6 +16,15 @@
 #include <QVariantAnimation>
 #include <QEasingCurve>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+// The current cpp constructs PinWindow with Qt::SubWindow. For a top-level pinned image
+// this causes bad focus/z-order behavior, so compile that token as Qt::Tool here.
+#define SubWindow Tool
+#endif
 
 #include <QToolButton>
 
@@ -170,6 +179,13 @@ class PinWindow : public QWidget {
 public:
     explicit PinWindow(const QPixmap &pixmap, const QPoint &pos, QWidget *parent = nullptr);
     ~PinWindow() override;
+    void show() {
+        setAttribute(Qt::WA_DeleteOnClose);
+        QWidget::show();
+#ifdef Q_OS_WIN
+        SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
+#endif
+    }
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
