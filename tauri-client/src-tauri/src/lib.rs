@@ -184,6 +184,7 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
         let _ = main_win.hide();
     }
     hide_pin_windows(&app);
+    std::thread::sleep(std::time::Duration::from_millis(120));
 
     let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
     if screens.is_empty() { return Err("未检测到显示器".to_string()); }
@@ -220,6 +221,7 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
         let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
         let _ = screenshot_win.emit("screenshot-updated", ());
     } else {
+        show_pin_windows(&app);
         return Err("未获取到名为 screenshot 的窗口句柄".to_string());
     }
     Ok(())
@@ -253,6 +255,12 @@ fn create_pin_window(app: tauri::AppHandle, image_base64: String, x: i32, y: i32
 
     use tauri::Emitter;
     let _ = webview.emit("pin-image-data", &image_base64);
+    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+        let _ = screenshot_win.set_always_on_top(false);
+        let _ = screenshot_win.set_fullscreen(false);
+        let _ = screenshot_win.hide();
+    }
+    show_pin_windows(&app);
     Ok(label)
 }
 
@@ -318,12 +326,16 @@ fn get_window_rects() -> Result<String, String> {
 
 #[tauri::command]
 fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let _ = screenshot_win.set_always_on_top(false);
-        let _ = screenshot_win.set_fullscreen(false);
-        let _ = screenshot_win.hide();
-    }
-    show_pin_windows(&app);
+    let app_for_hide = app.clone();
+    tauri::async_runtime::spawn(async move {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if let Some(screenshot_win) = app_for_hide.get_webview_window("screenshot") {
+            let _ = screenshot_win.set_always_on_top(false);
+            let _ = screenshot_win.set_fullscreen(false);
+            let _ = screenshot_win.hide();
+        }
+        show_pin_windows(&app_for_hide);
+    });
     Ok(())
 }
 
