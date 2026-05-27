@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import requests
 import cv2
 import numpy as np
@@ -95,32 +96,36 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
 @app.post("/api/ocr")
-def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
-    verify_token(x_api_key)
-    img_bytes = image.file.read()
-    
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    
-    if img_cv is None:
-        raise HTTPException(status_code=400, detail="Invalid image data")
-        
-    processor._ensure_ocr()
-    ocr_result = processor.ocr.ocr(img_cv, cls=True)
-    
-    results = []
-    if ocr_result and ocr_result[0]:
-        for line in ocr_result[0]:
-            box = line[0] # [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-            text = line[1][0]
-            confidence = float(line[1][1])
-            results.append({
-                "box": box,
-                "text": text,
-                "confidence": confidence
-            })
-            
-    return {"status": "success", "ocr": results}
+async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
+    try:
+        verify_token(x_api_key)
+        img_bytes = await image.read()
+
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_cv is None:
+            return JSONResponse(status_code=400, content={"status": "failed", "error": "图片解码失败"})
+
+        processor._ensure_ocr()
+        ocr_result = processor.ocr.ocr(img_cv, cls=True)
+
+        results = []
+        if ocr_result and ocr_result[0]:
+            for line in ocr_result[0]:
+                box = line[0]
+                text = line[1][0]
+                confidence = float(line[1][1])
+                results.append({
+                    "box": box,
+                    "text": text,
+                    "confidence": confidence
+                })
+
+        return {"status": "success", "ocr": results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "failed", "error": f"OCR 处理失败: {str(e)}"})
 
 @app.post("/api/config/test")
 def test_and_save_config(payload: dict, x_api_key: str = Header(None)):

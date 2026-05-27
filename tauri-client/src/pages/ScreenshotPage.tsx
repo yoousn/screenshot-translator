@@ -1,15 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Button, Space, message } from "antd";
+import { Button, Space, message, Input } from "antd";
 import {
   CopyOutlined,
   SaveOutlined,
   CloseOutlined,
   CheckOutlined,
   TranslationOutlined,
-  PushpinOutlined,
   ScanOutlined,
 } from "@ant-design/icons";
 
@@ -21,6 +19,19 @@ interface Config {
 type Rect = { x: number; y: number; w: number; h: number };
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
+
+const makeImageFormData = (base64: string) => {
+  const byteCharacters = atob(base64);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  const blob = new Blob([byteArray], { type: "image/png" });
+  const formData = new FormData();
+  formData.append("image", blob, "screenshot.png");
+  return formData;
+};
 
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -34,6 +45,8 @@ export default function ScreenshotPage() {
   const [isOCRing, setIsOCRing] = useState(false);
   const [config, setConfig] = useState<Config>({});
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
+  const [ocrResultText, setOcrResultText] = useState<string | null>(null);
+  const [ocrPreviewBase64, setOcrPreviewBase64] = useState<string | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
 
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -74,18 +87,12 @@ export default function ScreenshotPage() {
   const waitForStableViewport = async (img: HTMLImageElement) => {
     let lastW = 0;
     let lastH = 0;
-    let stableCount = 0;
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 3; i++) {
       await nextFrame();
       const w = window.innerWidth;
       const h = window.innerHeight;
-      const largeEnough = w >= Math.min(img.naturalWidth, screen.width) * 0.75 && h >= Math.min(img.naturalHeight, screen.height) * 0.75;
-      if (w === lastW && h === lastH && largeEnough) {
-        stableCount += 1;
-        if (stableCount >= 2) return;
-      } else {
-        stableCount = 0;
-      }
+      const largeEnough = w >= Math.min(img.naturalWidth, screen.width) * 0.6 && h >= Math.min(img.naturalHeight, screen.height) * 0.6;
+      if (w === lastW && h === lastH && largeEnough) return;
       lastW = w;
       lastH = h;
     }
@@ -107,7 +114,6 @@ export default function ScreenshotPage() {
     document.body.style.setProperty("background", "transparent", "important");
     document.documentElement.style.setProperty("background", "transparent", "important");
     loadWindowRects();
-    loadFullscreen();
 
     let unlistenMode: (() => void) | null = null;
     let unlistenEvent: (() => void) | null = null;
@@ -116,7 +122,14 @@ export default function ScreenshotPage() {
       .then((unsub) => { unlistenMode = unsub; })
       .catch(() => {});
 
-    listen("screenshot-updated", () => loadFullscreen())
+    listen("screenshot-updated", (event) => {
+      const base64 = event.payload as string;
+      if (base64) {
+        loadFullscreenFromBase64(base64);
+      } else {
+        loadFullscreen();
+      }
+    })
       .then((unsub) => { unlistenEvent = unsub; })
       .catch(() => {});
 
@@ -176,6 +189,8 @@ export default function ScreenshotPage() {
       imageRef.current = null;
       translatedImgRef.current = null;
       setTranslatedResult(null);
+      setOcrResultText(null);
+      setOcrPreviewBase64(null);
       setCurrentRect(EMPTY_RECT, true);
       setSelection(false);
       loadWindowRects();
@@ -183,21 +198,44 @@ export default function ScreenshotPage() {
 
       const base64 = await invoke<string>("get_fullscreen_image");
       if (!base64) throw new Error("截屏Base64数据为空");
-      const dataUrl = "data:image/jpeg;base64," + base64;
-      const img = new Image();
-      img.onload = async () => {
-        imageRef.current = img;
-        setDbgStatus({ imageLoaded: true, imageWidth: img.naturalWidth, imageHeight: img.naturalHeight, screenshotBytes: Math.round(base64.length * 0.75), errorMsg: "" });
-        await waitForStableViewport(img);
-        initCanvas(img);
-      };
-      img.onerror = () => setDbgStatus((prev) => ({ ...prev, errorMsg: "HTML Image 元素解码 Base64 截图字节流失败", imageLoaded: false }));
-      img.src = dataUrl;
+      loadImageFromBase64(base64);
     } catch (err: any) {
       const msg = err?.message || err?.toString?.() || String(err);
       setDbgStatus((prev) => ({ ...prev, errorMsg: msg, imageLoaded: false }));
       message.error("加载截屏图像失败: " + msg);
     }
+  };
+
+  const loadFullscreenFromBase64 = (base64: string) => {
+    try {
+      imageRef.current = null;
+      translatedImgRef.current = null;
+      setTranslatedResult(null);
+      setOcrResultText(null);
+      setOcrPreviewBase64(null);
+      setCurrentRect(EMPTY_RECT, true);
+      setSelection(false);
+      loadWindowRects();
+      setDbgStatus((prev) => ({ ...prev, errorMsg: "", imageLoaded: false }));
+      loadImageFromBase64(base64);
+    } catch (err: any) {
+      const msg = err?.message || err?.toString?.() || String(err);
+      setDbgStatus((prev) => ({ ...prev, errorMsg: msg, imageLoaded: false }));
+      message.error("加载截屏图像失败: " + msg);
+    }
+  };
+
+  const loadImageFromBase64 = (base64: string) => {
+    const dataUrl = "data:image/jpeg;base64," + base64;
+    const img = new Image();
+    img.onload = async () => {
+      imageRef.current = img;
+      setDbgStatus({ imageLoaded: true, imageWidth: img.naturalWidth, imageHeight: img.naturalHeight, screenshotBytes: Math.round(base64.length * 0.75), errorMsg: "" });
+      await waitForStableViewport(img);
+      initCanvas(img);
+    };
+    img.onerror = () => setDbgStatus((prev) => ({ ...prev, errorMsg: "HTML Image 元素解码 Base64 截图字节流失败", imageLoaded: false }));
+    img.src = dataUrl;
   };
 
   const initCanvas = (img: HTMLImageElement) => {
@@ -274,6 +312,8 @@ export default function ScreenshotPage() {
         setSelection(false);
         setTranslatedResult(null);
         translatedImgRef.current = null;
+        setOcrResultText(null);
+        setOcrPreviewBase64(null);
         renderNeededRef.current = true;
       } else {
         cancelScreenshot();
@@ -470,17 +510,6 @@ export default function ScreenshotPage() {
     return await invoke<string>("capture_region", { x, y, w, h });
   };
 
-  const makeImageFormData = (base64: string) => {
-    const byteChars = atob(base64);
-    const byteNums = new Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
-    const byteArr = new Uint8Array(byteNums);
-    const blob = new Blob([byteArr], { type: "image/png" });
-    const fd = new FormData();
-    fd.append("image", blob, "region.png");
-    return fd;
-  };
-
   const handleTranslate = async () => {
     const serverUrl = configRef.current.serverUrl || "https://ocr.yousn.me";
     const token = configRef.current.clientToken || "";
@@ -488,70 +517,98 @@ export default function ScreenshotPage() {
       setIsTranslating(true);
       message.loading({ content: "正在请求翻译重绘...", key: "translate", duration: 0 });
       const base64 = await captureRegionBase64();
-      const resp = await fetch(`${serverUrl.replace(/\/$/, "")}/api/translate`, { method: "POST", headers: { "x-api-key": token }, body: makeImageFormData(base64) });
-      if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
-      const resultBlob = await resp.blob();
-      const resultUrl = URL.createObjectURL(resultBlob);
+      const resultBase64 = await invoke<string>("api_translate", { base64Image: base64, serverUrl, clientToken: token });
+      const dataUrl = "data:image/png;base64," + resultBase64;
       const overlayImg = new Image();
       overlayImg.onload = () => {
         translatedImgRef.current = overlayImg;
         draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          setTranslatedResult((reader.result as string).split(",")[1]);
-          message.success({ content: "翻译完成！", key: "translate" });
-          renderNeededRef.current = true;
-        };
-        reader.readAsDataURL(resultBlob);
+        setTranslatedResult(resultBase64);
+        message.success({ content: "翻译完成！", key: "translate" });
+        renderNeededRef.current = true;
         setIsTranslating(false);
       };
       overlayImg.onerror = () => { throw new Error("翻译结果图片解码失败"); };
-      overlayImg.src = resultUrl;
+      overlayImg.src = dataUrl;
     } catch (e: any) {
       message.error({ content: `翻译失败: ${e.message || e}`, key: "translate" });
       setIsTranslating(false);
     }
   };
 
+  const parseOCRHttpError = async (resp: Response) => {
+    const contentType = resp.headers.get("content-type") || "";
+    const raw = await resp.text().catch(() => "");
+
+    if (contentType.includes("application/json")) {
+      try {
+        const json = JSON.parse(raw);
+        return json.detail || json.error || json.message || `服务器返回 HTTP ${resp.status}`;
+      } catch {
+        return `服务器返回 HTTP ${resp.status}`;
+      }
+    }
+
+    const text = raw
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (resp.status === 502) return text ? `OCR 服务网关异常：${text}` : "OCR 服务网关异常：502 Bad Gateway";
+    if (text) return `OCR 服务异常：${text}`;
+    return `OCR 服务异常：HTTP ${resp.status}`;
+  };
+
   const handleOCR = async () => {
     const serverUrl = configRef.current.serverUrl || "https://ocr.yousn.me";
     const token = configRef.current.clientToken || "";
+
     try {
       setIsOCRing(true);
       message.loading({ content: "正在识别文字...", key: "ocr", duration: 0 });
+
       const base64 = await captureRegionBase64();
-      const resp = await fetch(`${serverUrl.replace(/\/$/, "")}/api/ocr`, { method: "POST", headers: { "x-api-key": token }, body: makeImageFormData(base64) });
-      if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
-      const data = await resp.json();
-      if (data.status === "success" && data.ocr && data.ocr.length > 0) {
-        const texts = data.ocr.map((item: any) => item.text).join("\n");
-        await navigator.clipboard.writeText(texts);
-        message.success({ content: `识别到 ${data.ocr.length} 条文本，已复制到剪贴板`, key: "ocr" });
+      const resp = await fetch(`${serverUrl.replace(/\/$/, "")}/api/ocr`, {
+        method: "POST",
+        headers: { "x-api-key": token },
+        body: makeImageFormData(base64),
+      });
+
+      if (!resp.ok) {
+        throw new Error(await parseOCRHttpError(resp));
+      }
+
+      const data = await resp.json().catch(() => null);
+      if (!data) throw new Error("OCR 服务返回内容不是有效 JSON");
+      if (data.status !== "success") throw new Error(data.error || data.detail || "OCR 服务返回失败状态");
+
+      const items = Array.isArray(data.ocr) ? data.ocr : [];
+      if (items.length > 0) {
+        const texts = items.map((item: any) => item.text).filter(Boolean).join("\n");
+        setOcrResultText(texts);
+        setOcrPreviewBase64(base64);
+        message.success({ content: `识别到 ${items.length} 条文本，可编辑后复制`, key: "ocr" });
       } else {
-        message.info({ content: "未识别到任何文字", key: "ocr" });
+        setOcrResultText("");
+        setOcrPreviewBase64(base64);
+        message.info({ content: "未识别到文字，可手动输入后复制", key: "ocr" });
       }
     } catch (e: any) {
-      message.error({ content: `OCR 失败: ${e.message || e}`, key: "ocr" });
+      const msg = e?.message || e?.toString?.() || String(e);
+      message.error({ content: `OCR 失败：${msg}`, key: "ocr", duration: 5 });
     } finally {
       setIsOCRing(false);
     }
   };
 
-  const handlePin = () => {
+  const copyOCRText = async () => {
     try {
-      const cropped = translatedResult ? null : cropSelectionFromLoadedImage();
-      const imageBase64 = translatedResult || cropped!.base64;
-      const pos = cropped ? { x: cropped.x, y: cropped.y, w: cropped.w, h: cropped.h } : getPhysicalSelection();
-      getCurrentWindow().outerPosition().then((winPos) => {
-        const payload = { imageBase64, x: winPos.x + pos.x, y: winPos.y + pos.y, w: pos.w, h: pos.h };
-        invoke("create_pin_window", payload).catch((e) => {
-          message.error("钉图失败: " + e);
-        });
-      }).catch((e) => {
-        message.error("获取窗口位置失败: " + e);
-      });
+      await navigator.clipboard.writeText(ocrResultText || "");
+      message.success({ content: "OCR 文本已复制到剪贴板", key: "ocr-copy" });
     } catch (e: any) {
-      message.error("钉图失败: " + (e.message || e.toString()));
+      message.error({ content: `复制失败：${e?.message || e}`, key: "ocr-copy" });
     }
   };
 
@@ -602,12 +659,66 @@ export default function ScreenshotPage() {
         <div style={{ position: "absolute", top: rect.y + rect.h + 8 + 36 > window.innerHeight ? rect.y - 44 : rect.y + rect.h + 8, left: Math.max(8, Math.min(rect.x + rect.w - 480, window.innerWidth - 496)), zIndex: 100, background: "#fff", padding: "6px 10px", borderRadius: 8, boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)", border: "1px solid #e8e8e8" }} onContextMenu={(e) => e.stopPropagation()}>
           <Space size="small" wrap>
             <Button size="small" icon={<TranslationOutlined />} type="primary" ghost onClick={handleTranslate} loading={isTranslating}>翻译 (Ctrl+Q)</Button>
-            <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图</Button>
             <Button size="small" icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing}>识字</Button>
             <Button size="small" icon={<CopyOutlined />} onClick={() => confirmScreenshot("copy")}>复制</Button>
             <Button size="small" icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")}>保存</Button>
             <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => confirmScreenshot("both")}>完成</Button>
             <Button size="small" icon={<CloseOutlined />} onClick={cancelScreenshot} danger />
+          </Space>
+        </div>
+      )}
+
+      {hasSelected && !isSelecting && ocrResultText !== null && (
+        <div
+          style={{
+            position: "absolute",
+            top: Math.max(8, Math.min(rect.y, window.innerHeight - 360)),
+            left: Math.max(8, Math.min(rect.x + rect.w + 12, window.innerWidth - 420)),
+            width: 400,
+            zIndex: 120,
+            background: "#fff",
+            padding: 12,
+            borderRadius: 10,
+            boxShadow: "0 6px 24px rgba(0, 0, 0, 0.18)",
+            border: "1px solid #e8e8e8",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.stopPropagation()}
+        >
+          <Input.TextArea
+            value={ocrResultText}
+            onChange={(e) => setOcrResultText(e.target.value)}
+            autoSize={{ minRows: 6, maxRows: 10 }}
+            placeholder="OCR 识别结果"
+            style={{ marginBottom: 10 }}
+          />
+
+          {ocrPreviewBase64 && (
+            <div
+              style={{
+                maxHeight: 140,
+                overflow: "hidden",
+                borderRadius: 6,
+                border: "1px solid #f0f0f0",
+                marginBottom: 10,
+                background: "#fafafa",
+                textAlign: "center",
+              }}
+            >
+              <img
+                src={`data:image/png;base64,${ocrPreviewBase64}`}
+                style={{ maxWidth: "100%", maxHeight: 140, objectFit: "contain" }}
+              />
+            </div>
+          )}
+
+          <Space size="small">
+            <Button size="small" type="primary" icon={<CopyOutlined />} onClick={copyOCRText}>
+              复制文本
+            </Button>
+            <Button size="small" icon={<CloseOutlined />} onClick={() => setOcrResultText(null)}>
+              关闭
+            </Button>
           </Space>
         </div>
       )}
