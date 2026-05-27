@@ -306,7 +306,6 @@ fn create_pin_window(app: tauri::AppHandle, image_base64: String, x: i32, y: i32
         let _ = screenshot_win.set_fullscreen(false);
         let _ = screenshot_win.hide();
     }
-    show_pin_windows(&app);
     Ok(label)
 }
 
@@ -376,8 +375,6 @@ async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
         let _ = screenshot_win.set_fullscreen(false);
         let _ = screenshot_win.hide();
     }
-    show_pin_windows(&app);
-    cleanup_temp_files();
     Ok(())
 }
 

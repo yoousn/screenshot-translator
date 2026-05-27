@@ -544,13 +544,13 @@ export default function ScreenshotPage() {
       const pos = cropped ? { x: cropped.x, y: cropped.y, w: cropped.w, h: cropped.h } : getPhysicalSelection();
       getCurrentWindow().outerPosition().then((winPos) => {
         const payload = { imageBase64, x: winPos.x + pos.x, y: winPos.y + pos.y, w: pos.w, h: pos.h };
-        invoke("cancel_screenshot").catch(() => {});
-        window.setTimeout(() => invoke("create_pin_window", payload).catch(() => {}), 100);
-      }).catch(() => {
-        invoke("cancel_screenshot").catch(() => {});
+        invoke("create_pin_window", payload).catch((e) => {
+          message.error("钉图失败: " + e);
+        });
+      }).catch((e) => {
+        message.error("获取窗口位置失败: " + e);
       });
     } catch (e: any) {
-      invoke("cancel_screenshot").catch(() => {});
       message.error("钉图失败: " + (e.message || e.toString()));
     }
   };
