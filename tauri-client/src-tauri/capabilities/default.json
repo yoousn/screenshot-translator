@@ -11,7 +11,7 @@
     "core:default",
     "opener:default",
     "global-shortcut:default",
-    "core:window:default",
-    "core:event:default"
+    "core:window:all",
+    "core:event:all"
   ]
 }

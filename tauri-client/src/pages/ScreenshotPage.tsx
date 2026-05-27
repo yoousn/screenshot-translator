@@ -20,6 +20,7 @@ interface Config {
 
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mouseTrackerRef = useRef<HTMLDivElement>(null);
   const [imgSrc, setImgSrc] = useState<string>("");
   const [isSelecting, setIsSelecting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -28,7 +29,6 @@ export default function ScreenshotPage() {
   const [rect, setRect] = useState({ x: 0, y: 0, w: 0, h: 0 });
   const [hasSelected, setHasSelected] = useState(false);
   const [windowRects, setWindowRects] = useState<Array<{ x: number; y: number; w: number; h: number }>>([]);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [screenshotMode, setScreenshotMode] = useState<string>("normal");
   const [isTranslating, setIsTranslating] = useState(false);
   const [isOCRing, setIsOCRing] = useState(false);
@@ -231,24 +231,34 @@ export default function ScreenshotPage() {
     }
     setIsSelecting(true);
     setStartPos({ x: e.clientX, y: e.clientY });
+    rectRef.current = { x: e.clientX, y: e.clientY, w: 0, h: 0 };
     setRect({ x: e.clientX, y: e.clientY, w: 0, h: 0 });
     setHasSelected(false);
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    setMousePos({ x: e.clientX, y: e.clientY });
+    // Update mouse coordinate tracker directly via DOM reference to ensure zero-lag performance
+    if (mouseTrackerRef.current) {
+      mouseTrackerRef.current.style.left = `${e.clientX + 16}px`;
+      mouseTrackerRef.current.style.top = `${e.clientY + 20}px`;
+      mouseTrackerRef.current.textContent = `${e.clientX}, ${e.clientY}${
+        hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""
+      }`;
+    }
+
     if (isDragging) {
       const dx = e.clientX - dragStart.x;
       const dy = e.clientY - dragStart.y;
       setDragStart({ x: e.clientX, y: e.clientY });
-      const newRect = {
+      
+      rectRef.current = {
         x: Math.max(0, rectRef.current.x + dx),
         y: Math.max(0, rectRef.current.y + dy),
         w: rectRef.current.w,
         h: rectRef.current.h,
       };
-      setRect(newRect);
-      draw(newRect.x, newRect.y, newRect.w, newRect.h);
+      
+      draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       return;
     }
     if (!isSelecting) return;
@@ -265,18 +275,25 @@ export default function ScreenshotPage() {
     const y = Math.min(startPos.y, cy);
     const w = Math.abs(startPos.x - cx);
     const h = Math.abs(startPos.y - cy);
-    setRect({ x, y, w, h });
+    
+    rectRef.current = { x, y, w, h };
     draw(x, y, w, h);
   };
 
   const handleMouseUp = () => {
     if (isDragging) {
       setIsDragging(false);
+      // Sync final dragged coordinates to React state to display the toolbar
+      setRect({ ...rectRef.current });
       return;
     }
     if (!isSelecting) return;
     setIsSelecting(false);
-    if (rect.w > 5 && rect.h > 5) {
+    
+    // Sync final selected coordinates to React state to display the toolbar
+    setRect({ ...rectRef.current });
+    
+    if (rectRef.current.w > 5 && rectRef.current.h > 5) {
       setHasSelected(true);
     } else {
       setHasSelected(false);
@@ -399,8 +416,7 @@ export default function ScreenshotPage() {
             message.success({ content: "翻译并贴图完成，已复制到剪贴板！", key: "translate" });
             
             // Auto close/hide screenshot window
-            const win = getCurrentWindow();
-            await win.hide();
+            await invoke("cancel_screenshot");
           } catch (pinErr: any) {
             message.error({ content: `自动贴图或复制失败: ${pinErr.toString()}`, key: "translate" });
           }
@@ -478,17 +494,18 @@ export default function ScreenshotPage() {
         h: physicalH
       });
       message.success("已创建贴图窗口");
-      const win = getCurrentWindow();
-      await win.hide();
+      await invoke("cancel_screenshot");
     } catch (e: any) {
       message.error("贴图失败: " + e.toString());
     }
   };
 
   const cancelScreenshot = async () => {
-    // Prevent re-entry (fixes ESC double-press bug)
-    const win = getCurrentWindow();
-    await win.hide();
+    try {
+      await invoke("cancel_screenshot");
+    } catch (err) {
+      console.error("Failed to cancel screenshot:", err);
+    }
   };
 
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
@@ -520,8 +537,7 @@ export default function ScreenshotPage() {
       }
 
       // Just hide — no popup window, no animation
-      const win = getCurrentWindow();
-      await win.hide();
+      await invoke("cancel_screenshot");
     } catch (e: any) {
       message.error("截图操作失败: " + e.toString());
     }
@@ -542,16 +558,18 @@ export default function ScreenshotPage() {
       }}
     >
       {/* Mouse coordinate tracker */}
-      <div style={{
-        position: "absolute", top: mousePos.y + 20, left: mousePos.x + 16, zIndex: 9999,
-        background: "rgba(0, 0, 0, 0.75)", color: "#fff",
-        padding: "2px 8px", borderRadius: "4px",
-        fontSize: "11px", fontFamily: "Consolas, Monaco, monospace",
-        pointerEvents: "none", whiteSpace: "nowrap",
-        lineHeight: "18px"
-      }}>
-        {mousePos.x}, {mousePos.y}
-        {hasSelected && ` | ${rectRef.current.w}×${rectRef.current.h}`}
+      <div
+        ref={mouseTrackerRef}
+        style={{
+          position: "absolute", top: -100, left: -100, zIndex: 9999,
+          background: "rgba(0, 0, 0, 0.75)", color: "#fff",
+          padding: "2px 8px", borderRadius: "4px",
+          fontSize: "11px", fontFamily: "Consolas, Monaco, monospace",
+          pointerEvents: "none", whiteSpace: "nowrap",
+          lineHeight: "18px"
+        }}
+      >
+        0, 0
       </div>
 
       {/* Load error fallback */}
