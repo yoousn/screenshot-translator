@@ -154,7 +154,7 @@ function AppContent() {
           borderRight: "1px solid #f0f0f0",
           display: "flex",
           flexDirection: "column",
-          justifyContent: "between",
+          justifyContent: "space-between",
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -226,7 +226,7 @@ function AppContent() {
             padding: "0 24px",
             display: "flex",
             alignItems: "center",
-            justifyContent: "between",
+            justifyContent: "space-between",
             borderBottom: "1px solid #f0f0f0",
             lineHeight: "56px",
           }}
