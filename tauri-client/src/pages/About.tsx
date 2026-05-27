@@ -52,7 +52,7 @@ export default function About() {
                 alignItems: "center",
                 justifyContent: "center",
                 color: "#ffffff",
-                fontWeight: "extrabold",
+                fontWeight: 800,
                 fontSize: 20,
                 boxShadow: "0 4px 12px rgba(22, 119, 255, 0.3)",
               }}
@@ -116,7 +116,7 @@ export default function About() {
                 key={index} 
                 style={{ 
                   display: "flex", 
-                  justifyContent: "between", 
+                  justifyContent: "space-between", 
                   alignItems: "center", 
                   padding: "6px 0",
                   borderBottom: index === creditsList.length - 1 ? 0 : "1px solid #f0f0f0"
