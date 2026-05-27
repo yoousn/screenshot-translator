@@ -70,6 +70,16 @@ export default function PinPage() {
     setupListener();
 
     // Keyboard listener: Esc to close, + to zoom in, - to zoom out
+    const handleCopy = async () => {
+      if (!imgSrc) return;
+      try {
+        const base64 = imgSrc.replace(/^data:image\/[a-z]+;base64,/, "");
+        await invoke("copy_image_to_clipboard", { imageBase64: base64 });
+      } catch (err) {
+        console.error("Copy failed:", err);
+      }
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         winRef.current.close();
