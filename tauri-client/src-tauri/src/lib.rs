@@ -8,35 +8,20 @@ use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code, ShortcutState};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use tokio::time::{sleep as tokio_sleep, Duration};
 
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 static IS_SCREENSHOTTING: AtomicBool = AtomicBool::new(false);
 
+static SCREENSHOT_JPEG: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+fn get_screenshot_jpeg() -> &'static Mutex<Option<Vec<u8>>> {
+    SCREENSHOT_JPEG.get_or_init(|| Mutex::new(None))
+}
+
 struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 
-static PIN_IMAGES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-
-
-fn get_pin_images() -> &'static Mutex<HashMap<String, String>> {
-    PIN_IMAGES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[tauri::command]
-fn get_pin_image(label: String) -> Result<String, String> {
-    let map = get_pin_images().lock().map_err(|e| e.to_string())?;
-    map.get(&label).cloned().ok_or_else(|| "未找到钉图数据".to_string())
-}
-
-#[tauri::command]
-fn delete_pin_image(label: String) {
-    if let Ok(mut map) = get_pin_images().lock() {
-        map.remove(&label);
-    }
-}
 
 #[tauri::command]
 fn get_shortcut_status(state: tauri::State<'_, AppShortcutStatus>) -> Result<(), String> {
@@ -64,7 +49,7 @@ fn app_data_dir() -> PathBuf {
 
 fn cleanup_temp_files() {
     let mut path = app_data_dir();
-    path.push("fullscreen_temp.png");
+    path.push("fullscreen_temp.jpg");
     if path.exists() {
         let _ = fs::remove_file(&path);
     }
@@ -193,24 +178,6 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
 }
 
 
-fn hide_pin_windows(app: &tauri::AppHandle) {
-    for (label, window) in app.webview_windows() {
-        if label.starts_with("pin_") {
-            let _ = window.set_always_on_top(false);
-            let _ = window.hide();
-        }
-    }
-}
-
-fn show_pin_windows(app: &tauri::AppHandle) {
-    for (label, window) in app.webview_windows() {
-        if label.starts_with("pin_") {
-            let _ = window.show();
-            let _ = window.set_always_on_top(true);
-        }
-    }
-}
-
 #[tauri::command]
 async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     if IS_SCREENSHOTTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
@@ -228,86 +195,68 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.hide();
     }
-    hide_pin_windows(&app);
-    tokio_sleep(Duration::from_millis(250)).await;
+    tokio_sleep(Duration::from_millis(50)).await;
 
-    let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
-    if screens.is_empty() { return Err("未检测到显示器".to_string()); }
-    let screen = if let Some((cx, cy)) = get_cursor_position() {
-        Screen::from_point(cx, cy).unwrap_or_else(|_| screens[0])
-    } else {
-        screens[0]
-    };
+    // Capture and encode on a blocking thread to avoid blocking the async runtime
+    let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
+        let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
+        if screens.is_empty() { return Err("未检测到显示器".to_string()); }
+        let screen = if let Some((cx, cy)) = get_cursor_position() {
+            Screen::from_point(cx, cy).unwrap_or_else(|_| screens[0])
+        } else {
+            screens[0]
+        };
+        let info = screen.display_info;
+        let screen_info = (info.x, info.y, info.width, info.height);
 
-    let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut buffer, screenshots::image::ImageFormat::Png).map_err(|e| format!("生成PNG字节流失败：{}", e))?;
-    let png_bytes = buffer.into_inner();
+        let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        let encoder = screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
+        image.write_with_encoder(encoder).map_err(|e| format!("生成JPEG字节流失败：{}", e))?;
+        let jpeg_bytes = buffer.into_inner();
+        let base64_data = BASE64_STANDARD.encode(&jpeg_bytes);
+        Ok((jpeg_bytes, base64_data, screen_info))
+    }).await.map_err(|e| format!("截屏任务执行失败：{}", e))??;
 
-    let mut path = app_data_dir();
-    if !path.exists() { let _ = fs::create_dir_all(&path); }
-    path.push("fullscreen_temp.png");
-    fs::write(&path, &png_bytes).map_err(|e| format!("保存临时图片失败：{}", e))?;
+    // Store JPEG bytes in memory for capture_region (avoids disk read on the critical path)
+    if let Ok(mut guard) = get_screenshot_jpeg().lock() {
+        *guard = Some(jpeg_bytes.clone());
+    }
+
+    // Write to disk asynchronously (non-blocking) — only needed as a backup
+    let write_dir = app_data_dir();
+    let write_path = write_dir.join("fullscreen_temp.jpg");
+    let jpeg_for_write = jpeg_bytes.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = write_path.parent() {
+            if !parent.exists() { let _ = fs::create_dir_all(parent); }
+        }
+        let _ = fs::write(&write_path, &jpeg_for_write);
+    });
 
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let width = screen.display_info.width;
-        let height = screen.display_info.height;
-        let x = screen.display_info.x;
-        let y = screen.display_info.y;
-        let _ = screenshot_win.hide();
-        disable_windows_transition(&screenshot_win);
-        let _ = screenshot_win.set_fullscreen(false);
+        let (x, y, width, height) = screen_info;
+
+        // Position and configure the window while still hidden
         let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
         let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
         let _ = screenshot_win.set_always_on_top(true);
-        let _ = screenshot_win.show();
-        let _ = screenshot_win.set_focus();
+
         use tauri::Emitter;
         let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
-        let _ = screenshot_win.emit("screenshot-updated", ());
+        let _ = screenshot_win.emit("screenshot-updated", base64_data);
+
+        // Show immediately — no delay needed since the event is already dispatched
+        let _ = screenshot_win.show();
+        let _ = screenshot_win.set_focus();
     } else {
-        show_pin_windows(&app);
         return Err("未获取到名为 screenshot 的窗口句柄".to_string());
     }
     Ok(())
 }
 
 
-#[tauri::command]
-fn create_pin_window(app: tauri::AppHandle, image_base64: String, x: i32, y: i32, w: u32, h: u32) -> Result<String, String> {
-    let label = format!("pin_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-    if let Ok(mut map) = get_pin_images().lock() {
-        map.insert(label.clone(), image_base64.clone());
-    }
 
-    let webview = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
-        .title("YSN 钉图")
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(true)
-        .transparent(true)
-        .shadow(false)
-        .visible(false)
-        .build()
-        .map_err(|e| format!("创建钉图窗口失败: {}", e))?;
-
-    disable_windows_transition(&webview);
-    let _ = webview.set_position(tauri::PhysicalPosition::new(x, y));
-    let _ = webview.set_size(tauri::PhysicalSize::new(w.max(1), h.max(1)));
-    let _ = webview.show();
-    let _ = webview.set_always_on_top(true);
-    let _ = webview.set_focus();
-
-    use tauri::Emitter;
-    let _ = webview.emit("pin-image-data", &image_base64);
-    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let _ = screenshot_win.set_always_on_top(false);
-        let _ = screenshot_win.set_fullscreen(false);
-        let _ = screenshot_win.hide();
-    }
-    Ok(label)
-}
 
 #[tauri::command]
 fn quick_fullscreen_capture() -> Result<(), String> {
@@ -368,8 +317,7 @@ fn get_window_rects() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
-    tokio_sleep(Duration::from_millis(250)).await;
+fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let _ = screenshot_win.set_always_on_top(false);
         let _ = screenshot_win.set_fullscreen(false);
@@ -381,8 +329,14 @@ async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn get_fullscreen_image() -> Result<String, String> {
+    // Try memory first (fast), fall back to disk
+    if let Ok(guard) = get_screenshot_jpeg().lock() {
+        if let Some(ref bytes) = *guard {
+            return Ok(BASE64_STANDARD.encode(bytes));
+        }
+    }
     let mut path = app_data_dir();
-    path.push("fullscreen_temp.png");
+    path.push("fullscreen_temp.jpg");
     if !path.exists() { return Err("没有可用的全屏截图".to_string()); }
     let bytes = fs::read(&path).map_err(|e| format!("读取全屏图失败：{}", e))?;
     Ok(BASE64_STANDARD.encode(&bytes))
@@ -391,10 +345,22 @@ fn get_fullscreen_image() -> Result<String, String> {
 #[tauri::command]
 fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     if w <= 0 || h <= 0 { return Err("选区范围无效".to_string()); }
-    let mut path = app_data_dir();
-    path.push("fullscreen_temp.png");
-    if !path.exists() { return Err("原始截图文件不存在".to_string()); }
-    let img = screenshots::image::open(&path).map_err(|e| format!("加载全屏图失败：{}", e))?;
+
+    // Try memory first (fast), fall back to disk
+    let jpeg_bytes = {
+        let guard = get_screenshot_jpeg().lock().map_err(|e| e.to_string())?;
+        if let Some(ref bytes) = *guard {
+            bytes.clone()
+        } else {
+            let mut path = app_data_dir();
+            path.push("fullscreen_temp.jpg");
+            if !path.exists() { return Err("原始截图文件不存在".to_string()); }
+            fs::read(&path).map_err(|e| format!("读取全屏图失败：{}", e))?
+        }
+    };
+
+    let img = screenshots::image::load_from_memory_with_format(&jpeg_bytes, screenshots::image::ImageFormat::Jpeg)
+        .map_err(|e| format!("加载全屏图失败：{}", e))?;
     let iw = img.width() as i32;
     let ih = img.height() as i32;
     let sx = x.clamp(0, iw.saturating_sub(1));
@@ -405,9 +371,9 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     cropped.write_to(&mut buffer, screenshots::image::ImageFormat::Png).map_err(|e| format!("图片编码 PNG 失败：{}", e))?;
     let bytes = buffer.into_inner();
-    let mut cropped_path = path.clone();
-    cropped_path.set_file_name("cropped_temp.png");
-    fs::write(&cropped_path, &bytes).map_err(|e| format!("保存裁剪临时图片失败：{}", e))?;
+    let mut cropped_path = app_data_dir();
+    cropped_path.push("cropped_temp.png");
+    let _ = fs::write(&cropped_path, &bytes);
     Ok(BASE64_STANDARD.encode(&bytes))
 }
 
@@ -443,6 +409,63 @@ async fn save_image_to_file(image_base64: String) -> Result<String, String> {
 }
 
 
+#[tauri::command]
+async fn api_ocr(base64_image: String, server_url: String, client_token: String) -> Result<serde_json::Value, String> {
+    let bytes = BASE64_STANDARD.decode(&base64_image).map_err(|e| format!("Base64解码失败：{}", e))?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("region.png")
+        .mime_str("image/png")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new().part("image", part);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("创建HTTP客户端失败：{}", e))?;
+    let resp = client
+        .post(format!("{}/api/ocr", server_url.trim_end_matches('/')))
+        .header("x-api-key", &client_token)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败：{} (请检查服务器地址是否正确、网络是否连通)", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("服务器返回错误 {}：{}", status, body));
+    }
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析OCR响应失败：{}", e))?;
+    Ok(data)
+}
+
+#[tauri::command]
+async fn api_translate(base64_image: String, server_url: String, client_token: String) -> Result<String, String> {
+    let bytes = BASE64_STANDARD.decode(&base64_image).map_err(|e| format!("Base64解码失败：{}", e))?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("region.png")
+        .mime_str("image/png")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new().part("image", part);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("创建HTTP客户端失败：{}", e))?;
+    let resp = client
+        .post(format!("{}/api/translate", server_url.trim_end_matches('/')))
+        .header("x-api-key", &client_token)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败：{} (请检查服务器地址是否正确、网络是否连通)", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("服务器返回错误 {}：{}", status, body));
+    }
+    let result_bytes = resp.bytes().await.map_err(|e| format!("读取翻译结果失败：{}", e))?;
+    Ok(BASE64_STANDARD.encode(&result_bytes))
+}
+
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -460,12 +483,11 @@ pub fn run() {
             capture_region,
             copy_image_to_clipboard,
             save_image_to_file,
-            create_pin_window,
-            get_pin_image,
-            delete_pin_image,
             quick_fullscreen_capture,
             cancel_screenshot,
-            get_window_rects
+            get_window_rects,
+            api_ocr,
+            api_translate
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
