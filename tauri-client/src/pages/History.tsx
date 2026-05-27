@@ -84,7 +84,7 @@ export default function History() {
 
   return (
     <Card bordered={false} style={{ borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
-      <div style={{ display: "flex", justifyContent: "between", alignItems: "center", borderBottom: "1px solid #e8e8e8", paddingBottom: 16, marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e8e8e8", paddingBottom: 16, marginBottom: 24 }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>
             历史翻译记录
