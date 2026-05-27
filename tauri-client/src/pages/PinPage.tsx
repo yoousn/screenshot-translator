@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 export default function PinPage() {
@@ -22,16 +22,20 @@ export default function PinPage() {
           const dataUrl = "data:image/png;base64," + base64;
           setImgSrc(dataUrl);
 
-          // Auto-size window to image dimensions
+          // Auto-size window to image dimensions in physical pixels
           const img = new Image();
-          img.onload = () => {
+          img.onload = async () => {
             imgRef.current = img;
-            const maxW = Math.min(img.naturalWidth, window.screen.width * 0.8);
-            const maxH = Math.min(img.naturalHeight, window.screen.height * 0.8);
+            const factor = await winRef.current.scaleFactor();
+            const screenW = window.screen.width * factor;
+            const screenH = window.screen.height * factor;
+            const maxW = Math.min(img.naturalWidth, screenW * 0.8);
+            const maxH = Math.min(img.naturalHeight, screenH * 0.8);
             const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
             setScale(ratio);
-            winRef.current.setSize(
-              new LogicalSize(
+            
+            await winRef.current.setSize(
+              new PhysicalSize(
                 Math.round(img.naturalWidth * ratio),
                 Math.round(img.naturalHeight * ratio)
               )

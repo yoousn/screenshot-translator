@@ -369,15 +369,44 @@ export default function ScreenshotPage() {
       overlayImg.onload = () => {
         // Redraw canvas with translated image overlay in the selected region
         draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
-        message.success({ content: "翻译重绘完成！按 Ctrl+C 复制或点击完成按钮保存", key: "translate" });
-        setIsTranslating(false);
+        
         // Store result for later copy/save via confirmScreenshot
         const reader = new FileReader();
-        reader.onloadend = () => {
+        reader.onloadend = async () => {
           const resultBase64 = (reader.result as string).split(",")[1];
           setTranslatedResult(resultBase64);
+          
+          try {
+            // Automatically copy translated image to clipboard
+            await invoke("copy_image_to_clipboard", { imageBase64: resultBase64 });
+            
+            // Automatically pin the translation at the exact physical screen position!
+            const dpr = window.devicePixelRatio || 1;
+            const winPos = await getCurrentWindow().outerPosition();
+            const physicalX = Math.round(rectRef.current.x * dpr) + winPos.x;
+            const physicalY = Math.round(rectRef.current.y * dpr) + winPos.y;
+            const physicalW = Math.round(rectRef.current.w * dpr);
+            const physicalH = Math.round(rectRef.current.h * dpr);
+
+            await invoke("create_pin_window", { 
+              imageBase64: resultBase64,
+              x: physicalX,
+              y: physicalY,
+              w: physicalW,
+              h: physicalH
+            });
+            
+            message.success({ content: "翻译并贴图完成，已复制到剪贴板！", key: "translate" });
+            
+            // Auto close/hide screenshot window
+            const win = getCurrentWindow();
+            await win.hide();
+          } catch (pinErr: any) {
+            message.error({ content: `自动贴图或复制失败: ${pinErr.toString()}`, key: "translate" });
+          }
         };
         reader.readAsDataURL(resultBlob);
+        setIsTranslating(false);
       };
       overlayImg.onerror = () => {
         throw new Error("翻译结果图片解码失败");
@@ -433,9 +462,24 @@ export default function ScreenshotPage() {
   // --- Pin: create floating window with selected region ---
   const handlePin = async () => {
     try {
+      const dpr = window.devicePixelRatio || 1;
+      const winPos = await getCurrentWindow().outerPosition();
+      const physicalX = Math.round(rectRef.current.x * dpr) + winPos.x;
+      const physicalY = Math.round(rectRef.current.y * dpr) + winPos.y;
+      const physicalW = Math.round(rectRef.current.w * dpr);
+      const physicalH = Math.round(rectRef.current.h * dpr);
+
       const base64 = await captureRegionBase64();
-      await invoke("create_pin_window", { imageBase64: base64 });
+      await invoke("create_pin_window", { 
+        imageBase64: base64,
+        x: physicalX,
+        y: physicalY,
+        w: physicalW,
+        h: physicalH
+      });
       message.success("已创建贴图窗口");
+      const win = getCurrentWindow();
+      await win.hide();
     } catch (e: any) {
       message.error("贴图失败: " + e.toString());
     }

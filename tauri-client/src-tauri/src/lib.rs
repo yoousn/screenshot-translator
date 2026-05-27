@@ -213,7 +213,14 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
 }
 
 #[tauri::command]
-fn create_pin_window(app: tauri::AppHandle, image_base64: String) -> Result<String, String> {
+fn create_pin_window(
+    app: tauri::AppHandle,
+    image_base64: String,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) -> Result<String, String> {
     let label = format!("pin_{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -230,9 +237,12 @@ fn create_pin_window(app: tauri::AppHandle, image_base64: String) -> Result<Stri
     .skip_taskbar(true)
     .resizable(true)
     .transparent(true)
-    .inner_size(400.0, 300.0)
     .build()
     .map_err(|e| format!("创建贴图窗口失败: {}", e))?;
+
+    // Set position and size in physical pixels
+    let _ = webview.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = webview.set_size(tauri::PhysicalSize::new(w, h));
 
     // Send image data to the new pin window
     use tauri::Emitter;
