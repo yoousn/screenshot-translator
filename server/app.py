@@ -1,10 +1,12 @@
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import json
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR
+import urllib.parse
+import socket
+import ipaddress
+import time
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
 from image_processor import ImageProcessor
@@ -13,26 +15,33 @@ app = FastAPI(title="Screenshot Translator API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/api/health")
-async def health_check():
-    return {"status": "ok"}
-
-
 # 默认不加载 heavy OCR 模型以加速服务启动，首个翻译请求来时会触发懒加载
 processor = ImageProcessor(load_ocr=False)
 
+_config_cache = None
+_config_cache_time = 0.0
+_CONFIG_TTL = 5.0
+
+def get_config():
+    global _config_cache, _config_cache_time
+    now = time.time()
+    if _config_cache is None or (now - _config_cache_time) > _CONFIG_TTL:
+        _config_cache = load_server_config()
+        _config_cache_time = now
+    return _config_cache
+
 def verify_token(x_api_key: str):
-    cfg = load_server_config()
+    cfg = get_config()
     if not x_api_key or x_api_key != cfg["client_token"]:
         raise HTTPException(status_code=401, detail="Unauthorized client token.")
 
 def get_active_translator():
-    cfg = load_server_config()
+    cfg = get_config()
     channel = cfg.get("active_channel", "google")
     print(f"[Active Translator] 服务器当前激活的翻译通道为: '{channel}'")
     if channel == "new-api":
@@ -46,37 +55,57 @@ def get_active_translator():
     print("[Active Translator] 未识别或默认通道，正在回退调用 Google 免费翻译接口 (无凭证)")
     return GoogleTranslator()
 
+def _validate_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        addr_info = socket.getaddrinfo(hostname, None)
+        for family, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            if '%' in ip_str:
+                ip_str = ip_str.split('%')[0]
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False
+        return True
+    except Exception:
+        return False
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
+
 @app.post("/api/translate")
-async def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
+def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
     verify_token(x_api_key)
-    img_bytes = await image.read()
+    img_bytes = image.file.read()
     
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
     def translator_batch_fn(texts):
         return translator.translate_batch(texts, "auto", "zh")
         
-    out_bytes = processor.process_and_draw(img_bytes, translator_batch_fn)
-    return Response(content=out_bytes, media_type="image/png")
+    try:
+        out_bytes = processor.process_and_draw(img_bytes, translator_batch_fn)
+        return Response(content=out_bytes, media_type="image/png")
+    except Exception as e:
+        print(f"[translate_image] error during process_and_draw: {e}")
+        raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
 @app.post("/api/ocr")
-async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
+def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
     verify_token(x_api_key)
-    img_bytes = await image.read()
+    img_bytes = image.file.read()
     
     nparr = np.frombuffer(img_bytes, np.uint8)
     img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
-    if processor.ocr is None:
-        processor.ocr = PaddleOCR(
-            lang="ch", 
-            enable_mkldnn=False, 
-            ir_optim=False,
-            det_db_box_thresh=0.3,
-            det_db_thresh=0.2,
-            det_db_unclip_ratio=1.6
-        )
+    if img_cv is None:
+        raise HTTPException(status_code=400, detail="Invalid image data")
         
+    processor._ensure_ocr()
     ocr_result = processor.ocr.ocr(img_cv, cls=True)
     
     results = []
@@ -94,7 +123,7 @@ async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)
     return {"status": "success", "ocr": results}
 
 @app.post("/api/config/test")
-async def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
+def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
     verify_token(x_api_key)
     channel = payload.get("channel")
     c = payload.get("config", {})
@@ -118,13 +147,15 @@ async def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
                 if k in c:
                     cfg["channels"][channel][k] = c[k]
         save_server_config(cfg)
+        global _config_cache
+        _config_cache = None # invalidate cache
         
         return {"status": "success", "result": test_res}
     except Exception as e:
         return {"status": "failed", "error": str(e)}
 
 @app.post("/api/config/fetch_models")
-async def fetch_models(payload: dict, x_api_key: str = Header(None)):
+def fetch_models(payload: dict, x_api_key: str = Header(None)):
     verify_token(x_api_key)
     base_url = payload.get("base_url", "").rstrip('/')
     api_key = payload.get("api_key", "")
@@ -135,6 +166,9 @@ async def fetch_models(payload: dict, x_api_key: str = Header(None)):
     # 自动处理纯域名，补足协议头
     if not base_url.startswith("http://") and not base_url.startswith("https://"):
         base_url = "https://" + base_url
+
+    if not _validate_url(base_url):
+        return {"status": "failed", "error": "请求地址不合法 (IP 为私有、回环或保留地址)"}
         
     try:
         headers = {"Authorization": f"Bearer {api_key}"}

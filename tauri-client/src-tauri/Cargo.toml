@@ -28,4 +28,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 base64 = "0.22.1"
 rfd = "0.14.1"
 tauri-plugin-global-shortcut = "2.0.1"
+tokio = { version = "1", features = ["time"] }
+dirs = "6"
+
 

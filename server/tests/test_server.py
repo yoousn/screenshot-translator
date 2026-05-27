@@ -28,7 +28,7 @@ def test_fetch_models_success():
     cfg = load_server_config()
     token = cfg["client_token"]
     
-    with patch("requests.get") as mock_get:
+    with patch("requests.get") as mock_get, patch("app._validate_url", return_value=True):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {

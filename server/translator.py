@@ -4,6 +4,9 @@ import json
 import urllib.parse
 import hashlib
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BaseTranslator(abc.ABC):
     @abc.abstractmethod
@@ -24,8 +27,13 @@ class GoogleTranslator(BaseTranslator):
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source_lang}&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
-            res_json = response.json()
-            return "".join([part[0] for part in res_json[0] if part[0]])
+            try:
+                res_json = response.json()
+                if isinstance(res_json, list) and len(res_json) > 0 and isinstance(res_json[0], list):
+                    return "".join([part[0] for part in res_json[0] if part[0]])
+                raise ValueError("Unexpected JSON response structure from Google Translate")
+            except (IndexError, TypeError, KeyError, ValueError) as e:
+                raise Exception(f"Google translate response parsing failed: {e}")
         raise Exception(f"Google translate failed: status {response.status_code}")
 
 class LLMTranslator(BaseTranslator):
@@ -89,8 +97,8 @@ class LLMTranslator(BaseTranslator):
                 translated = json.loads(content)
                 if isinstance(translated, list) and len(translated) == len(texts):
                     return [str(x) for x in translated]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("LLM batch translation failed: %s", e)
         return super().translate_batch(texts, source_lang, target_lang)
 
 class BaiduTranslator(BaseTranslator):
@@ -147,7 +155,6 @@ class BaiduTranslator(BaseTranslator):
                 trans_result = res_json.get("trans_result", [])
                 if len(trans_result) == len(texts):
                     return [item["dst"] for item in trans_result]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Baidu batch translation failed: %s", e)
         return super().translate_batch(texts, source_lang, target_lang)
-

@@ -4047,6 +4047,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "dirs",
  "image 0.25.10",
  "rfd",
  "screenshots",
@@ -4056,6 +4057,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
+ "tokio",
 ]
 
 [[package]]

@@ -1,76 +1,87 @@
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from paddleocr import PaddleOCR
 import os
 import io
+import threading
 
 
 class ImageProcessor:
     def __init__(self, load_ocr: bool = True):
+        self._ocr_lock = threading.Lock()
+        self._font_cache = {}
+        self._font_path = None
         if load_ocr:
-            self.ocr = PaddleOCR(
-                lang="ch",
-                enable_mkldnn=False,
-                ir_optim=False,
-                det_db_box_thresh=0.3,
-                det_db_thresh=0.2,
-                det_db_unclip_ratio=1.6
-            )
+            self._ensure_ocr()
         else:
             self.ocr = None
 
     def _ensure_ocr(self):
-        if self.ocr is None:
-            self.ocr = PaddleOCR(
-                lang="ch",
-                enable_mkldnn=False,
-                ir_optim=False,
-                det_db_box_thresh=0.3,
-                det_db_thresh=0.2,
-                det_db_unclip_ratio=1.6
-            )
+        with self._ocr_lock:
+            if self.ocr is None:
+                from paddleocr import PaddleOCR
+                self.ocr = PaddleOCR(
+                    lang="ch",
+                    enable_mkldnn=False,
+                    ir_optim=False,
+                    det_db_box_thresh=0.3,
+                    det_db_thresh=0.2,
+                    det_db_unclip_ratio=1.6
+                )
 
     # ──────────────────────────────────────────────
     # 1. 字体加载
     # ──────────────────────────────────────────────
     def _load_font(self, size: int) -> ImageFont.FreeTypeFont:
-        user_font_dir = os.path.expanduser("~/.screenshot-translator")
-        os.makedirs(user_font_dir, exist_ok=True)
-        user_font_path = os.path.join(user_font_dir, "wqy-microhei.ttc")
+        if size in self._font_cache:
+            return self._font_cache[size]
 
-        font_paths = [
-            user_font_path,
-            "C:\\Windows\\Fonts\\msyh.ttc",        # 微软雅黑
-            "C:\\Windows\\Fonts\\msyhbd.ttc",       # 微软雅黑 Bold
-            "C:\\Windows\\Fonts\\simhei.ttf",       # 黑体
-            "C:\\Windows\\Fonts\\simsun.ttc",       # 宋体
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-            "/usr/share/fonts/truetype/arphic/uming.ttc",
-        ]
-        active = next((p for p in font_paths if os.path.exists(p)), None)
+        if self._font_path is not None:
+            active = self._font_path
+        else:
+            user_font_dir = os.path.expanduser("~/.screenshot-translator")
+            os.makedirs(user_font_dir, exist_ok=True)
+            user_font_path = os.path.join(user_font_dir, "wqy-microhei.ttc")
 
-        if not active:
-            try:
-                print("[FontManager] 未找到中文字体，正在从 CDN 下载文泉驿微米黑…")
-                import urllib.request
-                url = "https://cdn.jsdelivr.net/gh/anthonyfok/fonts-wqy-microhei@master/wqy-microhei.ttc"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15) as r, open(user_font_path, "wb") as f:
-                    f.write(r.read())
-                if os.path.getsize(user_font_path) > 1_000_000:
-                    active = user_font_path
-                    print("[FontManager] 字体下载成功:", active)
-            except Exception as fe:
-                print("[FontManager] 字体下载失败:", fe)
+            font_paths = [
+                user_font_path,
+                "C:\\Windows\\Fonts\\msyh.ttc",        # 微软雅黑
+                "C:\\Windows\\Fonts\\msyhbd.ttc",       # 微软雅黑 Bold
+                "C:\\Windows\\Fonts\\simhei.ttf",       # 黑体
+                "C:\\Windows\\Fonts\\simsun.ttc",       # 宋体
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                "/usr/share/fonts/truetype/arphic/uming.ttc",
+            ]
+            active = next((p for p in font_paths if os.path.exists(p)), None)
+
+            if not active:
+                try:
+                    print("[FontManager] 未找到中文字体，正在从 CDN 下载文泉驿微米黑…")
+                    import urllib.request
+                    url = "https://cdn.jsdelivr.net/gh/anthonyfok/fonts-wqy-microhei@master/wqy-microhei.ttc"
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=15) as r, open(user_font_path, "wb") as f:
+                        f.write(r.read())
+                    if os.path.getsize(user_font_path) > 1_000_000:
+                        active = user_font_path
+                        print("[FontManager] 字体下载成功:", active)
+                except Exception as fe:
+                    print("[FontManager] 字体下载失败:", fe)
+
+            if active:
+                self._font_path = active
 
         if active:
-            return ImageFont.truetype(active, size)
-        return ImageFont.load_default()
+            font = ImageFont.truetype(active, size)
+        else:
+            font = ImageFont.load_default()
+            
+        self._font_cache[size] = font
+        return font
 
     # ──────────────────────────────────────────────
     # 2. OCR box 分行合并算法
@@ -157,16 +168,33 @@ class ImageProcessor:
     def _sample_bg(self, img_cv: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> tuple:
         """
         在 box 外扩 4px 的环形区域采样像素，用中位数颜色作为背景色（BGR）。
+        使用 NumPy 向量化操作加速。
         """
         h, w = img_cv.shape[:2]
         pad = 4
-        pixels = []
-        for y in range(max(0, y1 - pad), min(h, y2 + pad)):
-            for x in range(max(0, x1 - pad), min(w, x2 + pad)):
-                if y < y1 or y >= y2 or x < x1 or x >= x2:
-                    pixels.append(img_cv[y, x])
-        if not pixels:
+        
+        ry1 = max(0, y1 - pad)
+        ry2 = min(h, y2 + pad)
+        rx1 = max(0, x1 - pad)
+        rx2 = min(w, x2 + pad)
+        
+        if ry1 >= ry2 or rx1 >= rx2:
             return (255, 255, 255)
+            
+        region = img_cv[ry1:ry2, rx1:rx2]
+        
+        iy1 = y1 - ry1
+        iy2 = y2 - ry1
+        ix1 = x1 - rx1
+        ix2 = x2 - rx1
+        
+        mask = np.ones((region.shape[0], region.shape[1]), dtype=bool)
+        mask[max(0, iy1):min(region.shape[0], iy2), max(0, ix1):min(region.shape[1], ix2)] = False
+        
+        pixels = region[mask]
+        if pixels.size == 0:
+            return (255, 255, 255)
+            
         med = np.median(pixels, axis=0)
         return (int(med[0]), int(med[1]), int(med[2]))
 
@@ -299,7 +327,6 @@ class ImageProcessor:
                 )
 
                 # 垂直起点：在 box 内顶部对齐（留 2px 上边距）
-                # 若总高度小于 box_h，垂直居中；否则顶部对齐，让文字自然溢出或截断
                 if total_h <= box_h:
                     start_y = y1 + (box_h - total_h) // 2
                 else:
@@ -309,7 +336,6 @@ class ImageProcessor:
                 x_draw = x1 + 2
                 for idx, line_text in enumerate(lines):
                     line_y = start_y + idx * line_gap
-                    # 防止超出图片底部
                     if line_y > img_cv.shape[0]:
                         break
                     draw.text(
@@ -317,9 +343,9 @@ class ImageProcessor:
                         line_text,
                         fill=text_rgb,
                         font=font,
-                        anchor="lt",         # left-top 锚点，左对齐自然排列
+                        anchor="lt",
                         stroke_width=1 if font.size >= 13 else 0,
-                        stroke_fill=bg_rgb,  # 描边与背景同色，消除锯齿
+                        stroke_fill=bg_rgb,
                     )
 
             # 导出
@@ -331,4 +357,4 @@ class ImageProcessor:
             print("ERROR in process_and_draw:", e)
             import traceback
             traceback.print_exc()
-            return img_bytes
+            raise e

@@ -7,6 +7,11 @@ use tauri::Manager;
 use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code, ShortcutState};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::time::{sleep as tokio_sleep, Duration};
+
+const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
+static IS_SCREENSHOTTING: AtomicBool = AtomicBool::new(false);
 
 struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
 
@@ -14,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 static PIN_IMAGES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
 
 fn get_pin_images() -> &'static Mutex<HashMap<String, String>> {
     PIN_IMAGES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -34,18 +40,41 @@ fn delete_pin_image(label: String) {
 
 #[tauri::command]
 fn get_shortcut_status(state: tauri::State<'_, AppShortcutStatus>) -> Result<(), String> {
-    match &*state.0.lock().unwrap() {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    match &*guard {
         Ok(_) => Ok(()),
         Err(e) => Err(e.clone()),
     }
 }
 
 fn app_data_dir() -> PathBuf {
-    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Users\\ysn\\AppData\\Local".to_string());
-    let mut path = PathBuf::from(local_app_data);
-    path.push("ScreenshotTranslator");
-    path
+    let base_dir = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|_| dirs::data_local_dir().ok_or(()))
+        .or_else(|_| {
+            std::env::var("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("AppData").join("Local"))
+        })
+        .unwrap_or_else(|_| {
+            eprintln!("Warning: Failed to resolve local app data directory, falling back to current directory");
+            PathBuf::from(".")
+        });
+    base_dir.join("ScreenshotTranslator")
 }
+
+fn cleanup_temp_files() {
+    let mut path = app_data_dir();
+    path.push("fullscreen_temp.png");
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    let mut cropped_path = app_data_dir();
+    cropped_path.push("cropped_temp.png");
+    if cropped_path.exists() {
+        let _ = fs::remove_file(&cropped_path);
+    }
+}
+
 
 #[tauri::command]
 fn get_config() -> Result<String, String> {
@@ -70,7 +99,7 @@ fn save_config(config_str: String) -> Result<(), String> {
 #[tauri::command]
 fn is_autostart_enabled() -> bool {
     let output = Command::new("reg")
-        .args(&[
+        .args([
             "query",
             "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
             "/v",
@@ -89,7 +118,7 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
         let current_exe = std::env::current_exe().map_err(|e| format!("Failed to get current executable path: {}", e))?;
         let current_exe_str = current_exe.to_string_lossy();
         let status = Command::new("reg")
-            .args(&[
+            .args([
                 "add",
                 "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "/v",
@@ -105,7 +134,7 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
         if status.success() { Ok(()) } else { Err("reg add command returned non-zero exit code".to_string()) }
     } else {
         let _ = Command::new("reg")
-            .args(&[
+            .args([
                 "delete",
                 "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "/v",
@@ -120,8 +149,10 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 mod win32 {
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     pub struct POINT { pub x: i32, pub y: i32 }
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     pub struct RECT { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
     extern "system" {
         pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
@@ -138,6 +169,7 @@ mod win32 {
 #[cfg(target_os = "windows")]
 fn get_cursor_position() -> Option<(i32, i32)> {
     let mut point = win32::POINT { x: 0, y: 0 };
+    // SAFETY: Calling Win32 API GetCursorPos with a valid mutable pointer to a POINT struct.
     unsafe { if win32::GetCursorPos(&mut point) != 0 { Some((point.x, point.y)) } else { None } }
 }
 
@@ -148,16 +180,18 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = window.hwnd() {
         let value: i32 = 1;
+        // SAFETY: Calling Dwmapi function DwmSetWindowAttribute with valid hwnd and parameters.
         unsafe {
             let _ = win32::DwmSetWindowAttribute(
                 hwnd.0 as isize,
-                3,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
                 &value as *const i32 as *const std::ffi::c_void,
                 std::mem::size_of::<i32>() as u32,
             );
         }
     }
 }
+
 
 fn hide_pin_windows(app: &tauri::AppHandle) {
     for (label, window) in app.webview_windows() {
@@ -178,13 +212,24 @@ fn show_pin_windows(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
+async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
+    if IS_SCREENSHOTTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("正在截屏中，请勿重复操作".to_string());
+    }
+    struct ScreenshotGuard;
+    impl Drop for ScreenshotGuard {
+        fn drop(&mut self) {
+            IS_SCREENSHOTTING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = ScreenshotGuard;
+
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.hide();
     }
     hide_pin_windows(&app);
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    tokio_sleep(Duration::from_millis(250)).await;
 
     let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
     if screens.is_empty() { return Err("未检测到显示器".to_string()); }
@@ -196,13 +241,13 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
 
     let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut buffer, screenshots::image::ImageFormat::Jpeg).map_err(|e| format!("生成JPEG字节流失败：{}", e))?;
-    let jpeg_bytes = buffer.into_inner();
+    image.write_to(&mut buffer, screenshots::image::ImageFormat::Png).map_err(|e| format!("生成PNG字节流失败：{}", e))?;
+    let png_bytes = buffer.into_inner();
 
     let mut path = app_data_dir();
     if !path.exists() { let _ = fs::create_dir_all(&path); }
-    path.push("fullscreen_temp.jpg");
-    fs::write(&path, &jpeg_bytes).map_err(|e| format!("保存临时图片失败：{}", e))?;
+    path.push("fullscreen_temp.png");
+    fs::write(&path, &png_bytes).map_err(|e| format!("保存临时图片失败：{}", e))?;
 
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let width = screen.display_info.width;
@@ -226,6 +271,7 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
     }
     Ok(())
 }
+
 
 #[tauri::command]
 fn create_pin_window(app: tauri::AppHandle, image_base64: String, x: i32, y: i32, w: u32, h: u32) -> Result<String, String> {
@@ -270,17 +316,13 @@ fn quick_fullscreen_capture() -> Result<(), String> {
     if screens.is_empty() { return Err("未检测到显示器".to_string()); }
     let screen = &screens[0];
     let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut buffer, screenshots::image::ImageFormat::Png).map_err(|e| format!("生成PNG字节流失败：{}", e))?;
-    let png_bytes = buffer.into_inner();
-    let img = screenshots::image::load_from_memory_with_format(&png_bytes, screenshots::image::ImageFormat::Png).map_err(|e| format!("解析截屏图像失败：{}", e))?;
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
+    let (width, height) = image.dimensions();
     let mut clipboard = Clipboard::new().map_err(|e| format!("初始化系统剪贴板失败：{}", e))?;
-    let img_data = ImageData { width: width as usize, height: height as usize, bytes: Cow::Owned(rgba.into_raw()) };
+    let img_data = ImageData { width: width as usize, height: height as usize, bytes: Cow::Owned(image.into_raw()) };
     clipboard.set_image(img_data).map_err(|e| format!("复制图像到剪贴板失败：{}", e))?;
     Ok(())
 }
+
 
 #[tauri::command]
 fn get_window_rects() -> Result<String, String> {
@@ -288,6 +330,7 @@ fn get_window_rects() -> Result<String, String> {
     {
         let mut rects: Vec<serde_json::Value> = Vec::new();
         if let Some((cx, cy)) = get_cursor_position() {
+            // SAFETY: Calling Win32 WindowFromPoint and GetWindowRect with valid parameters.
             unsafe {
                 let hwnd = win32::WindowFromPoint(win32::POINT { x: cx, y: cy });
                 if hwnd != 0 {
@@ -302,6 +345,7 @@ fn get_window_rects() -> Result<String, String> {
                 }
             }
         }
+        // SAFETY: Calling Win32 GetForegroundWindow and GetWindowRect with valid parameters.
         unsafe {
             let fg = win32::GetForegroundWindow();
             if fg != 0 {
@@ -325,24 +369,23 @@ fn get_window_rects() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
-    let app_for_hide = app.clone();
-    tauri::async_runtime::spawn(async move {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        if let Some(screenshot_win) = app_for_hide.get_webview_window("screenshot") {
-            let _ = screenshot_win.set_always_on_top(false);
-            let _ = screenshot_win.set_fullscreen(false);
-            let _ = screenshot_win.hide();
-        }
-        show_pin_windows(&app_for_hide);
-    });
+async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
+    tokio_sleep(Duration::from_millis(250)).await;
+    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+        let _ = screenshot_win.set_always_on_top(false);
+        let _ = screenshot_win.set_fullscreen(false);
+        let _ = screenshot_win.hide();
+    }
+    show_pin_windows(&app);
+    cleanup_temp_files();
     Ok(())
 }
+
 
 #[tauri::command]
 fn get_fullscreen_image() -> Result<String, String> {
     let mut path = app_data_dir();
-    path.push("fullscreen_temp.jpg");
+    path.push("fullscreen_temp.png");
     if !path.exists() { return Err("没有可用的全屏截图".to_string()); }
     let bytes = fs::read(&path).map_err(|e| format!("读取全屏图失败：{}", e))?;
     Ok(BASE64_STANDARD.encode(&bytes))
@@ -352,7 +395,7 @@ fn get_fullscreen_image() -> Result<String, String> {
 fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     if w <= 0 || h <= 0 { return Err("选区范围无效".to_string()); }
     let mut path = app_data_dir();
-    path.push("fullscreen_temp.jpg");
+    path.push("fullscreen_temp.png");
     if !path.exists() { return Err("原始截图文件不存在".to_string()); }
     let img = screenshots::image::open(&path).map_err(|e| format!("加载全屏图失败：{}", e))?;
     let iw = img.width() as i32;
@@ -371,6 +414,7 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     Ok(BASE64_STANDARD.encode(&bytes))
 }
 
+
 #[tauri::command]
 fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
     let bytes = BASE64_STANDARD.decode(&image_base64).map_err(|e| format!("Base64解码失败：{}", e))?;
@@ -384,17 +428,24 @@ fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_image_to_file(image_base64: String) -> Result<String, String> {
+async fn save_image_to_file(image_base64: String) -> Result<String, String> {
     let bytes = BASE64_STANDARD.decode(&image_base64).map_err(|e| format!("Base64解码失败：{}", e))?;
-    let file_path = rfd::FileDialog::new().add_filter("PNG 图像", &["png"]).set_file_name("screenshot.png").save_file();
-    if let Some(path) = file_path {
-        fs::write(&path, &bytes).map_err(|e| format!("写入文件失败：{}", e))?;
+    let file_path = rfd::AsyncFileDialog::new()
+        .add_filter("PNG 图像", &["png"])
+        .set_file_name("screenshot.png")
+        .save_file()
+        .await;
+    if let Some(file_handle) = file_path {
+        let path = file_handle.path();
+        fs::write(path, &bytes).map_err(|e| format!("写入文件失败：{}", e))?;
         if !path.exists() { return Err("文件未成功写入磁盘".to_string()); }
         Ok(path.to_string_lossy().to_string())
     } else {
         Err("用户取消了保存".to_string())
     }
 }
+
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -430,7 +481,7 @@ pub fn run() {
                 if event.state() == ShortcutState::Pressed {
                     let app_h = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(e) = start_screenshot(app_h, None) {
+                        if let Err(e) = start_screenshot(app_h, None).await {
                             eprintln!("Failed to start screenshot: {}", e);
                         }
                     });
@@ -438,18 +489,23 @@ pub fn run() {
             });
 
             let shortcut_t = Shortcut::new(Some(Modifiers::ALT), Code::KeyT);
-            let _ = app.global_shortcut().on_shortcut(shortcut_t, move |app, _shortcut, event| {
+            let reg_res_t = app.global_shortcut().on_shortcut(shortcut_t, move |app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {
                     let app_h = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(e) = start_screenshot(app_h, Some("translate".to_string())) {
+                        if let Err(e) = start_screenshot(app_h, Some("translate".to_string())).await {
                             eprintln!("Failed to start translate screenshot: {}", e);
                         }
                     });
                 }
             });
 
-            let shortcut_status = match reg_res { Ok(_) => Ok(()), Err(e) => Err(e.to_string()) };
+            let shortcut_status = match (reg_res, reg_res_t) {
+                (Ok(_), Ok(_)) => Ok(()),
+                (Err(e1), Err(e2)) => Err(format!("Alt+A: {}; Alt+T: {}", e1, e2)),
+                (Err(e), Ok(_)) => Err(format!("Alt+A: {}", e)),
+                (Ok(_), Err(e)) => Err(format!("Alt+T: {}", e)),
+            };
             app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
 
             let screenshot_item = tauri::menu::MenuItemBuilder::new("立即截图").id("screenshot").build(app)?;
@@ -465,7 +521,7 @@ pub fn run() {
                         "screenshot" => {
                             let app_h = app.clone();
                             tauri::async_runtime::spawn(async move {
-                                if let Err(e) = start_screenshot(app_h, None) {
+                                if let Err(e) = start_screenshot(app_h, None).await {
                                     eprintln!("Failed to start screenshot: {}", e);
                                 }
                             });
@@ -476,7 +532,10 @@ pub fn run() {
                                 let _ = win.set_focus();
                             }
                         }
-                        "exit" => std::process::exit(0),
+                        "exit" => {
+                            cleanup_temp_files();
+                            app.exit(0);
+                        }
                         _ => {}
                     }
                 })
@@ -492,7 +551,7 @@ pub fn run() {
                         tauri::tray::TrayIconEvent::DoubleClick { button: tauri::tray::MouseButton::Left, .. } => {
                             let app = tray.app_handle().clone();
                             tauri::async_runtime::spawn(async move {
-                                if let Err(e) = start_screenshot(app, None) {
+                                if let Err(e) = start_screenshot(app, None).await {
                                     eprintln!("Failed to start screenshot: {}", e);
                                 }
                             });
