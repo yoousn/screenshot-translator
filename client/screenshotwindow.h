@@ -21,9 +21,6 @@
 #ifndef WDA_EXCLUDEFROMCAPTURE
 #define WDA_EXCLUDEFROMCAPTURE 0x00000011
 #endif
-// The current cpp constructs PinWindow with Qt::SubWindow. For a top-level pinned image
-// this causes bad focus/z-order behavior, so compile that token as Qt::Tool here.
-#define SubWindow Tool
 #endif
 
 #include <QToolButton>
@@ -181,9 +178,15 @@ public:
     ~PinWindow() override;
     void show() {
         setAttribute(Qt::WA_DeleteOnClose);
+        setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
         QWidget::show();
+        raise();
+        activateWindow();
 #ifdef Q_OS_WIN
-        SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
+        QTimer::singleShot(200, this, [this]() {
+            if (!isVisible()) return;
+            SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_EXCLUDEFROMCAPTURE);
+        });
 #endif
     }
 protected:
