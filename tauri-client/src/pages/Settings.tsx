@@ -1,25 +1,24 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { 
-  Form, 
-  Input, 
-  InputNumber, 
-  Select, 
-  Switch, 
-  Button, 
-  Space, 
-  Card, 
-  Typography, 
-  Row, 
-  Col, 
-  Tabs,
+import {
+  Form,
+  Input,
+  InputNumber,
+  Select,
+  Switch,
+  Button,
+  Space,
+  Card,
+  Typography,
+  Row,
+  Col,
   message
 } from "antd";
-import { 
-  SaveOutlined, 
-  SlidersOutlined, 
-  GlobalOutlined, 
-  FileTextOutlined, 
+import {
+  SaveOutlined,
+  SlidersOutlined,
+  GlobalOutlined,
+  FileTextOutlined,
   AppstoreOutlined,
   SyncOutlined,
   KeyOutlined
@@ -27,29 +26,12 @@ import {
 
 const { Title, Paragraph, Text } = Typography;
 
-interface Config {
-  serverUrl?: string;
-  clientToken?: string;
-  channel?: string;
-  baiduAppId?: string;
-  baiduSecretKey?: string;
-  newApiBase?: string;
-  newApiKey?: string;
-  newApiModel?: string;
-  useLocalOcr?: boolean;
-  fallbackToRemoteOcr?: boolean;
-  localOcrExecutablePath?: string;
-  localOcrTimeoutMs?: number;
-  hotkey?: string;
-}
-
 interface SettingsProps {
   onConfigSaved: () => void;
 }
 
 export default function Settings({ onConfigSaved }: SettingsProps) {
   const [form] = Form.useForm();
-  const [autostart, setAutostart] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isTestingBaidu, setIsTestingBaidu] = useState(false);
   const [isTestingNewApi, setIsTestingNewApi] = useState(false);
@@ -57,7 +39,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [currentChannel, setCurrentChannel] = useState<string>("google");
 
-  // Load config on mount
   useEffect(() => {
     loadSettings();
   }, []);
@@ -66,16 +47,13 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     try {
       const configStr = await invoke<string>("get_config");
       const parsedConfig = JSON.parse(configStr);
-      
-      // Setup form fields values
+
       form.setFieldsValue(parsedConfig);
       if (parsedConfig.channel) {
         setCurrentChannel(parsedConfig.channel);
       }
 
-      // Fetch autostart status
       const autostartEnabled = await invoke<boolean>("is_autostart_enabled");
-      setAutostart(autostartEnabled);
       form.setFieldValue("autostart", autostartEnabled);
 
       if (parsedConfig.newApiBase && parsedConfig.newApiKey) {
@@ -87,7 +65,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     }
   };
 
-  const handleFormChange = (changedValues: any, allValues: any) => {
+  const handleFormChange = (changedValues: any) => {
     if (changedValues.channel) {
       setCurrentChannel(changedValues.channel);
     }
@@ -198,14 +176,9 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     setIsSaving(true);
     try {
       const { autostart: autostartVal, ...configValues } = values;
-      
-      // Save config to config.json
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
-
-      // Save registry autostart state
       await invoke("set_autostart_enabled", { enabled: autostartVal });
-      setAutostart(autostartVal);
 
       message.success("设置保存成功！");
       onConfigSaved();
@@ -231,7 +204,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       requiredMark={false}
       style={{ maxWidth: 800, margin: "0 auto" }}
     >
-      <div style={{ display: "flex", justifyContent: "between", alignItems: "center", borderBottom: "1px solid #e8e8e8", paddingBottom: 16, marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e8e8e8", paddingBottom: 16, marginBottom: 24 }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>
             系统设置
@@ -252,8 +225,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       </div>
 
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        
-        {/* Section 1: Server Config */}
         <Card title={<span><SlidersOutlined style={{ marginRight: 8 }} />1. 后端服务配置 (N100 Core)</span>} bordered={false}>
           <Row gutter={16}>
             <Col span={12}>
@@ -283,7 +254,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           </Row>
         </Card>
 
-        {/* Section 2: Channels Stack */}
         <Card title={<span><GlobalOutlined style={{ marginRight: 8 }} />2. 翻译信道配置 (Translation Channels)</span>} bordered={false}>
           <Form.Item
             label={<Text strong style={{ fontSize: 12 }}>活动翻译信道</Text>}
@@ -293,7 +263,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
             <Select options={channelOptions} style={{ height: 32 }} />
           </Form.Item>
 
-          {/* Conditional rendering for Baidu */}
           {currentChannel === "baidu" && (
             <Card type="inner" title="百度翻译参数" style={{ marginTop: 12 }}>
               <Row gutter={16}>
@@ -320,7 +289,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
             </Card>
           )}
 
-          {/* Conditional rendering for New API */}
           {currentChannel === "new-api" && (
             <Card type="inner" title="中转大模型配置" style={{ marginTop: 12 }}>
               <Row gutter={16}>
@@ -340,7 +308,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
                   <Form.Item name="newApiModel" noStyle>
                     {availableModels.length > 0 ? (
                       <Select
-                        options={availableModels.map(m => ({ value: m, label: m }))}
+                        options={availableModels.map((m) => ({ value: m, label: m }))}
                         style={{ height: 32, width: 280 }}
                       />
                     ) : (
@@ -369,7 +337,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           )}
         </Card>
 
-        {/* Section 3: Local OCR & Config */}
         <Card title={<span><FileTextOutlined style={{ marginRight: 8 }} />3. 本地 OCR (PaddleOCR-json)</span>} bordered={false}>
           <Row gutter={24} style={{ marginBottom: 16 }}>
             <Col span={12}>
@@ -403,7 +370,6 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           </Row>
         </Card>
 
-        {/* Section 4: General Settings */}
         <Card title={<span><AppstoreOutlined style={{ marginRight: 8 }} />4. 系统控制与热键</span>} bordered={false}>
           <Row gutter={24}>
             <Col span={12}>
