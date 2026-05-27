@@ -10,6 +10,30 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code,
 
 struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+static PIN_IMAGES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn get_pin_images() -> &'static Mutex<HashMap<String, String>> {
+    PIN_IMAGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+fn get_pin_image(label: String) -> Result<String, String> {
+    let map = get_pin_images().lock().map_err(|e| e.to_string())?;
+    map.get(&label)
+        .cloned()
+        .ok_or_else(|| "未找到贴图数据".to_string())
+}
+
+#[tauri::command]
+fn delete_pin_image(label: String) {
+    if let Ok(mut map) = get_pin_images().lock() {
+        map.remove(&label);
+    }
+}
+
 #[tauri::command]
 fn get_shortcut_status(state: tauri::State<'_, AppShortcutStatus>) -> Result<(), String> {
     match &*state.0.lock().unwrap() {
@@ -131,6 +155,16 @@ mod win32 {
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
         pub fn GetForegroundWindow() -> isize;
     }
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        pub fn DwmSetWindowAttribute(
+            hwnd: isize,
+            dwAttribute: u32,
+            pvAttribute: *const std::ffi::c_void,
+            cbAttribute: u32,
+        ) -> i32;
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -159,6 +193,13 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
         let _ = main_win.hide();
     }
 
+    // 1b. Temporarily disable always_on_top for all pin windows so the fullscreen screenshot window goes above them
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("pin_") {
+            let _ = window.set_always_on_top(false);
+        }
+    }
+
     let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
     if screens.is_empty() {
         return Err("未检测到显示器".to_string());
@@ -175,9 +216,9 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
 
     let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut buffer, screenshots::image::ImageFormat::Png)
-        .map_err(|e| format!("生成PNG字节流失败：{}", e))?;
-    let png_bytes = buffer.into_inner();
+    image.write_to(&mut buffer, screenshots::image::ImageFormat::Jpeg)
+        .map_err(|e| format!("生成JPEG字节流失败：{}", e))?;
+    let jpeg_bytes = buffer.into_inner();
     
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Users\\ysn\\AppData\\Local".to_string());
     let mut path = PathBuf::from(local_app_data);
@@ -185,8 +226,8 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
     if !path.exists() {
         let _ = fs::create_dir_all(&path);
     }
-    path.push("fullscreen_temp.png");
-    fs::write(&path, &png_bytes).map_err(|e| format!("保存临时图片失败：{}", e))?;
+    path.push("fullscreen_temp.jpg");
+    fs::write(&path, &jpeg_bytes).map_err(|e| format!("保存临时图片失败：{}", e))?;
 
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let width = screen.display_info.width;
@@ -196,8 +237,23 @@ fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), S
         
         // Ensure hidden → reposition → show (prevents geometry flash/jitter)
         let _ = screenshot_win.hide();
+        
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = screenshot_win.hwnd() {
+            let value: i32 = 1;
+            unsafe {
+                let _ = win32::DwmSetWindowAttribute(
+                    hwnd.0 as isize,
+                    3, // DWMWA_TRANSITIONS_FORCEDISABLED
+                    &value as *const i32 as *const std::ffi::c_void,
+                    std::mem::size_of::<i32>() as u32,
+                );
+            }
+        }
+
         let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
         let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
+        let _ = screenshot_win.set_fullscreen(true);
         let _ = screenshot_win.set_always_on_top(true);
         let _ = screenshot_win.show();
         let _ = screenshot_win.set_focus();
@@ -226,6 +282,11 @@ fn create_pin_window(
         .unwrap()
         .as_millis());
 
+    // Securely cache image base64 first to defeat tauri event listener races
+    if let Ok(mut map) = get_pin_images().lock() {
+        map.insert(label.clone(), image_base64.clone());
+    }
+
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
@@ -237,6 +298,7 @@ fn create_pin_window(
     .skip_taskbar(true)
     .resizable(true)
     .transparent(true)
+    .shadow(false)
     .build()
     .map_err(|e| format!("创建贴图窗口失败: {}", e))?;
 
@@ -244,7 +306,20 @@ fn create_pin_window(
     let _ = webview.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = webview.set_size(tauri::PhysicalSize::new(w, h));
 
-    // Send image data to the new pin window
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = webview.hwnd() {
+        let value: i32 = 1;
+        unsafe {
+            let _ = win32::DwmSetWindowAttribute(
+                hwnd.0 as isize,
+                3, // DWMWA_TRANSITIONS_FORCEDISABLED
+                &value as *const i32 as *const std::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+    }
+
+    // Keep emitting event for backwards/concurrent compatibility
     use tauri::Emitter;
     let _ = webview.emit("pin-image-data", &image_base64);
 
@@ -329,7 +404,14 @@ fn get_window_rects() -> Result<String, String> {
 fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
     // Just hide screenshot window — main window stays closed (tray only)
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+        let _ = screenshot_win.set_fullscreen(false);
         let _ = screenshot_win.hide();
+    }
+    // Restore always_on_top for all pin windows
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("pin_") {
+            let _ = window.set_always_on_top(true);
+        }
     }
     Ok(())
 }
@@ -339,7 +421,7 @@ fn get_fullscreen_image() -> Result<String, String> {
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Users\\ysn\\AppData\\Local".to_string());
     let mut path = PathBuf::from(local_app_data);
     path.push("ScreenshotTranslator");
-    path.push("fullscreen_temp.png");
+    path.push("fullscreen_temp.jpg");
     if !path.exists() {
         return Err("没有可用的全屏截图".to_string());
     }
@@ -355,7 +437,7 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Users\\ysn\\AppData\\Local".to_string());
     let mut path = PathBuf::from(local_app_data);
     path.push("ScreenshotTranslator");
-    path.push("fullscreen_temp.png");
+    path.push("fullscreen_temp.jpg");
     if !path.exists() {
         return Err("原始截图文件不存在".to_string());
     }
@@ -434,11 +516,28 @@ pub fn run() {
             copy_image_to_clipboard,
             save_image_to_file,
             create_pin_window,
+            get_pin_image,
+            delete_pin_image,
             quick_fullscreen_capture,
             cancel_screenshot,
             get_window_rects
         ])
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+                if let Ok(hwnd) = screenshot_win.hwnd() {
+                    let value: i32 = 1;
+                    unsafe {
+                        let _ = win32::DwmSetWindowAttribute(
+                            hwnd.0 as isize,
+                            3, // DWMWA_TRANSITIONS_FORCEDISABLED
+                            &value as *const i32 as *const std::ffi::c_void,
+                            std::mem::size_of::<i32>() as u32,
+                        );
+                    }
+                }
+            }
+
             // Register Alt+A shortcut (normal screenshot)
             let shortcut_a = Shortcut::new(Some(Modifiers::ALT), Code::KeyA);
             let reg_res = app.global_shortcut().on_shortcut(shortcut_a, move |app, _shortcut, event| {
@@ -532,10 +631,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Any window close → just hide, don't exit the app
-                // Only way to exit is tray right-click → 退出, or kill process
-                let _ = window.hide();
-                api.prevent_close();
+                let label = window.label();
+                if label == "main" || label == "screenshot" {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .run(tauri::generate_context!())

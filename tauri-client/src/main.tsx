@@ -12,6 +12,8 @@ const label = getCurrentWindow().label;
 if (label === "screenshot" || label.startsWith("pin_")) {
   document.body.style.backgroundColor = "transparent";
   document.documentElement.style.backgroundColor = "transparent";
+  document.body.classList.add("transparent-window");
+  document.documentElement.classList.add("transparent-window");
 }
 
 let Component: React.ComponentType;

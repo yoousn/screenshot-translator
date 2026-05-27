@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 export default function PinPage() {
   const [imgSrc, setImgSrc] = useState<string>("");
@@ -13,35 +14,53 @@ export default function PinPage() {
     document.body.style.setProperty("background-color", "transparent", "important");
     document.documentElement.style.setProperty("background-color", "transparent", "important");
 
-    // Listen for pin image data from Rust
+    const handleImageData = (base64: string) => {
+      const dataUrl = "data:image/png;base64," + base64;
+      setImgSrc(dataUrl);
+
+      // Auto-size window to image dimensions in physical pixels
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          imgRef.current = img;
+          const factor = await winRef.current.scaleFactor();
+          const screenW = window.screen.width * factor;
+          const screenH = window.screen.height * factor;
+          const maxW = Math.min(img.naturalWidth, screenW * 0.8);
+          const maxH = Math.min(img.naturalHeight, screenH * 0.8);
+          const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+          setScale(ratio);
+          
+          await winRef.current.setSize(
+            new PhysicalSize(
+              Math.round(img.naturalWidth * ratio),
+              Math.round(img.naturalHeight * ratio)
+            )
+          );
+        } catch (e) {
+          console.error("Failed to size pin window:", e);
+        }
+      };
+      img.src = dataUrl;
+    };
+
+    // 1. Instantly pull image data from Rust using the window label (defeats races!)
+    const loadCachedData = async () => {
+      try {
+        const base64 = await invoke<string>("get_pin_image", { label: winRef.current.label });
+        handleImageData(base64);
+      } catch (err) {
+        console.warn("Direct cache pull failed, waiting for event fallback:", err);
+      }
+    };
+    loadCachedData();
+
+    // 2. Listen for pin image data from Rust as a concurrent fallback
     let unlistenData: (() => void) | null = null;
     const setupListener = async () => {
       try {
         const unsub = await listen<string>("pin-image-data", (event) => {
-          const base64 = event.payload;
-          const dataUrl = "data:image/png;base64," + base64;
-          setImgSrc(dataUrl);
-
-          // Auto-size window to image dimensions in physical pixels
-          const img = new Image();
-          img.onload = async () => {
-            imgRef.current = img;
-            const factor = await winRef.current.scaleFactor();
-            const screenW = window.screen.width * factor;
-            const screenH = window.screen.height * factor;
-            const maxW = Math.min(img.naturalWidth, screenW * 0.8);
-            const maxH = Math.min(img.naturalHeight, screenH * 0.8);
-            const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
-            setScale(ratio);
-            
-            await winRef.current.setSize(
-              new PhysicalSize(
-                Math.round(img.naturalWidth * ratio),
-                Math.round(img.naturalHeight * ratio)
-              )
-            );
-          };
-          img.src = dataUrl;
+          handleImageData(event.payload);
         });
         unlistenData = unsub;
       } catch (err) {
@@ -85,6 +104,8 @@ export default function PinPage() {
       window.removeEventListener("wheel", handleWheel);
       window.removeEventListener("dblclick", handleDblClick);
       if (unlistenData) unlistenData();
+      // Clean up cache to prevent memory leak
+      invoke("delete_pin_image", { label: winRef.current.label }).catch(() => {});
     };
   }, []);
 

@@ -44,6 +44,7 @@ export default function ScreenshotPage() {
   });
 
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const translatedImgRef = useRef<HTMLImageElement | null>(null);
   const hasSelectedRef = useRef(false);
   hasSelectedRef.current = hasSelected;
   const rectRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
@@ -51,7 +52,30 @@ export default function ScreenshotPage() {
   const configRef = useRef<Config>({});
   configRef.current = config;
 
+  const isSelectingRef = useRef(false);
+  const isDraggingRef = useRef(false);
+  const isResizingRef = useRef<string | null>(null);
+  const startPosRef = useRef({ x: 0, y: 0 });
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const resizeStartRectRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const maskedCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const requestRef = useRef<number | null>(null);
+  const renderNeededRef = useRef(false);
+
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+
   useEffect(() => {
+    // 120Hz/144Hz continuous high refresh rate rendering loop
+    const tick = () => {
+      if (renderNeededRef.current) {
+        drawRef.current(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
+        renderNeededRef.current = false;
+      }
+      requestRef.current = requestAnimationFrame(tick);
+    };
+    requestRef.current = requestAnimationFrame(tick);
+
     // Load config for server API calls
     loadConfig();
 
@@ -120,6 +144,7 @@ export default function ScreenshotPage() {
       window.removeEventListener("keydown", handleKeyDown);
       if (unlistenEvent) unlistenEvent();
       if (unlistenMode) unlistenMode();
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, []);
 
@@ -147,6 +172,7 @@ export default function ScreenshotPage() {
     try {
       // Clear old screenshot immediately so canvas reflects a fresh state
       imageRef.current = null;
+      translatedImgRef.current = null;
       setImgSrc("");
       setRect({ x: 0, y: 0, w: 0, h: 0 });
       setHasSelected(false);
@@ -161,7 +187,7 @@ export default function ScreenshotPage() {
       if (!base64 || base64.length === 0) {
         throw new Error("截屏Base64数据为空");
       }
-      const dataUrl = "data:image/png;base64," + base64;
+      const dataUrl = "data:image/jpeg;base64," + base64;
       const img = new Image();
       img.src = dataUrl;
       img.onload = () => {
@@ -174,6 +200,19 @@ export default function ScreenshotPage() {
           screenshotBytes: Math.round(base64.length * 0.75),
           errorMsg: ""
         });
+
+        // Pre-render the masked background canvas to bypass alpha blending over massive raw buffers
+        const offscreen = document.createElement("canvas");
+        offscreen.width = window.innerWidth;
+        offscreen.height = window.innerHeight;
+        const oCtx = offscreen.getContext("2d");
+        if (oCtx) {
+          oCtx.drawImage(img, 0, 0, offscreen.width, offscreen.height);
+          oCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
+          oCtx.fillRect(0, 0, offscreen.width, offscreen.height);
+        }
+        maskedCanvasRef.current = offscreen;
+
         initCanvas(img);
       };
       img.onerror = () => {
@@ -193,10 +232,14 @@ export default function ScreenshotPage() {
     canvas.height = window.innerHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (maskedCanvasRef.current) {
+      ctx.drawImage(maskedCanvasRef.current, 0, 0);
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     setRect({ x: 0, y: 0, w: 0, h: 0 });
     setHasSelected(false);
   };
@@ -209,47 +252,109 @@ export default function ScreenshotPage() {
     return val;
   };
 
+  const getHandleAt = (mx: number, my: number, isClick: boolean = false) => {
+    if (!hasSelectedRef.current) return null;
+    const { x, y, w, h } = rectRef.current;
+    const tolerance = 8; // 8 pixels detection radius
+    
+    const points = {
+      nw: { x: x, y: y, cursor: "nwse-resize" },
+      ne: { x: x + w, y: y, cursor: "nesw-resize" },
+      sw: { x: x, y: y + h, cursor: "nesw-resize" },
+      se: { x: x + w, y: y + h, cursor: "nwse-resize" },
+      n: { x: x + w / 2, y: y, cursor: "ns-resize" },
+      s: { x: x + w / 2, y: y + h, cursor: "ns-resize" },
+      w: { x: x, y: y + h / 2, cursor: "ew-resize" },
+      e: { x: x + w, y: y + h / 2, cursor: "ew-resize" },
+    };
+
+    for (const [key, pt] of Object.entries(points)) {
+      if (Math.abs(mx - pt.x) <= tolerance && Math.abs(my - pt.y) <= tolerance) {
+        return { handle: key, cursor: pt.cursor };
+      }
+    }
+    
+    if (mx >= x && mx <= x + w && my >= y && my <= y + h) {
+      return { handle: "move", cursor: "move" };
+    }
+    
+    // If click is outside the box entirely, find the nearest handle to stretch (expand/shrink) the selection
+    if (isClick) {
+      let nearestKey = "se";
+      let minDistance = Infinity;
+      let nearestCursor = "nwse-resize";
+
+      for (const [key, pt] of Object.entries(points)) {
+        const dist = Math.hypot(mx - pt.x, my - pt.y);
+        if (dist < minDistance) {
+          minDistance = dist;
+          nearestKey = key;
+          nearestCursor = pt.cursor;
+        }
+      }
+      return { handle: nearestKey, cursor: nearestCursor };
+    }
+
+    return null;
+  };
+
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button === 2) {
       e.preventDefault();
-      cancelScreenshot();
-      return;
-    }
-    if (hasSelectedRef.current) {
-      const cx = e.clientX, cy = e.clientY;
-      const { x, y, w, h } = rectRef.current;
-      const inside = cx >= x && cx <= x + w && cy >= y && cy <= y + h;
-      if (!inside) {
-        // Click outside → auto copy to clipboard and exit
-        confirmScreenshot("copy");
+      if (hasSelectedRef.current) {
+        // Clear active selection on Right Click instead of exiting, restoring full mask
+        setRect({ x: 0, y: 0, w: 0, h: 0 });
+        rectRef.current = { x: 0, y: 0, w: 0, h: 0 };
+        setHasSelected(false);
+        setTranslatedResult(null);
+        translatedImgRef.current = null;
+        renderNeededRef.current = true;
       } else {
-        // Click inside → start dragging the selection
-        setIsDragging(true);
-        setDragStart({ x: cx, y: cy });
+        cancelScreenshot();
       }
       return;
     }
+
+    const cx = e.clientX, cy = e.clientY;
+    // Pass isClick = true to getHandleAt so that clicking anywhere outside fallback-selects the nearest handle of the existing box
+    const handleInfo = getHandleAt(cx, cy, true);
+
+    if (handleInfo) {
+      if (handleInfo.handle === "move") {
+        isDraggingRef.current = true;
+        dragStartRef.current = { x: cx, y: cy };
+      } else {
+        isResizingRef.current = handleInfo.handle;
+        dragStartRef.current = { x: cx, y: cy };
+        resizeStartRectRef.current = { ...rectRef.current };
+      }
+      return;
+    }
+
+    // Click outside selection (only reaches here if no selection exists yet) → start drawing a new selection box
+    isSelectingRef.current = true;
     setIsSelecting(true);
-    setStartPos({ x: e.clientX, y: e.clientY });
-    rectRef.current = { x: e.clientX, y: e.clientY, w: 0, h: 0 };
-    setRect({ x: e.clientX, y: e.clientY, w: 0, h: 0 });
+    startPosRef.current = { x: cx, y: cy };
+    rectRef.current = { x: cx, y: cy, w: 0, h: 0 };
+    setRect({ x: cx, y: cy, w: 0, h: 0 });
     setHasSelected(false);
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Update mouse coordinate tracker directly via DOM reference to ensure zero-lag performance
+    const cx = e.clientX, cy = e.clientY;
+
     if (mouseTrackerRef.current) {
-      mouseTrackerRef.current.style.left = `${e.clientX + 16}px`;
-      mouseTrackerRef.current.style.top = `${e.clientY + 20}px`;
-      mouseTrackerRef.current.textContent = `${e.clientX}, ${e.clientY}${
+      mouseTrackerRef.current.style.left = `${cx + 16}px`;
+      mouseTrackerRef.current.style.top = `${cy + 20}px`;
+      mouseTrackerRef.current.textContent = `${cx}, ${cy}${
         hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""
       }`;
     }
 
-    if (isDragging) {
-      const dx = e.clientX - dragStart.x;
-      const dy = e.clientY - dragStart.y;
-      setDragStart({ x: e.clientX, y: e.clientY });
+    if (isDraggingRef.current) {
+      const dx = cx - dragStartRef.current.x;
+      const dy = cy - dragStartRef.current.y;
+      dragStartRef.current = { x: cx, y: cy };
       
       rectRef.current = {
         x: Math.max(0, rectRef.current.x + dx),
@@ -258,59 +363,100 @@ export default function ScreenshotPage() {
         h: rectRef.current.h,
       };
       
-      draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
+      renderNeededRef.current = true;
       return;
     }
-    if (!isSelecting) return;
-    // Build snap reference points from window rects
-    const snapX: number[] = [];
-    const snapY: number[] = [];
-    for (const wr of windowRects) {
-      snapX.push(wr.x, wr.x + wr.w);
-      snapY.push(wr.y, wr.y + wr.h);
+
+    if (isResizingRef.current) {
+      const r = resizeStartRectRef.current;
+      const dx = cx - dragStartRef.current.x;
+      const dy = cy - dragStartRef.current.y;
+      
+      let x1 = r.x;
+      let y1 = r.y;
+      let x2 = r.x + r.w;
+      let y2 = r.y + r.h;
+      
+      const handle = isResizingRef.current;
+      if (handle.includes("e")) x2 = r.x + r.w + dx;
+      if (handle.includes("w")) x1 = r.x + dx;
+      if (handle.includes("s")) y2 = r.y + r.h + dy;
+      if (handle.includes("n")) y1 = r.y + dy;
+      
+      const finalX = Math.min(x1, x2);
+      const finalY = Math.min(y1, y2);
+      const finalW = Math.abs(x2 - x1);
+      const finalH = Math.abs(y2 - y1);
+      
+      rectRef.current = { x: finalX, y: finalY, w: finalW, h: finalH };
+      renderNeededRef.current = true;
+      return;
     }
-    let cx = snap(e.clientX, snapX);
-    let cy = snap(e.clientY, snapY);
-    const x = Math.min(startPos.x, cx);
-    const y = Math.min(startPos.y, cy);
-    const w = Math.abs(startPos.x - cx);
-    const h = Math.abs(startPos.y - cy);
-    
-    rectRef.current = { x, y, w, h };
-    draw(x, y, w, h);
+
+    if (isSelectingRef.current) {
+      const snapX: number[] = [];
+      const snapY: number[] = [];
+      for (const wr of windowRects) {
+        snapX.push(wr.x, wr.x + wr.w);
+        snapY.push(wr.y, wr.y + wr.h);
+      }
+      let snapCx = snap(cx, snapX);
+      let snapCy = snap(cy, snapY);
+      const x = Math.min(startPosRef.current.x, snapCx);
+      const y = Math.min(startPosRef.current.y, snapCy);
+      const w = Math.abs(startPosRef.current.x - snapCx);
+      const h = Math.abs(startPosRef.current.y - snapCy);
+      
+      rectRef.current = { x, y, w, h };
+      renderNeededRef.current = true;
+      return;
+    }
+
+    const handleInfo = getHandleAt(cx, cy);
+    if (handleInfo) {
+      e.currentTarget.style.cursor = handleInfo.cursor;
+    } else {
+      e.currentTarget.style.cursor = "crosshair";
+    }
   };
 
   const handleMouseUp = () => {
-    if (isDragging) {
-      setIsDragging(false);
-      // Sync final dragged coordinates to React state to display the toolbar
-      setRect({ ...rectRef.current });
-      return;
-    }
-    if (!isSelecting) return;
+    isSelectingRef.current = false;
     setIsSelecting(false);
+    isDraggingRef.current = false;
+    isResizingRef.current = null;
     
-    // Sync final selected coordinates to React state to display the toolbar
     setRect({ ...rectRef.current });
-    
     if (rectRef.current.w > 5 && rectRef.current.h > 5) {
       setHasSelected(true);
     } else {
       setHasSelected(false);
     }
+    renderNeededRef.current = true;
   };
 
-  const draw = (rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement) => {
+  const handleDoubleClick = () => {
+    if (hasSelectedRef.current) {
+      confirmScreenshot("copy");
+    }
+  };
+
+  function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement) {
     const canvas = canvasRef.current;
     if (!canvas || !imageRef.current) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    // Draw detected window bounds as subtle snap hints
+    // Draw pre-rendered masked background directly (massive performance saving!)
+    if (maskedCanvasRef.current) {
+      ctx.drawImage(maskedCanvasRef.current, 0, 0);
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    
     if (windowRects.length > 0) {
       ctx.strokeStyle = "rgba(82, 196, 26, 0.35)";
       ctx.lineWidth = 1;
@@ -323,14 +469,44 @@ export default function ScreenshotPage() {
     
     if (rw > 0 && rh > 0) {
       ctx.clearRect(rx, ry, rw, rh);
-      if (translatedImg) {
-        ctx.drawImage(translatedImg, rx, ry, rw, rh);
+      const activeImg = translatedImg || translatedImgRef.current;
+      if (activeImg) {
+        ctx.drawImage(activeImg, rx, ry, rw, rh);
       } else {
-        ctx.drawImage(imageRef.current, rx, ry, rw, rh, rx, ry, rw, rh);
+        // High-DPI source cropping correction for ultra-crisp display at native scaling
+        const scaleX = imageRef.current.naturalWidth / canvas.width;
+        const scaleY = imageRef.current.naturalHeight / canvas.height;
+        ctx.drawImage(
+          imageRef.current,
+          rx * scaleX, ry * scaleY, rw * scaleX, rh * scaleY,
+          rx, ry, rw, rh
+        );
       }
       ctx.strokeStyle = "#1677ff";
       ctx.lineWidth = 2;
       ctx.strokeRect(rx, ry, rw, rh);
+      
+      // Draw 8 small resizing handles on the border
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#1677ff";
+      ctx.lineWidth = 2;
+      const hs = 6;
+      const halfHs = 3;
+      const handlePoints = [
+        { x: rx, y: ry },
+        { x: rx + rw, y: ry },
+        { x: rx, y: ry + rh },
+        { x: rx + rw, y: ry + rh },
+        { x: rx + rw / 2, y: ry },
+        { x: rx + rw / 2, y: ry + rh },
+        { x: rx, y: ry + rh / 2 },
+        { x: rx + rw, y: ry + rh / 2 },
+      ];
+      for (const p of handlePoints) {
+        ctx.fillRect(p.x - halfHs, p.y - halfHs, hs, hs);
+        ctx.strokeRect(p.x - halfHs, p.y - halfHs, hs, hs);
+      }
+
       ctx.fillStyle = "rgba(22, 119, 255, 0.85)";
       ctx.font = "12px sans-serif";
       const text = `${rw} x ${rh}`;
@@ -385,6 +561,7 @@ export default function ScreenshotPage() {
       overlayImg.src = resultUrl;
       overlayImg.onload = () => {
         // Redraw canvas with translated image overlay in the selected region
+        translatedImgRef.current = overlayImg;
         draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
         
         // Store result for later copy/save via confirmScreenshot
@@ -392,34 +569,8 @@ export default function ScreenshotPage() {
         reader.onloadend = async () => {
           const resultBase64 = (reader.result as string).split(",")[1];
           setTranslatedResult(resultBase64);
-          
-          try {
-            // Automatically copy translated image to clipboard
-            await invoke("copy_image_to_clipboard", { imageBase64: resultBase64 });
-            
-            // Automatically pin the translation at the exact physical screen position!
-            const dpr = window.devicePixelRatio || 1;
-            const winPos = await getCurrentWindow().outerPosition();
-            const physicalX = Math.round(rectRef.current.x * dpr) + winPos.x;
-            const physicalY = Math.round(rectRef.current.y * dpr) + winPos.y;
-            const physicalW = Math.round(rectRef.current.w * dpr);
-            const physicalH = Math.round(rectRef.current.h * dpr);
-
-            await invoke("create_pin_window", { 
-              imageBase64: resultBase64,
-              x: physicalX,
-              y: physicalY,
-              w: physicalW,
-              h: physicalH
-            });
-            
-            message.success({ content: "翻译并贴图完成，已复制到剪贴板！", key: "translate" });
-            
-            // Auto close/hide screenshot window
-            await invoke("cancel_screenshot");
-          } catch (pinErr: any) {
-            message.error({ content: `自动贴图或复制失败: ${pinErr.toString()}`, key: "translate" });
-          }
+          message.success({ content: "翻译完成！", key: "translate" });
+          renderNeededRef.current = true;
         };
         reader.readAsDataURL(resultBlob);
         setIsTranslating(false);
@@ -485,7 +636,7 @@ export default function ScreenshotPage() {
       const physicalW = Math.round(rectRef.current.w * dpr);
       const physicalH = Math.round(rectRef.current.h * dpr);
 
-      const base64 = await captureRegionBase64();
+      const base64 = translatedResult || await captureRegionBase64();
       await invoke("create_pin_window", { 
         imageBase64: base64,
         x: physicalX,
@@ -510,13 +661,7 @@ export default function ScreenshotPage() {
 
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
     try {
-      let base64: string;
-      // If we have a translated result and action is copy/both, use translated image
-      if (translatedResult && (action === "copy" || action === "both")) {
-        base64 = translatedResult;
-      } else {
-        base64 = await captureRegionBase64();
-      }
+      const base64 = translatedResult || await captureRegionBase64();
 
       if (action === "copy" || action === "both") {
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
@@ -589,24 +734,45 @@ export default function ScreenshotPage() {
         </div>
       )}
 
-      {/* Translation loading: spinning overlay with light gray bg */}
-      {isTranslating && (
+      {/* Translation loading: restricted ONLY to the selected region! */}
+      {isTranslating && rect.w > 0 && rect.h > 0 && (
         <div style={{
-          position: "absolute", top: 0, left: 0, width: "100vw", height: "100vh",
-          zIndex: 200, background: "rgba(200, 200, 210, 0.55)",
-          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+          position: "absolute",
+          top: rect.y,
+          left: rect.x,
+          width: rect.w,
+          height: rect.h,
+          zIndex: 200,
+          background: "rgba(240, 240, 245, 0.75)",
+          border: "2px dashed #1677ff",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          boxSizing: "border-box",
+          overflow: "hidden"
         }}>
           <div style={{
-            width: 48, height: 48, borderRadius: "50%",
-            border: "4px solid #e0e0e0", borderTopColor: "#1677ff",
+            width: Math.min(32, Math.max(16, rect.w * 0.2)),
+            height: Math.min(32, Math.max(16, rect.w * 0.2)),
+            borderRadius: "50%",
+            border: "3px solid #e0e0e0",
+            borderTopColor: "#1677ff",
             animation: "spin 0.8s linear infinite",
           }} />
-          <div style={{
-            marginTop: 16, color: "#333", fontSize: 13,
-            fontFamily: "'Inter', sans-serif", fontWeight: 500,
-          }}>
-            正在翻译重绘中…
-          </div>
+          {rect.h > 40 && rect.w > 80 && (
+            <div style={{
+              marginTop: 8,
+              color: "#1677ff",
+              fontSize: 12,
+              fontFamily: "'Inter', sans-serif",
+              fontWeight: 500,
+              whiteSpace: "nowrap",
+              textShadow: "0 1px 2px rgba(255,255,255,0.8)"
+            }}>
+              翻译中…
+            </div>
+          )}
         </div>
       )}
 
@@ -615,6 +781,7 @@ export default function ScreenshotPage() {
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onDoubleClick={handleDoubleClick}
         style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }}
       />
 

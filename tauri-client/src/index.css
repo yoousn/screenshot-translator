@@ -89,3 +89,9 @@ input, select, textarea {
 ::-webkit-scrollbar-thumb:hover {
   background: #cbd5e0;
 }
+
+body.transparent-window, html.transparent-window, .transparent-window #root {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+

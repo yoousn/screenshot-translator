@@ -25,9 +25,8 @@ if %errorlevel% neq 0 (
 echo [2/3] Rust 编译成功！
 echo.
 
-echo [3/3] 复制产物 & 清理缓存 ...
+echo [3/3] 复制产物 & 清理 ...
 copy /Y src-tauri\target\release\tauri-client.exe ..\tauri-client.exe >nul
-if exist src-tauri\target (rmdir /s /q src-tauri\target)
 if exist dist (rmdir /s /q dist)
 echo [3/3] 完成！
 echo.
