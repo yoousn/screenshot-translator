@@ -41,6 +41,7 @@ class ImageProcessor:
         self._font_cache = {}
         self._font_path = None
         self._ocr_cache = OcrCache()
+        self.ocr_ready = False  # 🌟 OCR 状态指示位
         if load_ocr:
             self._ensure_ocr()
         else:
@@ -66,8 +67,10 @@ class ImageProcessor:
                 except Exception:
                     pass
                 self._last_init_ms = (time.perf_counter() - start_init) * 1000
+                self.ocr_ready = True  # 🌟 模型预热就绪
             else:
                 self._last_init_ms = 0.0
+                self.ocr_ready = True
 
     # ──────────────────────────────────────────────
     # 1. 字体加载
@@ -324,7 +327,7 @@ class ImageProcessor:
     # ──────────────────────────────────────────────
     # 5. 主流程
     # ──────────────────────────────────────────────
-    def process_and_draw(self, img_bytes: bytes, translator_batch_fn) -> tuple[bytes, dict]:
+    def process_and_draw(self, img_bytes: bytes, translator_batch_fn, config: dict = None) -> tuple[bytes, dict]:
         stats = {
             "init_ms": 0.0,
             "ocr_ms": 0.0,
@@ -335,7 +338,9 @@ class ImageProcessor:
             "total_ms": 0.0,
             "ocr_blocks": 0,
             "translate_units": 0,
-            "cache_hits": 0
+            "cache_hits": 0,
+            "ocr_ready": self.ocr_ready,
+            "ocr_cache_hit": False
         }
         start_time = time.perf_counter()
         try:
@@ -350,29 +355,40 @@ class ImageProcessor:
                 stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
                 return img_bytes, stats
 
-            # 计算图片 MD5 以支持 OCR 缓存
+            # 🛠️ 读取动态配置参数，提供参数级安全隔离
+            ocr_max_side = config.get("ocr_max_side", 1280) if config else 1280
+            ocr_cache_enabled = config.get("ocr_cache_enabled", True) if config else True
+
+            # 计算图片 MD5 
             import hashlib
             img_md5 = hashlib.md5(img_bytes).hexdigest()
+
+            # 🌟 Composite OCR Cache Key (融合图片、模型版本、分辨率限制、语种以及核心阈值)
+            ocr_version = "ppocr_v4"
+            lang = "ch"
+            ocr_cache_key = f"{img_md5}_{ocr_version}_{ocr_max_side}_{lang}_0.3_0.2_1.6"
 
             # ── 步骤：初始化 OCR ──
             self._ensure_ocr()
             stats["init_ms"] = getattr(self, "_last_init_ms", 0.0)
+            stats["ocr_ready"] = self.ocr_ready  # 在完成 _ensure_ocr 后动态记录最新状态
 
             # ── 步骤：OCR 识别 ──
             ocr_start = time.perf_counter()
-            cached_ocr = self._ocr_cache.get(img_md5)
+            cached_ocr = self._ocr_cache.get(ocr_cache_key) if ocr_cache_enabled else None
+            
             if cached_ocr is not None:
                 raw_lines = cached_ocr
                 stats["ocr_ms"] = (time.perf_counter() - ocr_start) * 1000
+                stats["ocr_cache_hit"] = True
             else:
-                # 🌟 缩小区域 OCR 优化：如果长边大于 1280px，按比例缩小进行 OCR，然后还原坐标
+                # 🌟 自适应等比下采样 OCR 推理加速，保留配置项 ocr_max_side 可调能力
                 h, w = img_cv.shape[:2]
                 max_side = max(h, w)
                 ocr_img = img_cv
                 scale_factor = 1.0
-                MAX_OCR_SIDE = 1280
-                if max_side > MAX_OCR_SIDE:
-                    scale_factor = MAX_OCR_SIDE / max_side
+                if ocr_max_side > 0 and max_side > ocr_max_side:
+                    scale_factor = ocr_max_side / max_side
                     new_w = int(w * scale_factor)
                     new_h = int(h * scale_factor)
                     ocr_img = cv2.resize(img_cv, (new_w, new_h), interpolation=cv2.INTER_AREA)
@@ -390,7 +406,9 @@ class ImageProcessor:
                                 pt[1] /= scale_factor
                 else:
                     raw_lines = []
-                self._ocr_cache.set(img_md5, raw_lines)
+                
+                if ocr_cache_enabled:
+                    self._ocr_cache.set(ocr_cache_key, raw_lines)
 
             if not raw_lines:
                 stats["total_ms"] = (time.perf_counter() - start_time) * 1000

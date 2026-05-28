@@ -118,7 +118,7 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
         return translator.translate_batch(texts, "auto", "zh", stats_ref)
         
     try:
-        out_bytes, stats = processor.process_and_draw(img_bytes, translator_batch_fn)
+        out_bytes, stats = processor.process_and_draw(img_bytes, translator_batch_fn, config=get_config())
         
         # 终端漂亮的可视化耗时报告
         if get_config().get("debug_trace", True):
@@ -156,7 +156,9 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
             "X-Trace-Other-Ms": f"{stats.get('other_ms', 0.0):.2f}",
             "X-Trace-Ocr-Blocks": str(stats["ocr_blocks"]),
             "X-Trace-Translate-Units": str(stats["translate_units"]),
-            "X-Trace-Cache-Hits": str(stats["cache_hits"])
+            "X-Trace-Cache-Hits": str(stats["cache_hits"]),
+            "X-Ocr-Ready": "true" if stats.get("ocr_ready", False) else "false",
+            "X-Ocr-Cache-Hit": "true" if stats.get("ocr_cache_hit", False) else "false"
         }
         return Response(content=out_bytes, media_type="image/png", headers=headers)
     except Exception as e:
