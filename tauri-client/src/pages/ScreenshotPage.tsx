@@ -14,6 +14,11 @@ import {
 interface Config {
   serverUrl?: string;
   clientToken?: string;
+  useLocalOcr?: boolean;
+  fallbackToRemoteOcr?: boolean;
+  localOcrExecutablePath?: string;
+  localOcrTimeoutMs?: number;
+  targetLang?: string;
 }
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -601,6 +606,121 @@ export default function ScreenshotPage() {
     return await invoke<string>("capture_region", { x, y, w, h });
   };
 
+  interface OcrBlock {
+    text: string;
+    confidence: number;
+    box_coords: [number, number][];
+  }
+
+  const renderTranslatedBlocks = (
+    base64Image: string,
+    blocks: OcrBlock[],
+    translations: string[]
+  ): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + base64Image;
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("无法创建 2D 画布上下文"));
+          return;
+        }
+
+        // 绘制原始裁剪截图
+        ctx.drawImage(img, 0, 0);
+
+        // 逐块擦除并重绘翻译文字
+        blocks.forEach((block, idx) => {
+          const transText = translations[idx] || block.text;
+          const box = block.box_coords;
+          if (box.length < 4) return;
+
+          const xs = box.map(p => p[0]);
+          const ys = box.map(p => p[1]);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          const w = maxX - minX;
+          const h = maxY - minY;
+
+          // 1. 多点背景 RGB 采样
+          const corners = [
+            [minX + 2, minY + 2],
+            [maxX - 2, minY + 2],
+            [maxX - 2, maxY - 2],
+            [minX + 2, maxY - 2]
+          ];
+          
+          let sumR = 0, sumG = 0, sumB = 0, samples = 0;
+          corners.forEach(([px, py]) => {
+            const cx = Math.max(0, Math.min(img.width - 1, px));
+            const cy = Math.max(0, Math.min(img.height - 1, py));
+            const pixel = ctx.getImageData(cx, cy, 1, 1).data;
+            sumR += pixel[0];
+            sumG += pixel[1];
+            sumB += pixel[2];
+            samples++;
+          });
+
+          const avgR = Math.round(sumR / samples);
+          const avgG = Math.round(sumG / samples);
+          const avgB = Math.round(sumB / samples);
+
+          // 擦除原文字区块
+          ctx.fillStyle = `rgb(${avgR}, ${avgG}, ${avgB})`;
+          ctx.fillRect(minX, minY, w, h);
+
+          // 2. 相对亮度反色计算
+          const luminance = 0.299 * avgR + 0.587 * avgG + 0.114 * avgB;
+          const fontColor = luminance > 128 ? "#000000" : "#ffffff";
+
+          // 3. 自适应高度排版
+          const fontSize = Math.max(12, Math.min(48, Math.round(h * 0.85)));
+          ctx.font = `${fontSize}px 'Microsoft YaHei', -apple-system, sans-serif`;
+          ctx.fillStyle = fontColor;
+          ctx.textBaseline = "middle";
+          ctx.textAlign = "center";
+
+          // 智能按最大宽度折行
+          const chars = transText.split("");
+          let line = "";
+          const lines: string[] = [];
+          
+          for (let n = 0; n < chars.length; n++) {
+            const testLine = line + chars[n];
+            const metrics = ctx.measureText(testLine);
+            if (metrics.width > w && n > 0) {
+              lines.push(line);
+              line = chars[n];
+            } else {
+              line = testLine;
+            }
+          }
+          lines.push(line);
+
+          // 居中垂直绘制
+          const totalTextHeight = lines.length * fontSize * 1.1;
+          let startY = minY + h / 2 - totalTextHeight / 2 + fontSize / 2;
+
+          lines.forEach(l => {
+            ctx.fillText(l, minX + w / 2, startY);
+            startY += fontSize * 1.1;
+          });
+        });
+
+        // 导出 PNG base64 字节流
+        const base64Png = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+        resolve(base64Png);
+      };
+      img.onerror = (e) => reject(new Error("原始截图解码失败：" + e));
+    });
+  };
+
   const handleTranslate = async () => {
     const serverUrl = configRef.current.serverUrl || "https://ocr.yousn.me";
     const token = configRef.current.clientToken || "";
@@ -608,7 +728,62 @@ export default function ScreenshotPage() {
       setIsTranslating(true);
       message.loading({ content: "正在请求翻译重绘...", key: "translate", duration: 0 });
       const base64 = await captureRegionBase64();
-      const resultBase64 = await invoke<string>("api_translate", { base64Image: base64, serverUrl, clientToken: token });
+      
+      let resultBase64 = "";
+      if (configRef.current.useLocalOcr) {
+        try {
+          console.log("[Local OCR Flow] 触发本地识别...");
+          const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
+            imageBase64: base64,
+            executablePath: configRef.current.localOcrExecutablePath || null
+          });
+          
+          if (!ocrBlocks || ocrBlocks.length === 0) {
+            throw new Error("本地未识别到任何文本内容");
+          }
+          
+          console.log("[Local OCR Flow] 本地识别成功，向云端发送文本翻译...", ocrBlocks.length);
+          const sUrl = serverUrl.replace(/\/$/, "");
+          const response = await fetch(`${sUrl}/api/translate_text`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": token
+            },
+            body: JSON.stringify({
+              blocks: ocrBlocks.map(b => ({
+                text: b.text,
+                confidence: b.confidence,
+                box: b.box_coords
+              })),
+              source_lang: "auto",
+              target_lang: "zh"
+            })
+          });
+          
+          if (!response.ok) {
+            throw new Error(`文本翻译请求失败，状态码: ${response.status}`);
+          }
+          
+          const transData = await response.json();
+          if (transData.status !== "success") {
+            throw new Error(transData.error || "翻译引擎未成功返回结果");
+          }
+          
+          console.log("[Local OCR Flow] 翻译获取成功，开始本地重绘渲染...");
+          resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, transData.translations);
+        } catch (localErr: any) {
+          console.warn("[Local OCR Flow] 本地识别与重绘链条出错，尝试云端后备...", localErr);
+          if (configRef.current.fallbackToRemoteOcr) {
+            resultBase64 = await invoke<string>("api_translate", { base64Image: base64, serverUrl, clientToken: token });
+          } else {
+            throw localErr;
+          }
+        }
+      } else {
+        resultBase64 = await invoke<string>("api_translate", { base64Image: base64, serverUrl, clientToken: token });
+      }
+      
       const dataUrl = "data:image/png;base64," + resultBase64;
       const overlayImg = new Image();
       overlayImg.onload = () => {
