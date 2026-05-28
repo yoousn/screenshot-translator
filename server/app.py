@@ -198,6 +198,61 @@ async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)
     except Exception as e:
         return JSONResponse(status_code=500, content={"status": "failed", "error": f"OCR 处理失败: {str(e)}"})
 
+from pydantic import BaseModel
+from typing import List, Optional
+
+class OcrBlockModel(BaseModel):
+    text: str
+    confidence: float
+    box: List[List[float]]
+
+class TranslateTextRequest(BaseModel):
+    blocks: List[OcrBlockModel]
+    source_lang: Optional[str] = "auto"
+    target_lang: Optional[str] = "zh"
+    render_mode: Optional[str] = "client"
+
+@app.post("/api/translate_text")
+async def translate_text_endpoint(
+    req: TranslateTextRequest,
+    x_api_key: str = Header(None, alias="x-api-key")
+):
+    verify_token(x_api_key)
+    
+    if not req.blocks:
+        return {
+            "status": "success",
+            "translations": [],
+            "cache_hits": 0,
+            "channel": get_config().get("active_channel", "google")
+        }
+    
+    texts = [block.text for block in req.blocks]
+    
+    # 动态获取当前激活的翻译引擎
+    translator = get_active_translator()
+    
+    stats_ref = {"cache_hits": 0}
+    try:
+        translations = translator.translate_batch(texts, req.source_lang, req.target_lang, stats_ref)
+    except Exception as e:
+        print(f"[translate_text] error during batch translation: {e}")
+        # 降级：如果 translate_batch 崩溃，则对单个单词独立处理，容错性极强
+        translations = []
+        for text in texts:
+            try:
+                res = translator.translate(text, source_lang=req.source_lang, target_lang=req.target_lang)
+                translations.append(res)
+            except Exception:
+                translations.append(text)
+                
+    return {
+        "status": "success",
+        "translations": translations,
+        "cache_hits": stats_ref["cache_hits"],
+        "channel": get_config().get("active_channel", "google")
+    }
+
 @app.post("/api/config/test")
 def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
     verify_token(x_api_key)
