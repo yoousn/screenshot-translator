@@ -35,7 +35,7 @@ const makeImageFormData = (base64: string) => {
 
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const mouseTrackerRef = useRef<HTMLDivElement>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
   const [hasSelected, setHasSelected] = useState(false);
@@ -49,6 +49,7 @@ export default function ScreenshotPage() {
   const [ocrPreviewBase64, setOcrPreviewBase64] = useState<string | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
+  const [overlayVisible, setOverlayVisible] = useState(false);
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
 
@@ -64,32 +65,14 @@ export default function ScreenshotPage() {
 
     imageRef.current = null;
     translatedImgRef.current = null;
-    maskedCanvasRef.current = null;
     setTranslatedResult(null);
     setOcrResultText(null);
     setOcrPreviewBase64(null);
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
-    setIsSelecting(false);
-    setMousePos(null);
     setScreenshotState("initializing");
+    setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
-
-    isSelectingRef.current = false;
-    isDraggingRef.current = false;
-    isResizingRef.current = null;
-    startPosRef.current = { x: 0, y: 0 };
-    dragStartRef.current = { x: 0, y: 0 };
-    resizeStartRectRef.current = EMPTY_RECT;
-    renderNeededRef.current = true;
-
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-      }
-    }
 
     return currentId;
   };
@@ -154,7 +137,6 @@ export default function ScreenshotPage() {
     };
     requestRef.current = requestAnimationFrame(tick);
 
-    console.log("[ScreenshotPage] mounted");
     loadConfig();
     document.body.style.setProperty("margin", "0", "important");
     document.body.style.setProperty("overflow", "hidden", "important");
@@ -171,7 +153,6 @@ export default function ScreenshotPage() {
 
     listen("screenshot-updated", (event) => {
       const base64 = event.payload as string;
-      console.log("[ScreenshotPage] screenshot data received", base64 ? base64.length : 0);
       if (base64) {
         loadFullscreenFromBase64(base64);
       } else {
@@ -299,8 +280,17 @@ export default function ScreenshotPage() {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
+      
+      try {
+        await img.decode?.();
+      } catch (e) {
+        console.warn("[ScreenshotPage] img.decode failed", e);
+      }
+
+      if (sessionId !== captureIdRef.current) return;
+
       imageRef.current = img;
-      console.log("[ScreenshotPage] image loaded", sessionId);
+      console.log("[ScreenshotPage] image loaded & decoded", sessionId);
       setDbgStatus({ 
         imageLoaded: true, 
         imageWidth: img.naturalWidth, 
@@ -311,6 +301,16 @@ export default function ScreenshotPage() {
       setScreenshotState("ready");
       await waitForStableViewport(img);
       initCanvas(img);
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(async () => {
+          if (sessionId !== captureIdRef.current) return;
+          await invoke("overlay_ready_to_show").catch((err) => {
+            console.error("[ScreenshotPage] overlay_ready_to_show failed:", err);
+          });
+          setOverlayVisible(true);
+        });
+      });
     };
 
     img.onerror = () => {
@@ -320,6 +320,7 @@ export default function ScreenshotPage() {
         timeoutRef.current = null;
       }
       console.warn("[ScreenshotPage] image decode failed", sessionId, dataUrl.length);
+      cancelScreenshot();
     };
     img.src = dataUrl;
   };
@@ -391,6 +392,7 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!overlayVisible) return;
     if (e.button === 2) {
       e.preventDefault();
       if (hasSelectedRef.current) {
@@ -430,9 +432,14 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!overlayVisible) return;
     const cx = e.clientX;
     const cy = e.clientY;
-    setMousePos({ x: cx, y: cy });
+    if (mouseTrackerRef.current) {
+      mouseTrackerRef.current.style.left = `${cx + 16}px`;
+      mouseTrackerRef.current.style.top = `${cy + 20}px`;
+      mouseTrackerRef.current.textContent = `${cx}, ${cy}${hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""}`;
+    }
 
     if (isDraggingRef.current) {
       const dx = cx - dragStartRef.current.x;
@@ -488,6 +495,7 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseUp = () => {
+    if (!overlayVisible) return;
     const wasSelecting = isSelectingRef.current;
     isSelectingRef.current = false;
     setIsSelecting(false);
@@ -503,6 +511,7 @@ export default function ScreenshotPage() {
   };
 
   const handleDoubleClick = () => {
+    if (!overlayVisible) return;
     if (hasSelectedRef.current) confirmScreenshot("copy");
   };
 
@@ -707,28 +716,10 @@ export default function ScreenshotPage() {
     setIsTranslating(false);
     setIsOCRing(false);
     setScreenshotState("initializing");
+    setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
     imageRef.current = null;
     translatedImgRef.current = null;
-    maskedCanvasRef.current = null;
-    setIsSelecting(false);
-    setMousePos(null);
-
-    isSelectingRef.current = false;
-    isDraggingRef.current = false;
-    isResizingRef.current = null;
-    startPosRef.current = { x: 0, y: 0 };
-    dragStartRef.current = { x: 0, y: 0 };
-    resizeStartRectRef.current = EMPTY_RECT;
-    renderNeededRef.current = true;
-
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-      }
-    }
   };
 
   const cancelScreenshot = async () => {
@@ -755,18 +746,15 @@ export default function ScreenshotPage() {
     }
   };
 
-  console.log("[ScreenshotPage] rendering screenshot UI", { state: screenshotState });
-
   return (
-    <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }} onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}>
-      {mousePos && (
-        <div style={{ position: "absolute", left: `${mousePos.x + 16}px`, top: `${mousePos.y + 20}px`, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>
-          {mousePos.x}, {mousePos.y}
-          {hasSelected && ` | ${rect.w}×${rect.h}`}
-        </div>
+    <div
+      className={`screenshot-root ${overlayVisible ? "ready" : "initializing"}`}
+      style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }}
+      onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}
+    >
+      {overlayVisible && (
+        <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>0, 0</div>
       )}
-
-
 
       {isTranslating && rect.w > 0 && rect.h > 0 && (
         <div style={{ position: "absolute", top: rect.y, left: rect.x, width: rect.w, height: rect.h, zIndex: 200, background: "rgba(240, 240, 245, 0.75)", border: "2px dashed #1677ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxSizing: "border-box", overflow: "hidden" }}>
@@ -777,7 +765,7 @@ export default function ScreenshotPage() {
 
       <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }} />
 
-      {hasSelected && !isSelecting && (
+      {overlayVisible && hasSelected && !isSelecting && (
         <div style={{ position: "absolute", top: rect.y + rect.h + 8 + 36 > window.innerHeight ? rect.y - 44 : rect.y + rect.h + 8, left: Math.max(8, Math.min(rect.x + rect.w - 480, window.innerWidth - 496)), zIndex: 100, background: "#fff", padding: "6px 10px", borderRadius: 8, boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)", border: "1px solid #e8e8e8" }} onContextMenu={(e) => e.stopPropagation()}>
           <Space size="small" wrap>
             <Button size="small" icon={<TranslationOutlined />} type="primary" ghost onClick={handleTranslate} loading={isTranslating}>翻译 (Ctrl+Q)</Button>

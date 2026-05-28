@@ -103,17 +103,13 @@ html, body, #root {
   overflow: hidden;
 }
 
-.screenshot-root {
-  transition: none !important;
-}
-
 .screenshot-root.initializing {
-  opacity: 0 !important;
-  pointer-events: none !important;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .screenshot-root.ready {
-  opacity: 1 !important;
-  pointer-events: auto !important;
+  opacity: 1;
+  pointer-events: auto;
 }
 
