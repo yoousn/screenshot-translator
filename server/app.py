@@ -107,29 +107,30 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
         out_bytes, stats = processor.process_and_draw(img_bytes, translator_batch_fn)
         
         # 终端漂亮的可视化耗时报告
-        total = max(stats["total_ms"], 0.001)
-        report_lines = [
-            "+--------------------------------------------------------+",
-            "|               [TIMER] TRANSLATION REPORT               |",
-            "+--------------------------------------------------------+",
-            f"|  Total Duration:     {stats['total_ms']:8.2f} ms                     |",
-            f"|  +- Init Step:       {stats.get('init_ms', 0.0):8.2f} ms  ({stats.get('init_ms', 0.0)/total*100:5.1f}%)        |",
-            f"|  +- OCR Step:        {stats['ocr_ms']:8.2f} ms  ({stats['ocr_ms']/total*100:5.1f}%)        |",
-            f"|  +- Translate Step:  {stats['translate_ms']:8.2f} ms  ({stats['translate_ms']/total*100:5.1f}%)        |",
-            f"|  +- Render Step:     {stats['render_ms']:8.2f} ms  ({stats['render_ms']/total*100:5.1f}%)        |",
-            f"|  +- Encode Step:     {stats.get('encode_ms', 0.0):8.2f} ms  ({stats.get('encode_ms', 0.0)/total*100:5.1f}%)        |",
-            f"|  +- Other Step:      {stats.get('other_ms', 0.0):8.2f} ms  ({stats.get('other_ms', 0.0)/total*100:5.1f}%)        |",
-            "+--------------------------------------------------------+",
-            f"|  OCR Blocks:         {stats['ocr_blocks']:8d}                          |",
-            f"|  Translate Units:    {stats['translate_units']:8d}                          |",
-            f"|  Cache Hits:         {stats['cache_hits']:8d}                          |",
-            "+--------------------------------------------------------+"
-        ]
-        for line in report_lines:
-            try:
-                print(line)
-            except UnicodeEncodeError:
-                print(line.encode('ascii', 'ignore').decode('ascii'))
+        if get_config().get("debug_trace", True):
+            total = max(stats["total_ms"], 0.001)
+            report_lines = [
+                "+--------------------------------------------------------+",
+                "|               [TIMER] TRANSLATION REPORT               |",
+                "+--------------------------------------------------------+",
+                f"|  Total Duration:     {stats['total_ms']:8.2f} ms                     |",
+                f"|  +- Init Step:       {stats.get('init_ms', 0.0):8.2f} ms  ({stats.get('init_ms', 0.0)/total*100:5.1f}%)        |",
+                f"|  +- OCR Step:        {stats['ocr_ms']:8.2f} ms  ({stats['ocr_ms']/total*100:5.1f}%)        |",
+                f"|  +- Translate Step:  {stats['translate_ms']:8.2f} ms  ({stats['translate_ms']/total*100:5.1f}%)        |",
+                f"|  +- Render Step:     {stats['render_ms']:8.2f} ms  ({stats['render_ms']/total*100:5.1f}%)        |",
+                f"|  +- Encode Step:     {stats.get('encode_ms', 0.0):8.2f} ms  ({stats.get('encode_ms', 0.0)/total*100:5.1f}%)        |",
+                f"|  +- Other Step:      {stats.get('other_ms', 0.0):8.2f} ms  ({stats.get('other_ms', 0.0)/total*100:5.1f}%)        |",
+                "+--------------------------------------------------------+",
+                f"|  OCR Blocks:         {stats['ocr_blocks']:8d}                          |",
+                f"|  Translate Units:    {stats['translate_units']:8d}                          |",
+                f"|  Cache Hits:         {stats['cache_hits']:8d}                          |",
+                "+--------------------------------------------------------+"
+            ]
+            for line in report_lines:
+                try:
+                    print(line)
+                except UnicodeEncodeError:
+                    print(line.encode('ascii', 'ignore').decode('ascii'))
 
         headers = {
             "X-Trace-Total-Ms": f"{stats['total_ms']:.2f}",

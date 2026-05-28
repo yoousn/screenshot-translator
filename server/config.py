@@ -11,6 +11,7 @@ def _default_config():
     return {
         "client_token": "ysn-screenshot-translator-token-666",
         "active_channel": "google",
+        "debug_trace": True,
         "channels": {
             "new-api": {
                 "base_url": "api.yousn.me",
