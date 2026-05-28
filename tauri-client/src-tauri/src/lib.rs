@@ -1,3 +1,6 @@
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -560,19 +563,20 @@ fn get_ocr_manager() -> Arc<Mutex<OcrManagerState>> {
 fn start_ocr_process(exe_path: &std::path::Path) -> Result<LocalOcrProcess, String> {
     let exe_dir = exe_path.parent().ok_or_else(|| "无法获取可执行文件所在目录".to_string())?;
     
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let mut cmd = Command::new(exe_path);
     cmd.current_dir(exe_dir)
-       .stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::null());
-       
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    
-    let mut child = cmd.spawn().map_err(|e| format!("启动 PaddleOCR 子进程失败: {}", e))?;
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("启动 PaddleOCR 子进程失败: {}", e))?;
         
     let stdin = child.stdin.take().ok_or("无法打开 stdin 管道".to_string())?;
     let stdout = child.stdout.take().ok_or("无法打开 stdout 管道".to_string())?;
