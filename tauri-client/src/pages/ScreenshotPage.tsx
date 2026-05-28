@@ -50,6 +50,30 @@ export default function ScreenshotPage() {
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const timeoutRef = useRef<any>(null);
+  const captureIdRef = useRef<number>(0);
+
+  const startNewCaptureSession = () => {
+    captureIdRef.current += 1;
+    const currentId = captureIdRef.current;
+    console.log("[ScreenshotPage] new capture session", currentId);
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
+    imageRef.current = null;
+    translatedImgRef.current = null;
+    setTranslatedResult(null);
+    setOcrResultText(null);
+    setOcrPreviewBase64(null);
+    setCurrentRect(EMPTY_RECT, true);
+    setSelection(false);
+    setScreenshotState("initializing");
+    setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
+
+    return currentId;
+  };
 
   const imageRef = useRef<HTMLImageElement | null>(null);
   const translatedImgRef = useRef<HTMLImageElement | null>(null);
@@ -188,110 +212,93 @@ export default function ScreenshotPage() {
   };
 
   const loadFullscreen = async () => {
+    const sessionId = startNewCaptureSession();
     try {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-      imageRef.current = null;
-      translatedImgRef.current = null;
-      setTranslatedResult(null);
-      setOcrResultText(null);
-      setOcrPreviewBase64(null);
-      setCurrentRect(EMPTY_RECT, true);
-      setSelection(false);
       loadWindowRects();
-      setScreenshotState("initializing");
-      setDbgStatus((prev) => ({ ...prev, errorMsg: "", imageLoaded: false }));
-
       const base64 = await invoke<string>("get_fullscreen_image");
-      if (!base64) throw new Error("截屏Base64数据为空");
-      console.log("[ScreenshotPage] screenshot data received (invoke)", base64.length);
-      loadImageFromBase64(base64);
-    } catch (err: any) {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
+      if (sessionId !== captureIdRef.current) return;
+
+      if (!base64 || base64.length < 1000) {
+        console.warn("[ScreenshotPage] Stale or invalid base64 ignored during get_fullscreen_image", base64?.length || 0);
+        return;
       }
+
+      console.log("[ScreenshotPage] screenshot payload received", base64.length);
+      loadImageFromBase64(base64, sessionId);
+    } catch (err: any) {
+      if (sessionId !== captureIdRef.current) return;
       const msg = err?.message || err?.toString?.() || String(err);
-      setScreenshotState("failed");
-      setDbgStatus((prev) => ({ ...prev, errorMsg: msg, imageLoaded: false }));
-      message.error("加载截屏图像失败: " + msg);
+      console.error("[ScreenshotPage] loadFullscreen failed:", msg);
+      cancelScreenshot();
     }
   };
 
   const loadFullscreenFromBase64 = (base64: string) => {
+    const sessionId = startNewCaptureSession();
     try {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
+      if (!base64 || base64.length < 1000) {
+        console.warn("[ScreenshotPage] Stale or invalid base64 event payload ignored", base64?.length || 0);
+        return;
       }
-      imageRef.current = null;
-      translatedImgRef.current = null;
-      setTranslatedResult(null);
-      setOcrResultText(null);
-      setOcrPreviewBase64(null);
-      setCurrentRect(EMPTY_RECT, true);
-      setSelection(false);
+
       loadWindowRects();
-      setScreenshotState("initializing");
-      setDbgStatus((prev) => ({ ...prev, errorMsg: "", imageLoaded: false }));
-      console.log("[ScreenshotPage] screenshot data received (event)", base64?.length || 0);
-      loadImageFromBase64(base64);
+      console.log("[ScreenshotPage] screenshot payload received", base64.length);
+      loadImageFromBase64(base64, sessionId);
     } catch (err: any) {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
+      if (sessionId !== captureIdRef.current) return;
       const msg = err?.message || err?.toString?.() || String(err);
-      setScreenshotState("failed");
-      setDbgStatus((prev) => ({ ...prev, errorMsg: msg, imageLoaded: false }));
-      message.error("加载截屏图像失败: " + msg);
+      console.error("[ScreenshotPage] loadFullscreenFromBase64 failed:", msg);
+      cancelScreenshot();
     }
   };
 
-  const loadImageFromBase64 = (base64: string) => {
-    if (!base64) {
-      console.error("[ScreenshotPage] loadImageFromBase64 called with empty base64");
-      setScreenshotState("failed");
-      setDbgStatus((prev) => ({ ...prev, errorMsg: "截图图像数据为空", imageLoaded: false }));
+  const loadImageFromBase64 = (base64: string, sessionId: number) => {
+    if (sessionId !== captureIdRef.current) return;
+
+    if (!base64 || base64.length < 1000) {
+      console.warn("[ScreenshotPage] loadImageFromBase64 invalid payload", base64?.length || 0);
       return;
     }
+
     const dataUrl = "data:image/jpeg;base64," + base64;
     const img = new Image();
 
     // Start a 1500ms fallback safety timer
     timeoutRef.current = setTimeout(() => {
+      if (sessionId !== captureIdRef.current) return;
       if (imageRef.current === null) {
         console.warn("[ScreenshotPage] Screenshot loading timeout reached (1500ms)");
-        setScreenshotState("failed");
-        setDbgStatus((prev) => ({ ...prev, errorMsg: "截图图像加载超时 (1500ms)", imageLoaded: false }));
+        cancelScreenshot();
       }
     }, 1500);
 
     img.onload = async () => {
+      if (sessionId !== captureIdRef.current) return;
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
       imageRef.current = img;
-      console.log("[ScreenshotPage] image loaded");
-      setDbgStatus({ imageLoaded: true, imageWidth: img.naturalWidth, imageHeight: img.naturalHeight, screenshotBytes: Math.round(base64.length * 0.75), errorMsg: "" });
+      console.log("[ScreenshotPage] image loaded", sessionId);
+      setDbgStatus({ 
+        imageLoaded: true, 
+        imageWidth: img.naturalWidth, 
+        imageHeight: img.naturalHeight, 
+        screenshotBytes: Math.round(base64.length * 0.75), 
+        errorMsg: "" 
+      });
       setScreenshotState("ready");
       await waitForStableViewport(img);
       initCanvas(img);
     };
 
     img.onerror = () => {
+      if (sessionId !== captureIdRef.current) return;
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
-      console.log("[ScreenshotPage] image error", img.src?.length || 0);
-      if (imageRef.current === null) {
-        setScreenshotState("failed");
-        setDbgStatus((prev) => ({ ...prev, errorMsg: "HTML Image 元素解码 Base64 截图字节流失败", imageLoaded: false }));
-      }
+      console.warn("[ScreenshotPage] image decode failed", sessionId, dataUrl.length);
     };
     img.src = dataUrl;
   };
@@ -716,13 +723,7 @@ export default function ScreenshotPage() {
     <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }} onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}>
       <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>0, 0</div>
 
-      {screenshotState === "failed" && dbgStatus.errorMsg && (
-        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", background: "rgba(0, 0, 0, 0.9)", color: "#fff", padding: "28px 36px", borderRadius: 12, textAlign: "center", border: "2px solid #ff4d4f", zIndex: 10000, maxWidth: "80%", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
-          <h3 style={{ color: "#ff4d4f", margin: "0 0 12px 0", fontSize: 16 }}>截图图像加载失败</h3>
-          <p style={{ margin: "0 0 20px 0", fontSize: 13, opacity: 0.85, wordBreak: "break-all" }}>{dbgStatus.errorMsg}</p>
-          <Button type="primary" danger onClick={cancelScreenshot}>关闭截图</Button>
-        </div>
-      )}
+
 
       {isTranslating && rect.w > 0 && rect.h > 0 && (
         <div style={{ position: "absolute", top: rect.y, left: rect.x, width: rect.w, height: rect.h, zIndex: 200, background: "rgba(240, 240, 245, 0.75)", border: "2px dashed #1677ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxSizing: "border-box", overflow: "hidden" }}>
