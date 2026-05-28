@@ -89,79 +89,98 @@ class ImageProcessor:
     # ──────────────────────────────────────────────
     def _group_into_lines(self, raw_lines: list) -> list:
         """
-        将 PaddleOCR 返回的原始 box 列表按行高 + 行间距合并成逻辑行组。
-        每个逻辑行组包含若干个在同一行内的 box，最终合并成一个 LineBlock。
-
-        返回值: list of LineBlock dict:
-            {
-                "rect": [x_min, y_min, x_max, y_max],   # 整行外围矩形
-                "text": "合并后的原文",
-                "avg_h": 平均行高（float），用于推算字号
-            }
+        将 PaddleOCR 返回的原始 box 列表根据空间几何相邻性合并为 VirtualBlock。
+        避免跨栏、跨行非相邻的文本块被强行连接，保障排版完整性。
         """
         if not raw_lines:
             return []
 
-        # 解析每个 box 为结构体
+        # 1. 结构化物理框
         items = []
         for line in raw_lines:
             box = line[0]   # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-            text = line[1][0]
-            x_min = int(min(pt[0] for pt in box))
-            x_max = int(max(pt[0] for pt in box))
-            y_min = int(min(pt[1] for pt in box))
-            y_max = int(max(pt[1] for pt in box))
+            text = line[1][0].strip()
+            confidence = line[1][1]
+            
+            xs = [pt[0] for pt in box]
+            ys = [pt[1] for pt in box]
+            x_min, y_min, x_max, y_max = min(xs), min(ys), max(xs), max(ys)
+            
+            w = x_max - x_min
             h = y_max - y_min
+            cy = y_min + h / 2.0
+            
             items.append({
-                "x_min": x_min, "x_max": x_max,
-                "y_min": y_min, "y_max": y_max,
-                "h": h,
-                "text": text,
-            })
-
-        # 按 y_min 排序（从上到下）
-        items.sort(key=lambda it: it["y_min"])
-
-        groups = []
-        current_group = [items[0]]
-
-        for i in range(1, len(items)):
-            prev = current_group[-1]
-            cur  = items[i]
-            avg_h = sum(x["h"] for x in current_group) / len(current_group)
-
-            # 两行中心 y 之差
-            prev_cy = (prev["y_min"] + prev["y_max"]) / 2
-            cur_cy  = (cur["y_min"]  + cur["y_max"])  / 2
-            dy = abs(cur_cy - prev_cy)
-
-            # 同一行判断：两行中心 y 之差 < 0.8 * 平均行高
-            # 即：垂直偏移不超过 80% 行高，认为是同一行
-            if dy < avg_h * 0.8:
-                current_group.append(cur)
-            else:
-                groups.append(current_group)
-                current_group = [cur]
-
-        groups.append(current_group)
-
-        # 将每个 group 内的 box 按 x_min 排序，拼接文本，计算外围矩形
-        result = []
-        for group in groups:
-            group.sort(key=lambda it: it["x_min"])
-            merged_text = " ".join(it["text"] for it in group)
-            x_min = min(it["x_min"] for it in group)
-            x_max = max(it["x_max"] for it in group)
-            y_min = min(it["y_min"] for it in group)
-            y_max = max(it["y_max"] for it in group)
-            avg_h = sum(it["h"] for it in group) / len(group)
-            result.append({
                 "rect": [x_min, y_min, x_max, y_max],
-                "text": merged_text,
-                "avg_h": avg_h,
+                "text": text,
+                "w": w,
+                "h": h,
+                "cy": cy,
+                "confidence": confidence
             })
-
-        return result
+            
+        # 按 Y 坐标排序，自上而下开始行合并
+        items.sort(key=lambda b: b["rect"][1])
+        
+        # 2. 合并同行且在水平空间上绝对相邻的物理块
+        virtual_blocks = []
+        
+        while items:
+            current = items.pop(0)
+            merged_group = [current]
+            
+            i = 0
+            while i < len(items):
+                candidate = items[i]
+                last = merged_group[-1]
+                avg_h = (last["h"] + candidate["h"]) / 2.0
+                
+                # 同行判断: 中心 Y 距离小于平均高度的 0.6 倍
+                same_line = abs(last["cy"] - candidate["cy"]) <= 0.6 * avg_h
+                
+                # 水平间距: 间距小于平均高度的 2.2 倍，且不能为负数（重叠/错位）
+                gap_x = candidate["rect"][0] - last["rect"][2]
+                horizontal_near = 0 <= gap_x <= 2.2 * avg_h
+                
+                # 高度相近: 两个块高度比例小于 1.5 倍
+                height_similar = (max(last["h"], candidate["h"]) / max(min(last["h"], candidate["h"]), 0.001)) <= 1.5
+                
+                # 长度约束: 合并后的字符数限制 <= 80，合并块数 <= 6
+                merged_len = sum(len(b["text"]) for b in merged_group) + len(candidate["text"])
+                count_ok = len(merged_group) < 6
+                
+                if same_line and horizontal_near and height_similar and merged_len <= 80 and count_ok:
+                    merged_group.append(candidate)
+                    items.pop(i)
+                else:
+                    i += 1
+                    
+            # 聚合当前合并组
+            all_xs = []
+            all_ys = []
+            texts_to_join = []
+            
+            for b in merged_group:
+                r = b["rect"]
+                all_xs.extend([r[0], r[2]])
+                all_ys.extend([r[1], r[3]])
+                texts_to_join.append(b["text"])
+                
+            union_x1 = min(all_xs)
+            union_y1 = min(all_ys)
+            union_x2 = max(all_xs)
+            union_y2 = max(all_ys)
+            
+            union_text = " ".join(texts_to_join)
+            avg_height = sum(b["h"] for b in merged_group) / len(merged_group)
+            
+            virtual_blocks.append({
+                "rect": [int(union_x1), int(union_y1), int(union_x2), int(union_y2)],
+                "text": union_text,
+                "avg_h": avg_height,
+            })
+            
+        return virtual_blocks
 
     # ──────────────────────────────────────────────
     # 3. 背景颜色采样
