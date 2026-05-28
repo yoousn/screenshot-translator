@@ -612,7 +612,21 @@ export default function ScreenshotPage() {
     }
   };
 
+  const resetScreenshotState = () => {
+    setRect(EMPTY_RECT);
+    setHasSelected(false);
+    setTranslatedResult(null);
+    setOcrResultText(null);
+    setOcrPreviewBase64(null);
+    setIsTranslating(false);
+    setIsOCRing(false);
+    setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
+    if (imageRef.current) imageRef.current.src = "";
+    if (translatedImgRef.current) translatedImgRef.current.src = "";
+  };
+
   const cancelScreenshot = async () => {
+    resetScreenshotState();
     await invoke("cancel_screenshot").catch(() => {});
   };
 
@@ -627,6 +641,7 @@ export default function ScreenshotPage() {
         const savePath = await invoke<string>("save_image_to_file", { imageBase64: base64 });
         message.success(`图片成功保存至: ${savePath}`);
       }
+      resetScreenshotState();
       await invoke("cancel_screenshot");
     } catch (e: any) {
       if (e === "用户取消了保存") message.info("已取消保存");

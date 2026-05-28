@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code, ShortcutState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use tokio::time::{sleep as tokio_sleep, Duration};
+use tokio::time::Duration;
 
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
@@ -181,12 +181,6 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
 
-    // 1. 每次创建新窗口前，先检测并销毁/关闭旧的 screenshot 窗口
-    if let Some(old_win) = app.get_webview_window("screenshot") {
-        let _ = old_win.destroy();
-        tokio_sleep(Duration::from_millis(100)).await;
-    }
-
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
         let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
@@ -224,23 +218,27 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
         let _ = fs::write(&write_path, &jpeg_for_write);
     });
 
-    // 2. 动态创建临时的主图遮罩窗口，透明、无边框、跳过任务栏、置顶且对焦
-    let screenshot_win = tauri::WebviewWindowBuilder::new(
-        &app,
-        "screenshot",
-        tauri::WebviewUrl::App("index.html".into())
-    )
-    .title("YSN 截图辅助窗口")
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .visible(false)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .focused(true)
-    .build()
-    .map_err(|e| format!("创建截图窗口失败：{}", e))?;
+    // 2. 获取预置的静态截图遮罩窗口，或作为后备动态创建
+    let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
+        win
+    } else {
+        tauri::WebviewWindowBuilder::new(
+            &app,
+            "screenshot",
+            tauri::WebviewUrl::App("index.html".into())
+        )
+        .title("YSN 截图辅助窗口")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .visible(false)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .focused(true)
+        .build()
+        .map_err(|e| format!("创建截图窗口失败：{}", e))?
+    };
 
     // Disable transition animation to avoid windows rendering delay/flicker
     disable_windows_transition(&screenshot_win);
@@ -250,6 +248,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     // Position and configure the window while still hidden
     let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
+    let _ = screenshot_win.set_always_on_top(true);
 
     use tauri::Emitter;
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
@@ -341,8 +340,8 @@ fn get_window_rects() -> Result<String, String> {
 #[tauri::command]
 async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let _ = screenshot_win.destroy();
-        tokio_sleep(Duration::from_millis(100)).await;
+        let _ = screenshot_win.set_always_on_top(false);
+        let _ = screenshot_win.hide();
     }
     CAPTURING.store(false, Ordering::SeqCst);
     Ok(())
@@ -514,6 +513,11 @@ pub fn run() {
             api_translate
         ])
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+                disable_windows_transition(&screenshot_win);
+            }
+
             let shortcut_a = Shortcut::new(Some(Modifiers::ALT), Code::KeyA);
             let reg_res = app.global_shortcut().on_shortcut(shortcut_a, move |app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {

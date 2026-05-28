@@ -18,6 +18,19 @@
         "height": 800,
         "visible": false,
         "resizable": true
+      },
+      {
+        "title": "YSN 截图辅助窗口",
+        "label": "screenshot",
+        "width": 800,
+        "height": 600,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false
       }
     ],
     "security": {
