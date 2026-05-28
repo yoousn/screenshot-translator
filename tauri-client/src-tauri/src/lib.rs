@@ -494,7 +494,216 @@ async fn api_translate(base64_image: String, server_url: String, client_token: S
     Ok(BASE64_STANDARD.encode(&result_bytes))
 }
 
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, Stdio};
+use std::sync::Arc;
+use std::time::Instant;
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OcrBlock {
+    pub text: String,
+    pub confidence: f64,
+    pub box_coords: Vec<Vec<i32>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PaddleOcrOutput {
+    code: i32,
+    data: Option<serde_json::Value>,
+    msg: Option<String>,
+}
+
+struct LocalOcrProcess {
+    child: Child,
+    stdin: ChildStdin,
+    reader: BufReader<std::process::ChildStdout>,
+}
+
+struct OcrManagerState {
+    process: Option<LocalOcrProcess>,
+    last_used: Instant,
+}
+
+static OCR_MANAGER: OnceLock<Arc<Mutex<OcrManagerState>>> = OnceLock::new();
+
+fn get_ocr_manager() -> Arc<Mutex<OcrManagerState>> {
+    OCR_MANAGER.get_or_init(|| {
+        let state = Arc::new(Mutex::new(OcrManagerState {
+            process: None,
+            last_used: Instant::now(),
+        }));
+        
+        let state_clone = state.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                let mut guard = state_clone.lock().unwrap();
+                let should_kill = if guard.process.is_some() {
+                    guard.last_used.elapsed() > Duration::from_secs(300)
+                } else {
+                    false
+                };
+                if should_kill {
+                    println!("PaddleOCR-json idle timeout reached. Terminating process...");
+                    if let Some(mut proc) = guard.process.take() {
+                        let _ = proc.child.kill();
+                    }
+                }
+            }
+        });
+        
+        state
+    }).clone()
+}
+
+fn start_ocr_process(exe_path: &std::path::Path) -> Result<LocalOcrProcess, String> {
+    let exe_dir = exe_path.parent().ok_or_else(|| "无法获取可执行文件所在目录".to_string())?;
+    
+    let mut child = Command::new(exe_path)
+        .current_dir(exe_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("启动 PaddleOCR 子进程失败: {}", e))?;
+        
+    let stdin = child.stdin.take().ok_or("无法打开 stdin 管道".to_string())?;
+    let stdout = child.stdout.take().ok_or("无法打开 stdout 管道".to_string())?;
+    let mut reader = BufReader::new(stdout);
+    
+    // 同步等待初始化完成标志: "OCR init completed."
+    let mut init_line = String::new();
+    loop {
+        init_line.clear();
+        match reader.read_line(&mut init_line) {
+            Ok(0) => return Err("PaddleOCR 进程在初始化完成前已关闭".to_string()),
+            Ok(_) => {
+                if init_line.contains("OCR init completed.") {
+                    break;
+                }
+            }
+            Err(e) => return Err(format!("读取 PaddleOCR 初始化输出失败: {}", e)),
+        }
+    }
+    
+    Ok(LocalOcrProcess { child, stdin, reader })
+}
+
+#[tauri::command]
+async fn run_local_ocr(
+    app: tauri::AppHandle,
+    image_base64: String,
+    executable_path: Option<String>
+) -> Result<Vec<OcrBlock>, String> {
+    use tauri::path::BaseDirectory;
+    use tauri::Manager;
+    
+    // 1. 解析可执行文件路径（支持自定义或内置资源包）
+    let resolved_exe = if let Some(path) = executable_path {
+        std::path::PathBuf::from(path)
+    } else {
+        app.path()
+            .resolve("resources/ocr/PaddleOCR-json.exe", BaseDirectory::Resource)
+            .map_err(|e| format!("解析内置资源路径失败: {}", e))?
+    };
+    
+    if !resolved_exe.exists() {
+        return Err(format!("本地 OCR 执行文件不存在于 {:?}", resolved_exe));
+    }
+    
+    // 2. 解码并使用高精度微秒级时间戳作为唯一标识保存临时识别图片，防并发冲突
+    let bytes = BASE64_STANDARD.decode(&image_base64)
+        .map_err(|e| format!("图片解码失败: {}", e))?;
+    
+    let rand_suffix: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    
+    let mut ocr_temp_path = std::env::temp_dir();
+    ocr_temp_path.push(format!("ocr-{}.png", rand_suffix));
+    fs::write(&ocr_temp_path, &bytes)
+        .map_err(|e| format!("保存临时识别图像失败: {}", e))?;
+        
+    let abs_image_path = ocr_temp_path.to_string_lossy().to_string();
+    
+    // 3. 通信与常驻进程管理
+    let manager = get_ocr_manager();
+    let mut guard = manager.lock().unwrap();
+    
+    if guard.process.is_none() {
+        let new_proc = start_ocr_process(&resolved_exe)?;
+        guard.process = Some(new_proc);
+    }
+    
+    guard.last_used = Instant::now();
+    let proc = guard.process.as_mut().unwrap();
+    
+    // 写入 stdin 管道
+    let req_payload = serde_json::json!({ "image_path": abs_image_path });
+    let req_line = format!("{}\n", req_payload.to_string());
+    
+    if let Err(e) = proc.stdin.write_all(req_line.as_bytes()) {
+        guard.process = None; // 管道断开，重置进程状态
+        let _ = fs::remove_file(&ocr_temp_path);
+        return Err(format!("写入 PaddleOCR-json 管道失败: {}", e));
+    }
+    if let Err(e) = proc.stdin.flush() {
+        let _ = fs::remove_file(&ocr_temp_path);
+        return Err(format!("刷新 PaddleOCR-json 管道失败: {}", e));
+    }
+    
+    // 读取 stdout 响应
+    let mut resp_line = String::new();
+    match proc.reader.read_line(&mut resp_line) {
+        Ok(0) => {
+            guard.process = None; // 进程已关闭或异常崩溃
+            let _ = fs::remove_file(&ocr_temp_path);
+            return Err("PaddleOCR 进程异常中断退出".to_string());
+        }
+        Ok(_) => {
+            let _ = fs::remove_file(&ocr_temp_path); // 立即清理临时图像文件
+            
+            let parsed: PaddleOcrOutput = serde_json::from_str(&resp_line)
+                .map_err(|e| format!("解析 PaddleOCR 返回的 JSON 失败: {} (Raw: {})", e, resp_line))?;
+                
+            if parsed.code != 100 {
+                return Err(parsed.msg.unwrap_or_else(|| "OCR 执行出错，返回非100状态码".to_string()));
+            }
+            
+            let mut ocr_blocks = Vec::new();
+            if let Some(data) = parsed.data {
+                if let Some(arr) = data.as_array() {
+                    for item in arr {
+                        let text = item.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                        // 显式将 raw_score 映射为 confidence
+                        let confidence = item.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                        
+                        let mut box_coords = Vec::new();
+                        if let Some(box_val) = item.get("box") {
+                            if let Some(box_arr) = box_val.as_array() {
+                                for point in box_arr {
+                                    if let Some(pt) = point.as_array() {
+                                        let x = pt.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                        let y = pt.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                        box_coords.push(vec![x, y]);
+                                    }
+                                }
+                            }
+                        }
+                        ocr_blocks.push(OcrBlock { text, confidence, box_coords });
+                    }
+                }
+            }
+            Ok(ocr_blocks)
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&ocr_temp_path);
+            Err(format!("从 PaddleOCR 管道读取数据发生错误: {}", e))
+        }
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -517,7 +726,8 @@ pub fn run() {
             get_window_rects,
             api_ocr,
             api_translate,
-            overlay_ready_to_show
+            overlay_ready_to_show,
+            run_local_ocr
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -630,3 +840,36 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct RawOcrBlock {
+        text: String,
+        score: f64,
+        box_coords: Vec<Vec<i32>>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct OcrBlock {
+        text: String,
+        confidence: f64,
+        box_coords: Vec<Vec<i32>>,
+    }
+
+    #[test]
+    fn test_raw_score_mapping() {
+        let raw_json = r#"{"text": "Test OCR", "score": 0.975, "box_coords": [[0,0],[10,0],[10,5],[0,5]]}"#;
+        let raw: RawOcrBlock = serde_json::from_str(raw_json).unwrap();
+        let mapped = OcrBlock {
+            text: raw.text,
+            confidence: raw.score,
+            box_coords: raw.box_coords,
+        };
+        assert_eq!(mapped.confidence, 0.975);
+        assert_eq!(mapped.text, "Test OCR");
+    }
+}
+
