@@ -29,6 +29,20 @@ app.add_middleware(
 # 默认不加载 heavy OCR 模型以加速服务启动，首个翻译请求来时会触发懒加载
 processor = ImageProcessor(load_ocr=False)
 
+# 🌟 后台异步加载并预热 OCR 模型以消除首次请求的冷启动卡顿
+def warm_up_ocr_async():
+    try:
+        time.sleep(1.5)
+        print("[OCR Background Warmup] Waking up PaddleOCR models silently...")
+        processor._ensure_ocr()
+        print("[OCR Background Warmup] PaddleOCR models are 100% warmed up and ready for hot-requests!")
+    except Exception as e:
+        print("[OCR Background Warmup] Warmup background thread warning:", e)
+
+import threading
+threading.Thread(target=warm_up_ocr_async, daemon=True).start()
+
+
 _config_cache = None
 _config_cache_time = 0.0
 _CONFIG_TTL = 5.0

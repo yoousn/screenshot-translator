@@ -7,11 +7,40 @@ import threading
 import time
 
 
+class OcrCache:
+    def __init__(self, maxsize=500):
+        self.maxsize = maxsize
+        self.cache = {}  # md5 -> raw_lines
+        self.lock = threading.Lock()
+        self.order = []
+
+    def get(self, img_md5: str):
+        with self.lock:
+            if img_md5 in self.cache:
+                if img_md5 in self.order:
+                    self.order.remove(img_md5)
+                self.order.append(img_md5)
+                return self.cache[img_md5]
+            return None
+
+    def set(self, img_md5: str, raw_lines: list):
+        with self.lock:
+            if len(self.cache) >= self.maxsize and img_md5 not in self.cache:
+                if self.order:
+                    oldest = self.order.pop(0)
+                    self.cache.pop(oldest, None)
+            self.cache[img_md5] = raw_lines
+            if img_md5 in self.order:
+                self.order.remove(img_md5)
+            self.order.append(img_md5)
+
+
 class ImageProcessor:
     def __init__(self, load_ocr: bool = True):
         self._ocr_lock = threading.Lock()
         self._font_cache = {}
         self._font_path = None
+        self._ocr_cache = OcrCache()
         if load_ocr:
             self._ensure_ocr()
         else:
@@ -30,6 +59,12 @@ class ImageProcessor:
                     det_db_unclip_ratio=1.6,
                     show_log=False
                 )
+                # 模型预热 Warmup
+                try:
+                    dummy_img = np.zeros((32, 32, 3), dtype=np.uint8)
+                    self.ocr.ocr(dummy_img, cls=False)
+                except Exception:
+                    pass
                 self._last_init_ms = (time.perf_counter() - start_init) * 1000
             else:
                 self._last_init_ms = 0.0
@@ -315,21 +350,52 @@ class ImageProcessor:
                 stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
                 return img_bytes, stats
 
+            # 计算图片 MD5 以支持 OCR 缓存
+            import hashlib
+            img_md5 = hashlib.md5(img_bytes).hexdigest()
+
             # ── 步骤：初始化 OCR ──
             self._ensure_ocr()
             stats["init_ms"] = getattr(self, "_last_init_ms", 0.0)
 
             # ── 步骤：OCR 识别 ──
             ocr_start = time.perf_counter()
-            ocr_result = self.ocr.ocr(img_cv, cls=True)
-            stats["ocr_ms"] = (time.perf_counter() - ocr_start) * 1000
-            
-            if not ocr_result or not ocr_result[0]:
+            cached_ocr = self._ocr_cache.get(img_md5)
+            if cached_ocr is not None:
+                raw_lines = cached_ocr
+                stats["ocr_ms"] = (time.perf_counter() - ocr_start) * 1000
+            else:
+                # 🌟 缩小区域 OCR 优化：如果长边大于 1280px，按比例缩小进行 OCR，然后还原坐标
+                h, w = img_cv.shape[:2]
+                max_side = max(h, w)
+                ocr_img = img_cv
+                scale_factor = 1.0
+                MAX_OCR_SIDE = 1280
+                if max_side > MAX_OCR_SIDE:
+                    scale_factor = MAX_OCR_SIDE / max_side
+                    new_w = int(w * scale_factor)
+                    new_h = int(h * scale_factor)
+                    ocr_img = cv2.resize(img_cv, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+                ocr_result = self.ocr.ocr(ocr_img, cls=True)
+                stats["ocr_ms"] = (time.perf_counter() - ocr_start) * 1000
+
+                if ocr_result and ocr_result[0]:
+                    raw_lines = ocr_result[0]
+                    if scale_factor != 1.0:
+                        for line in raw_lines:
+                            box = line[0]
+                            for pt in box:
+                                pt[0] /= scale_factor
+                                pt[1] /= scale_factor
+                else:
+                    raw_lines = []
+                self._ocr_cache.set(img_md5, raw_lines)
+
+            if not raw_lines:
                 stats["total_ms"] = (time.perf_counter() - start_time) * 1000
                 stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
                 return img_bytes, stats
-
-            raw_lines = ocr_result[0]
             stats["ocr_blocks"] = len(raw_lines)
 
             # ── 步骤 A：按行合并 OCR box ──
