@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # 使用全局共享的 requests Session 保持 Keep-Alive 长连接，免去每次 TLS 握手的开销
 _shared_session = requests.Session()
+_shared_session.trust_env = False
 # 适当调整连接池大小
 adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
 _shared_session.mount("http://", adapter)

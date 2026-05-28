@@ -418,6 +418,7 @@ async fn api_ocr(base64_image: String, server_url: String, client_token: String)
         .map_err(|e| e.to_string())?;
     let form = reqwest::multipart::Form::new().part("image", part);
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| format!("创建HTTP客户端失败：{}", e))?;
@@ -446,6 +447,7 @@ async fn api_translate(base64_image: String, server_url: String, client_token: S
         .map_err(|e| e.to_string())?;
     let form = reqwest::multipart::Form::new().part("image", part);
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| format!("创建HTTP客户端失败：{}", e))?;

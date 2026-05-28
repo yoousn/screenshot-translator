@@ -20,6 +20,7 @@ class ImageProcessor:
     def _ensure_ocr(self):
         with self._ocr_lock:
             if self.ocr is None:
+                start_init = time.perf_counter()
                 from paddleocr import PaddleOCR
                 self.ocr = PaddleOCR(
                     lang="ch",
@@ -28,6 +29,9 @@ class ImageProcessor:
                     det_db_thresh=0.2,
                     det_db_unclip_ratio=1.6
                 )
+                self._last_init_ms = (time.perf_counter() - start_init) * 1000
+            else:
+                self._last_init_ms = 0.0
 
     # ──────────────────────────────────────────────
     # 1. 字体加载
@@ -286,9 +290,12 @@ class ImageProcessor:
     # ──────────────────────────────────────────────
     def process_and_draw(self, img_bytes: bytes, translator_batch_fn) -> tuple[bytes, dict]:
         stats = {
+            "init_ms": 0.0,
             "ocr_ms": 0.0,
             "translate_ms": 0.0,
             "render_ms": 0.0,
+            "encode_ms": 0.0,
+            "other_ms": 0.0,
             "total_ms": 0.0,
             "ocr_blocks": 0,
             "translate_units": 0,
@@ -296,19 +303,29 @@ class ImageProcessor:
         }
         start_time = time.perf_counter()
         try:
+            decode_start = time.perf_counter()
             nparr = np.frombuffer(img_bytes, np.uint8)
             img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            decode_ms = (time.perf_counter() - decode_start) * 1000
+
             if img_cv is None:
                 stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+                stats["encode_ms"] = decode_ms
+                stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
                 return img_bytes, stats
 
+            # ── 步骤：初始化 OCR ──
             self._ensure_ocr()
+            stats["init_ms"] = getattr(self, "_last_init_ms", 0.0)
+
+            # ── 步骤：OCR 识别 ──
             ocr_start = time.perf_counter()
             ocr_result = self.ocr.ocr(img_cv, cls=True)
             stats["ocr_ms"] = (time.perf_counter() - ocr_start) * 1000
             
             if not ocr_result or not ocr_result[0]:
                 stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+                stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
                 return img_bytes, stats
 
             raw_lines = ocr_result[0]
@@ -384,13 +401,19 @@ class ImageProcessor:
 
             stats["render_ms"] = (time.perf_counter() - render_start) * 1000
             
+            encode_start = time.perf_counter()
             out = io.BytesIO()
             pil_img.save(out, format="PNG")
+            encode_ms = (time.perf_counter() - encode_start) * 1000
+            stats["encode_ms"] = decode_ms + encode_ms
+
             stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+            stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
             return out.getvalue(), stats
 
         except Exception as e:
             stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+            stats["other_ms"] = max(0.0, stats["total_ms"] - stats["init_ms"] - stats["ocr_ms"] - stats["translate_ms"] - stats["render_ms"] - stats["encode_ms"])
             print("ERROR in process_and_draw:", e)
             raise e
 

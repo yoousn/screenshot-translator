@@ -1,3 +1,8 @@
+import sys
+import os
+# Ensure server directory is in sys.path so imports work regardless of CWD
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -78,7 +83,17 @@ def _validate_url(url: str) -> bool:
 async def health_check():
     return {"status": "ok"}
 
+@app.get("/c_hello")
+async def c_hello(asker: str = ""):
+    return {
+        "status": "ok",
+        "message": "hello",
+        "asker": asker,
+        "server": "local"
+    }
+
 @app.post("/api/translate")
+
 def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
     verify_token(x_api_key)
     img_bytes = image.file.read()
@@ -98,9 +113,12 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
             "|               [TIMER] TRANSLATION REPORT               |",
             "+--------------------------------------------------------+",
             f"|  Total Duration:     {stats['total_ms']:8.2f} ms                     |",
+            f"|  +- Init Step:       {stats.get('init_ms', 0.0):8.2f} ms  ({stats.get('init_ms', 0.0)/total*100:5.1f}%)        |",
             f"|  +- OCR Step:        {stats['ocr_ms']:8.2f} ms  ({stats['ocr_ms']/total*100:5.1f}%)        |",
             f"|  +- Translate Step:  {stats['translate_ms']:8.2f} ms  ({stats['translate_ms']/total*100:5.1f}%)        |",
             f"|  +- Render Step:     {stats['render_ms']:8.2f} ms  ({stats['render_ms']/total*100:5.1f}%)        |",
+            f"|  +- Encode Step:     {stats.get('encode_ms', 0.0):8.2f} ms  ({stats.get('encode_ms', 0.0)/total*100:5.1f}%)        |",
+            f"|  +- Other Step:      {stats.get('other_ms', 0.0):8.2f} ms  ({stats.get('other_ms', 0.0)/total*100:5.1f}%)        |",
             "+--------------------------------------------------------+",
             f"|  OCR Blocks:         {stats['ocr_blocks']:8d}                          |",
             f"|  Translate Units:    {stats['translate_units']:8d}                          |",
@@ -115,9 +133,12 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
 
         headers = {
             "X-Trace-Total-Ms": f"{stats['total_ms']:.2f}",
+            "X-Trace-Init-Ms": f"{stats.get('init_ms', 0.0):.2f}",
             "X-Trace-Ocr-Ms": f"{stats['ocr_ms']:.2f}",
             "X-Trace-Translate-Ms": f"{stats['translate_ms']:.2f}",
             "X-Trace-Render-Ms": f"{stats['render_ms']:.2f}",
+            "X-Trace-Encode-Ms": f"{stats.get('encode_ms', 0.0):.2f}",
+            "X-Trace-Other-Ms": f"{stats.get('other_ms', 0.0):.2f}",
             "X-Trace-Ocr-Blocks": str(stats["ocr_blocks"]),
             "X-Trace-Translate-Units": str(stats["translate_units"]),
             "X-Trace-Cache-Hits": str(stats["cache_hits"])
@@ -217,3 +238,8 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
         return {"status": "failed", "error": f"中转服务返回状态码 {res.status_code}"}
     except Exception as e:
         return {"status": "failed", "error": f"连接失败: {str(e)}"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="127.0.0.1", port=18090, reload=True)
+
