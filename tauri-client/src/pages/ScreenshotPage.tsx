@@ -49,7 +49,6 @@ export default function ScreenshotPage() {
   const [ocrPreviewBase64, setOcrPreviewBase64] = useState<string | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
-  const [overlayVisible, setOverlayVisible] = useState(false);
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
 
@@ -71,7 +70,6 @@ export default function ScreenshotPage() {
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
     setScreenshotState("initializing");
-    setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
 
     return currentId;
@@ -137,6 +135,7 @@ export default function ScreenshotPage() {
     };
     requestRef.current = requestAnimationFrame(tick);
 
+    console.log("[ScreenshotPage] mounted");
     loadConfig();
     document.body.style.setProperty("margin", "0", "important");
     document.body.style.setProperty("overflow", "hidden", "important");
@@ -153,6 +152,7 @@ export default function ScreenshotPage() {
 
     listen("screenshot-updated", (event) => {
       const base64 = event.payload as string;
+      console.log("[ScreenshotPage] screenshot data received", base64 ? base64.length : 0);
       if (base64) {
         loadFullscreenFromBase64(base64);
       } else {
@@ -280,10 +280,6 @@ export default function ScreenshotPage() {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
-
-      // Wait for image decode to prevent flashing!
-      await img.decode?.().catch(() => {});
-
       imageRef.current = img;
       console.log("[ScreenshotPage] image loaded", sessionId);
       setDbgStatus({ 
@@ -296,19 +292,6 @@ export default function ScreenshotPage() {
       setScreenshotState("ready");
       await waitForStableViewport(img);
       initCanvas(img);
-
-      // Wait for two requestAnimationFrame ticks to ensure React has fully rendered the canvas!
-      requestAnimationFrame(() => {
-        requestAnimationFrame(async () => {
-          if (sessionId !== captureIdRef.current) return;
-          try {
-            await invoke("overlay_ready_to_show");
-            setOverlayVisible(true);
-          } catch (err) {
-            console.error("[ScreenshotPage] Failed to call overlay_ready_to_show:", err);
-          }
-        });
-      });
     };
 
     img.onerror = () => {
@@ -389,7 +372,6 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!overlayVisible) return;
     if (e.button === 2) {
       e.preventDefault();
       if (hasSelectedRef.current) {
@@ -429,7 +411,6 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!overlayVisible) return;
     const cx = e.clientX;
     const cy = e.clientY;
     if (mouseTrackerRef.current) {
@@ -492,7 +473,6 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseUp = () => {
-    if (!overlayVisible) return;
     const wasSelecting = isSelectingRef.current;
     isSelectingRef.current = false;
     setIsSelecting(false);
@@ -508,7 +488,6 @@ export default function ScreenshotPage() {
   };
 
   const handleDoubleClick = () => {
-    if (!overlayVisible) return;
     if (hasSelectedRef.current) confirmScreenshot("copy");
   };
 
@@ -713,7 +692,6 @@ export default function ScreenshotPage() {
     setIsTranslating(false);
     setIsOCRing(false);
     setScreenshotState("initializing");
-    setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
     imageRef.current = null;
     translatedImgRef.current = null;
@@ -743,12 +721,10 @@ export default function ScreenshotPage() {
     }
   };
 
+  console.log("[ScreenshotPage] rendering screenshot UI", { state: screenshotState });
+
   return (
-    <div
-      className={`screenshot-root ${overlayVisible ? "ready" : "initializing"}`}
-      style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }}
-      onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}
-    >
+    <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }} onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}>
       <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>0, 0</div>
 
 
