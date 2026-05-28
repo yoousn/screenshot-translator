@@ -16,6 +16,59 @@ adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
 _shared_session.mount("http://", adapter)
 _shared_session.mount("https://", adapter)
 
+import time
+import threading
+
+class TranslationCache:
+    def __init__(self, maxsize=5000, ttl_seconds=86400):
+        self.maxsize = maxsize
+        self.ttl_seconds = ttl_seconds
+        self.lock = threading.RLock()
+        self.cache = {} # key -> (value, expire_time)
+        self.access_order = [] # key access ordering (LRU)
+
+    def _normalize_text(self, text: str) -> str:
+        # 去除首尾空白，折叠连续空白字符
+        return " ".join(text.strip().split())
+
+    def make_key(self, text: str, src_lang: str, dst_lang: str, channel: str, version: str) -> tuple:
+        return (self._normalize_text(text), src_lang, dst_lang, channel, version)
+
+    def get(self, key: tuple):
+        with self.lock:
+            if key not in self.cache:
+                return None
+            val, expire = self.cache[key]
+            if time.time() > expire:
+                # Expired
+                self.cache.pop(key, None)
+                if key in self.access_order:
+                    self.access_order.remove(key)
+                return None
+            # Refresh LRU ordering
+            if key in self.access_order:
+                self.access_order.remove(key)
+            self.access_order.append(key)
+            return val
+
+    def set(self, key: tuple, value: str):
+        with self.lock:
+            # Evict oldest if full
+            if len(self.cache) >= self.maxsize and key not in self.cache:
+                if self.access_order:
+                    oldest = self.access_order.pop(0)
+                    self.cache.pop(oldest, None)
+            
+            expire = time.time() + self.ttl_seconds
+            self.cache[key] = (value, expire)
+            if key in self.access_order:
+                self.access_order.remove(key)
+            self.access_order.append(key)
+
+# 全局共享翻译缓存实例 (maxsize=5000, TTL=24h)
+GLOBAL_TRANSLATE_CACHE = TranslationCache(maxsize=5000, ttl_seconds=86400)
+
+
 class BaseTranslator(abc.ABC):
     def __init__(self):
         self.session = _shared_session
@@ -25,6 +78,42 @@ class BaseTranslator(abc.ABC):
         pass
 
     def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+        if not texts:
+            return []
+            
+        results = [None] * len(texts)
+        miss_indices = []
+        miss_texts = []
+        
+        channel_name = self.__class__.__name__.lower().replace("translator", "")
+        # 后续如果有版本区分可从配置读取，目前固定 "1.0"
+        version = "1.0"
+        
+        for idx, text in enumerate(texts):
+            key = GLOBAL_TRANSLATE_CACHE.make_key(text, source_lang, target_lang, channel_name, version)
+            cached_val = GLOBAL_TRANSLATE_CACHE.get(key)
+            if cached_val is not None:
+                results[idx] = cached_val
+                if stats_ref is not None:
+                    stats_ref["cache_hits"] += 1
+            else:
+                miss_indices.append(idx)
+                miss_texts.append(text)
+                
+        if miss_texts:
+            translated_misses = self._do_translate_batch(miss_texts, source_lang, target_lang, stats_ref)
+            if len(translated_misses) != len(miss_texts):
+                translated_misses = miss_texts
+                
+            for idx, text, trans_val in zip(miss_indices, miss_texts, translated_misses):
+                results[idx] = trans_val
+                # 写入缓存
+                key = GLOBAL_TRANSLATE_CACHE.make_key(text, source_lang, target_lang, channel_name, version)
+                GLOBAL_TRANSLATE_CACHE.set(key, trans_val)
+                
+        return results
+
+    def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
         with ThreadPoolExecutor(max_workers=8) as executor:
@@ -45,7 +134,7 @@ class GoogleTranslator(BaseTranslator):
                 raise Exception(f"Google translate response parsing failed: {e}")
         raise Exception(f"Google translate failed: status {response.status_code}")
 
-    def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+    def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         """
         优化：大厂同款批量翻译。将所有行合并成一次 POST 请求发送给 Google，
         利用 Google 对换行符 \n 的保留特性，在单次往返中取得全部翻译，
@@ -90,7 +179,7 @@ class GoogleTranslator(BaseTranslator):
             logger.warning("[Google Batch] 批量翻译请求失败: %s。正在降级为线程池并发翻译...", e)
             
         # 2. 降级兜底：使用基类的多线程并发请求，保证稳定性
-        return super().translate_batch(texts, source_lang, target_lang)
+        return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
 class LLMTranslator(BaseTranslator):
     def __init__(self, base_url: str, api_key: str, model: str):
@@ -119,7 +208,7 @@ class LLMTranslator(BaseTranslator):
             return res.json()["choices"][0]["message"]["content"].strip()
         raise Exception(f"LLM translation failed: {res.text}")
 
-    def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+    def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
         headers = {
@@ -155,7 +244,7 @@ class LLMTranslator(BaseTranslator):
                     return [str(x) for x in translated]
         except Exception as e:
             logger.warning("LLM batch translation failed: %s", e)
-        return super().translate_batch(texts, source_lang, target_lang)
+        return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
 class BaiduTranslator(BaseTranslator):
     def __init__(self, app_id: str, secret_key: str):
@@ -180,7 +269,7 @@ class BaiduTranslator(BaseTranslator):
             return "".join([item["dst"] for item in res_json["trans_result"]])
         raise Exception(f"Baidu request failed: status {res.status_code}")
 
-    def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+    def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
         cleaned_texts = [t.replace('\n', ' ').strip() for t in texts]
@@ -213,5 +302,5 @@ class BaiduTranslator(BaseTranslator):
                     return [item["dst"] for item in trans_result]
         except Exception as e:
             logger.warning("Baidu batch translation failed: %s", e)
-        return super().translate_batch(texts, source_lang, target_lang)
+        return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
