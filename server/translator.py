@@ -5,6 +5,7 @@ import urllib.parse
 import hashlib
 import random
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -211,27 +212,36 @@ class LLMTranslator(BaseTranslator):
     def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
+        
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+        
+        # 1. 使用 XML 风格标记将多行合并成一个文本块以节省 Token 并加速
+        packed_input = "\n".join([f"<SEG{i}>{t}" for i, t in enumerate(texts)])
         prompt = (
-            "You are a translation assistant. Translate the following list of texts into Simplified Chinese.\n"
-            "The input is a JSON array of strings. You must return a JSON array of strings containing the translations in the same order.\n"
-            "Respond ONLY with a valid JSON array of strings. Do not wrap it in markdown code blocks like ```json."
+            "You are a translation assistant. Translate each segment marked with <SEG{idx}> into Simplified Chinese.\n"
+            "You MUST keep the exact same <SEG{idx}> marker at the start of each translated segment, in the same order.\n"
+            "Output ONLY the translated segments with their prefixes. Do not include any extra descriptions, markdown blocks, formatting or explanations."
         )
+        
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(texts, ensure_ascii=False)}
+                {"role": "user", "content": packed_input}
             ],
             "temperature": 0.2
         }
+        
+        parsed = {}
         try:
             res = self.session.post(f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
             if res.status_code == 200:
                 content = res.json()["choices"][0]["message"]["content"].strip()
+                
+                # 清除常见的 Markdown 代码块包装
                 if content.startswith("```"):
                     lines = content.splitlines()
                     if lines[0].startswith("```"):
@@ -239,12 +249,43 @@ class LLMTranslator(BaseTranslator):
                     if lines and lines[-1].startswith("```"):
                         lines = lines[:-1]
                     content = "\n".join(lines).strip()
-                translated = json.loads(content)
-                if isinstance(translated, list) and len(translated) == len(texts):
-                    return [str(x) for x in translated]
+                
+                # 正则匹配提取 <SEG(\d+)> 后面的文本
+                pattern = re.compile(r"<SEG(\d+)>\s*(.*?)(?=\s*<SEG\d+>|$)", re.DOTALL)
+                matches = pattern.findall(content)
+                for idx_str, body in matches:
+                    parsed[int(idx_str)] = body.strip()
         except Exception as e:
-            logger.warning("LLM batch translation failed: %s", e)
-        return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+            logger.warning("LLM segment-based batch translation failed: %s", e)
+            
+        # 2. 精准缺失补偿与兜底 (以多线程并发重试缺失索引)
+        final_results = [None] * len(texts)
+        missing_indices = []
+        
+        for idx in range(len(texts)):
+            if idx in parsed and parsed[idx]:
+                final_results[idx] = parsed[idx]
+            else:
+                missing_indices.append(idx)
+                
+        if missing_indices:
+            logger.warning(
+                "[LLM Segment Batch] 检测到 %d 个片段翻译缺失，正在进行精准多线程并发补偿...", 
+                len(missing_indices)
+            )
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {
+                    idx: executor.submit(self.translate, texts[idx], source_lang, target_lang)
+                    for idx in missing_indices
+                }
+                for idx, fut in futures.items():
+                    try:
+                        final_results[idx] = fut.result()
+                    except Exception as fe:
+                        logger.error(f"[LLM Precision Fallback] 补偿翻译索引 {idx} 失败: {fe}")
+                        final_results[idx] = texts[idx] # 终极兜底：直接保留原文
+                        
+        return final_results
 
 class BaiduTranslator(BaseTranslator):
     def __init__(self, app_id: str, secret_key: str):
