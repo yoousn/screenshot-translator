@@ -35,7 +35,7 @@ const makeImageFormData = (base64: string) => {
 
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const mouseTrackerRef = useRef<HTMLDivElement>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
   const [hasSelected, setHasSelected] = useState(false);
@@ -64,13 +64,32 @@ export default function ScreenshotPage() {
 
     imageRef.current = null;
     translatedImgRef.current = null;
+    maskedCanvasRef.current = null;
     setTranslatedResult(null);
     setOcrResultText(null);
     setOcrPreviewBase64(null);
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
+    setIsSelecting(false);
+    setMousePos(null);
     setScreenshotState("initializing");
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
+
+    isSelectingRef.current = false;
+    isDraggingRef.current = false;
+    isResizingRef.current = null;
+    startPosRef.current = { x: 0, y: 0 };
+    dragStartRef.current = { x: 0, y: 0 };
+    resizeStartRectRef.current = EMPTY_RECT;
+    renderNeededRef.current = true;
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
 
     return currentId;
   };
@@ -413,11 +432,7 @@ export default function ScreenshotPage() {
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const cx = e.clientX;
     const cy = e.clientY;
-    if (mouseTrackerRef.current) {
-      mouseTrackerRef.current.style.left = `${cx + 16}px`;
-      mouseTrackerRef.current.style.top = `${cy + 20}px`;
-      mouseTrackerRef.current.textContent = `${cx}, ${cy}${hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""}`;
-    }
+    setMousePos({ x: cx, y: cy });
 
     if (isDraggingRef.current) {
       const dx = cx - dragStartRef.current.x;
@@ -695,6 +710,25 @@ export default function ScreenshotPage() {
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
     imageRef.current = null;
     translatedImgRef.current = null;
+    maskedCanvasRef.current = null;
+    setIsSelecting(false);
+    setMousePos(null);
+
+    isSelectingRef.current = false;
+    isDraggingRef.current = false;
+    isResizingRef.current = null;
+    startPosRef.current = { x: 0, y: 0 };
+    dragStartRef.current = { x: 0, y: 0 };
+    resizeStartRectRef.current = EMPTY_RECT;
+    renderNeededRef.current = true;
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
   };
 
   const cancelScreenshot = async () => {
@@ -725,7 +759,12 @@ export default function ScreenshotPage() {
 
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }} onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}>
-      <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>0, 0</div>
+      {mousePos && (
+        <div style={{ position: "absolute", left: `${mousePos.x + 16}px`, top: `${mousePos.y + 20}px`, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>
+          {mousePos.x}, {mousePos.y}
+          {hasSelected && ` | ${rect.w}×${rect.h}`}
+        </div>
+      )}
 
 
 
