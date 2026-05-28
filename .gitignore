@@ -41,3 +41,11 @@ client/config.json
 
 # Local OCR Engine Binaries
 /server/ocr/
+
+# Windows Client Executables & Rust Build target
+/tauri-client.exe
+/tauri-client/src-tauri/target/
+
+# Local OCR Client Binaries & DLLs & Models (Windows client bundle)
+/tauri-client/src-tauri/resources/ocr/*
+!/tauri-client/src-tauri/resources/ocr/.gitkeep
