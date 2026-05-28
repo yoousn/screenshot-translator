@@ -235,7 +235,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
         .skip_taskbar(true)
         .resizable(false)
         .shadow(false)
-        .focused(true)
+        .focused(false)
         .build()
         .map_err(|e| format!("创建截图窗口失败：{}", e))?
     };
@@ -253,10 +253,6 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     use tauri::Emitter;
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
     let _ = screenshot_win.emit("screenshot-updated", base64_data);
-
-    // Show immediately — no delay needed since the event is already dispatched
-    let _ = screenshot_win.show();
-    let _ = screenshot_win.set_focus();
 
     Ok(())
 }
@@ -344,6 +340,16 @@ async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
         let _ = screenshot_win.hide();
     }
     CAPTURING.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn overlay_ready_to_show(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+        let _ = screenshot_win.show();
+        let _ = screenshot_win.set_focus();
+        let _ = screenshot_win.set_always_on_top(true);
+    }
     Ok(())
 }
 
@@ -508,6 +514,7 @@ pub fn run() {
             save_image_to_file,
             quick_fullscreen_capture,
             cancel_screenshot,
+            overlay_ready_to_show,
             get_window_rects,
             api_ocr,
             api_translate
