@@ -27,7 +27,8 @@ class ImageProcessor:
                     enable_mkldnn=False,
                     det_db_box_thresh=0.3,
                     det_db_thresh=0.2,
-                    det_db_unclip_ratio=1.6
+                    det_db_unclip_ratio=1.6,
+                    show_log=False
                 )
                 self._last_init_ms = (time.perf_counter() - start_init) * 1000
             else:
