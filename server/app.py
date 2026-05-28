@@ -85,15 +85,48 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
     
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
-    def translator_batch_fn(texts):
-        return translator.translate_batch(texts, "auto", "zh")
+    def translator_batch_fn(texts, stats_ref):
+        return translator.translate_batch(texts, "auto", "zh", stats_ref)
         
     try:
-        out_bytes = processor.process_and_draw(img_bytes, translator_batch_fn)
-        return Response(content=out_bytes, media_type="image/png")
+        out_bytes, stats = processor.process_and_draw(img_bytes, translator_batch_fn)
+        
+        # 终端漂亮的可视化耗时报告
+        total = max(stats["total_ms"], 0.001)
+        report_lines = [
+            "+--------------------------------------------------------+",
+            "|               [TIMER] TRANSLATION REPORT               |",
+            "+--------------------------------------------------------+",
+            f"|  Total Duration:     {stats['total_ms']:8.2f} ms                     |",
+            f"|  +- OCR Step:        {stats['ocr_ms']:8.2f} ms  ({stats['ocr_ms']/total*100:5.1f}%)        |",
+            f"|  +- Translate Step:  {stats['translate_ms']:8.2f} ms  ({stats['translate_ms']/total*100:5.1f}%)        |",
+            f"|  +- Render Step:     {stats['render_ms']:8.2f} ms  ({stats['render_ms']/total*100:5.1f}%)        |",
+            "+--------------------------------------------------------+",
+            f"|  OCR Blocks:         {stats['ocr_blocks']:8d}                          |",
+            f"|  Translate Units:    {stats['translate_units']:8d}                          |",
+            f"|  Cache Hits:         {stats['cache_hits']:8d}                          |",
+            "+--------------------------------------------------------+"
+        ]
+        for line in report_lines:
+            try:
+                print(line)
+            except UnicodeEncodeError:
+                print(line.encode('ascii', 'ignore').decode('ascii'))
+
+        headers = {
+            "X-Trace-Total-Ms": f"{stats['total_ms']:.2f}",
+            "X-Trace-Ocr-Ms": f"{stats['ocr_ms']:.2f}",
+            "X-Trace-Translate-Ms": f"{stats['translate_ms']:.2f}",
+            "X-Trace-Render-Ms": f"{stats['render_ms']:.2f}",
+            "X-Trace-Ocr-Blocks": str(stats["ocr_blocks"]),
+            "X-Trace-Translate-Units": str(stats["translate_units"]),
+            "X-Trace-Cache-Hits": str(stats["cache_hits"])
+        }
+        return Response(content=out_bytes, media_type="image/png", headers=headers)
     except Exception as e:
         print(f"[translate_image] error during process_and_draw: {e}")
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
+
 
 @app.post("/api/ocr")
 async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):

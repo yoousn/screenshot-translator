@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 import io
 import threading
+import time
 
 
 class ImageProcessor:
@@ -265,37 +266,55 @@ class ImageProcessor:
     # ──────────────────────────────────────────────
     # 5. 主流程
     # ──────────────────────────────────────────────
-    def process_and_draw(self, img_bytes: bytes, translator_batch_fn) -> bytes:
+    def process_and_draw(self, img_bytes: bytes, translator_batch_fn) -> tuple[bytes, dict]:
+        stats = {
+            "ocr_ms": 0.0,
+            "translate_ms": 0.0,
+            "render_ms": 0.0,
+            "total_ms": 0.0,
+            "ocr_blocks": 0,
+            "translate_units": 0,
+            "cache_hits": 0
+        }
+        start_time = time.perf_counter()
         try:
             nparr = np.frombuffer(img_bytes, np.uint8)
             img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img_cv is None:
-                return img_bytes
+                stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+                return img_bytes, stats
 
             self._ensure_ocr()
+            ocr_start = time.perf_counter()
             ocr_result = self.ocr.ocr(img_cv, cls=True)
+            stats["ocr_ms"] = (time.perf_counter() - ocr_start) * 1000
+            
             if not ocr_result or not ocr_result[0]:
-                return img_bytes  # 无文字，返回原图
+                stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+                return img_bytes, stats
 
             raw_lines = ocr_result[0]
+            stats["ocr_blocks"] = len(raw_lines)
 
             # ── 步骤 A：按行合并 OCR box ──
             line_blocks = self._group_into_lines(raw_lines)
+            stats["translate_units"] = len(line_blocks)
 
-            # ── 步骤 B：批量翻译（每逻辑行一条） ──
+            # ── 步骤 B：批量翻译 ──
             original_texts = [b["text"] for b in line_blocks]
+            translate_start = time.perf_counter()
             try:
-                translated_texts = translator_batch_fn(original_texts)
+                translated_texts = translator_batch_fn(original_texts, stats)
             except Exception as te:
                 print("[translate] error:", te)
                 translated_texts = original_texts
+            stats["translate_ms"] = (time.perf_counter() - translate_start) * 1000
 
             if len(translated_texts) != len(original_texts):
                 translated_texts = original_texts
 
-            print(f"[Layout] {len(line_blocks)} line blocks to render")
-
-            # ── 步骤 C：转 PIL、逐行绘制 ──
+            # ── 步骤 C：转 PIL 并重绘 ──
+            render_start = time.perf_counter()
             pil_img = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
             draw = ImageDraw.Draw(pil_img)
 
@@ -308,12 +327,11 @@ class ImageProcessor:
                 if box_w <= 0 or box_h <= 0:
                     continue
 
-                # 采样背景色
+                # 采样背景色并填充背景
                 bg_bgr = self._sample_bg(img_cv, x1, y1, x2, y2)
                 bg_rgb = self._bg_to_rgb(bg_bgr)
                 text_rgb = self._choose_text_color(bg_bgr)
 
-                # 背景擦除：外扩 3px padding 保证旧字迹完全消除
                 PAD = 3
                 ex1 = max(0, x1 - PAD)
                 ey1 = max(0, y1 - PAD)
@@ -321,18 +339,16 @@ class ImageProcessor:
                 ey2 = min(img_cv.shape[0], y2 + PAD)
                 draw.rectangle([ex1, ey1, ex2, ey2], fill=bg_rgb)
 
-                # 计算布局
+                # 布局文字并绘制
                 lines, font, line_gap, total_h = self._layout_text(
                     draw, trans_text, box_w, box_h, avg_h
                 )
 
-                # 垂直起点：在 box 内顶部对齐（留 2px 上边距）
                 if total_h <= box_h:
                     start_y = y1 + (box_h - total_h) // 2
                 else:
                     start_y = y1 + 2
 
-                # 逐行绘制，左对齐，左侧留 2px padding
                 x_draw = x1 + 2
                 for idx, line_text in enumerate(lines):
                     line_y = start_y + idx * line_gap
@@ -348,13 +364,15 @@ class ImageProcessor:
                         stroke_fill=bg_rgb,
                     )
 
-            # 导出
+            stats["render_ms"] = (time.perf_counter() - render_start) * 1000
+            
             out = io.BytesIO()
             pil_img.save(out, format="PNG")
-            return out.getvalue()
+            stats["total_ms"] = (time.perf_counter() - start_time) * 1000
+            return out.getvalue(), stats
 
         except Exception as e:
+            stats["total_ms"] = (time.perf_counter() - start_time) * 1000
             print("ERROR in process_and_draw:", e)
-            import traceback
-            traceback.print_exc()
             raise e
+
