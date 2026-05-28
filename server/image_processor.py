@@ -5,6 +5,7 @@ import os
 import io
 import threading
 import time
+import re
 
 
 class OcrCache:
@@ -35,6 +36,42 @@ class OcrCache:
             self.order.append(img_md5)
 
 
+class TextTranslationCache:
+    def __init__(self, maxsize=2000, ttl_seconds=86400):
+        self.maxsize = maxsize
+        self.ttl_seconds = ttl_seconds
+        self.cache = {}
+        self.order = []
+        self.lock = threading.Lock()
+
+    def get(self, key: str):
+        with self.lock:
+            item = self.cache.get(key)
+            if not item:
+                return None
+            value, expire = item
+            if time.time() > expire:
+                self.cache.pop(key, None)
+                if key in self.order:
+                    self.order.remove(key)
+                return None
+            if key in self.order:
+                self.order.remove(key)
+            self.order.append(key)
+            return value
+
+    def set(self, key: str, value: dict):
+        with self.lock:
+            if len(self.cache) >= self.maxsize and key not in self.cache:
+                if self.order:
+                    oldest = self.order.pop(0)
+                    self.cache.pop(oldest, None)
+            self.cache[key] = (value, time.time() + self.ttl_seconds)
+            if key in self.order:
+                self.order.remove(key)
+            self.order.append(key)
+
+
 class ImageProcessor:
     def __init__(self, load_ocr: bool = True):
         self._ocr_lock = threading.Lock()
@@ -42,6 +79,7 @@ class ImageProcessor:
         self._font_cache = {}
         self._font_path = None
         self._ocr_cache = OcrCache()
+        self._text_translation_cache = TextTranslationCache()
         self.ocr_ready = False
         if load_ocr:
             self._ensure_ocr()
@@ -77,6 +115,22 @@ class ImageProcessor:
         self._ensure_ocr()
         with self._ocr_infer_lock:
             return self.ocr.ocr(img_cv, cls=cls)
+
+    def _normalize_ocr_text(self, texts: list[str]) -> str:
+        joined = " ".join([str(t or "") for t in texts]).strip().lower()
+        return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", joined)
+
+    def _make_text_cache_key(self, texts: list[str], config: dict | None) -> str:
+        channel = (config or {}).get("active_channel", "default")
+        return f"{channel}:{self._normalize_ocr_text(texts)}"
+
+    def _merge_blocks(self, blocks: list[dict]) -> dict:
+        x1 = min(b["rect"][0] for b in blocks)
+        y1 = min(b["rect"][1] for b in blocks)
+        x2 = max(b["rect"][2] for b in blocks)
+        y2 = max(b["rect"][3] for b in blocks)
+        avg_h = sum(float(b.get("avg_h", y2 - y1)) for b in blocks) / max(len(blocks), 1)
+        return {"rect": [int(x1), int(y1), int(x2), int(y2)], "text": " ".join(b.get("text", "") for b in blocks), "avg_h": avg_h}
 
     def _load_font(self, size: int) -> ImageFont.FreeTypeFont:
         if size in self._font_cache:
@@ -217,7 +271,7 @@ class ImageProcessor:
         return lines if lines else [text]
 
     def process_and_draw(self, img_bytes: bytes, translator_batch_fn, config: dict = None) -> tuple[bytes, dict]:
-        stats = {"init_ms": 0.0, "ocr_ms": 0.0, "translate_ms": 0.0, "render_ms": 0.0, "encode_ms": 0.0, "other_ms": 0.0, "total_ms": 0.0, "ocr_blocks": 0, "translate_units": 0, "cache_hits": 0, "ocr_ready": self.ocr_ready, "ocr_cache_hit": False}
+        stats = {"init_ms": 0.0, "ocr_ms": 0.0, "translate_ms": 0.0, "render_ms": 0.0, "encode_ms": 0.0, "other_ms": 0.0, "total_ms": 0.0, "ocr_blocks": 0, "translate_units": 0, "cache_hits": 0, "ocr_ready": self.ocr_ready, "ocr_cache_hit": False, "text_cache_hit": False}
         start_time = time.perf_counter()
         try:
             decode_start = time.perf_counter()
@@ -269,15 +323,31 @@ class ImageProcessor:
             line_blocks = self._group_into_lines(raw_lines)
             stats["translate_units"] = len(line_blocks)
             original_texts = [b["text"] for b in line_blocks]
+
             translate_start = time.perf_counter()
-            try:
-                translated_texts = translator_batch_fn(original_texts, stats)
-            except Exception as te:
-                print("[translate] error:", te)
-                translated_texts = original_texts
+            text_cache_key = self._make_text_cache_key(original_texts, config)
+            cached_translation = self._text_translation_cache.get(text_cache_key) if text_cache_key.split(":", 1)[1] else None
+            if cached_translation:
+                stats["text_cache_hit"] = True
+                stats["cache_hits"] += max(1, len(original_texts))
+                cached_texts = cached_translation.get("texts", [])
+                cached_joined = cached_translation.get("joined", "")
+                if len(cached_texts) == len(line_blocks):
+                    translated_texts = cached_texts
+                else:
+                    line_blocks = [self._merge_blocks(line_blocks)]
+                    translated_texts = [cached_joined or " ".join(cached_texts)]
+                    stats["translate_units"] = 1
+            else:
+                try:
+                    translated_texts = translator_batch_fn(original_texts, stats)
+                except Exception as te:
+                    print("[translate] error:", te)
+                    translated_texts = original_texts
+                if len(translated_texts) != len(original_texts):
+                    translated_texts = original_texts
+                self._text_translation_cache.set(text_cache_key, {"texts": list(translated_texts), "joined": " ".join(translated_texts)})
             stats["translate_ms"] = (time.perf_counter() - translate_start) * 1000
-            if len(translated_texts) != len(original_texts):
-                translated_texts = original_texts
 
             render_start = time.perf_counter()
             pil_img = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
