@@ -178,7 +178,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       const { autostart: autostartVal, ...configValues } = values;
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
-      await invoke("set_autostart_enabled", { enabled: autostartVal });
+      await invoke("set_autostart_enabled", { enabled: Boolean(autostartVal) });
 
       message.success("设置保存成功！");
       onConfigSaved();
