@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::time::{sleep as tokio_sleep, Duration};
 
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
-static IS_SCREENSHOTTING: AtomicBool = AtomicBool::new(false);
+static CAPTURING: AtomicBool = AtomicBool::new(false);
 
 static SCREENSHOT_JPEG: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 fn get_screenshot_jpeg() -> &'static Mutex<Option<Vec<u8>>> {
@@ -178,24 +178,14 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
 }
 
 
-#[tauri::command]
-async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
-    if IS_SCREENSHOTTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return Err("正在截屏中，请勿重复操作".to_string());
-    }
-    struct ScreenshotGuard;
-    impl Drop for ScreenshotGuard {
-        fn drop(&mut self) {
-            IS_SCREENSHOTTING.store(false, Ordering::SeqCst);
-        }
-    }
-    let _guard = ScreenshotGuard;
-
+async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
-    if let Some(main_win) = app.get_webview_window("main") {
-        let _ = main_win.hide();
+
+    // 1. 每次创建新窗口前，先检测并销毁/关闭旧的 screenshot 窗口
+    if let Some(old_win) = app.get_webview_window("screenshot") {
+        let _ = old_win.destroy();
+        tokio_sleep(Duration::from_millis(100)).await;
     }
-    tokio_sleep(Duration::from_millis(50)).await;
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
@@ -234,25 +224,57 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
         let _ = fs::write(&write_path, &jpeg_for_write);
     });
 
-    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let (x, y, width, height) = screen_info;
+    // 2. 动态创建临时的主图遮罩窗口，透明、无边框、跳过任务栏、置顶且对焦
+    let screenshot_win = tauri::WebviewWindowBuilder::new(
+        &app,
+        "screenshot",
+        tauri::WebviewUrl::App("index.html".into())
+    )
+    .title("YSN 截图辅助窗口")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .visible(false)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(true)
+    .build()
+    .map_err(|e| format!("创建截图窗口失败：{}", e))?;
 
-        // Position and configure the window while still hidden
-        let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
-        let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
-        let _ = screenshot_win.set_always_on_top(true);
+    // Disable transition animation to avoid windows rendering delay/flicker
+    disable_windows_transition(&screenshot_win);
 
-        use tauri::Emitter;
-        let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
-        let _ = screenshot_win.emit("screenshot-updated", base64_data);
+    let (x, y, width, height) = screen_info;
 
-        // Show immediately — no delay needed since the event is already dispatched
-        let _ = screenshot_win.show();
-        let _ = screenshot_win.set_focus();
-    } else {
-        return Err("未获取到名为 screenshot 的窗口句柄".to_string());
-    }
+    // Position and configure the window while still hidden
+    let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
+
+    use tauri::Emitter;
+    let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
+    let _ = screenshot_win.emit("screenshot-updated", base64_data);
+
+    // Show immediately — no delay needed since the event is already dispatched
+    let _ = screenshot_win.show();
+    let _ = screenshot_win.set_focus();
+
     Ok(())
+}
+
+#[tauri::command]
+async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
+    if CAPTURING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    match start_screenshot_impl(app, mode).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            CAPTURING.store(false, Ordering::SeqCst);
+            Err(e)
+        }
+    }
 }
 
 
@@ -317,12 +339,12 @@ fn get_window_rects() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
+async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let _ = screenshot_win.set_always_on_top(false);
-        let _ = screenshot_win.set_fullscreen(false);
-        let _ = screenshot_win.hide();
+        let _ = screenshot_win.destroy();
+        tokio_sleep(Duration::from_millis(100)).await;
     }
+    CAPTURING.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -492,11 +514,6 @@ pub fn run() {
             api_translate
         ])
         .setup(|app| {
-            #[cfg(target_os = "windows")]
-            if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-                disable_windows_transition(&screenshot_win);
-            }
-
             let shortcut_a = Shortcut::new(Some(Modifiers::ALT), Code::KeyA);
             let reg_res = app.global_shortcut().on_shortcut(shortcut_a, move |app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {
@@ -584,9 +601,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let label = window.label();
-                if label == "main" || label == "screenshot" {
+            let label = window.label();
+            if label == "screenshot" {
+                match event {
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                        CAPTURING.store(false, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            } else if label == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     let _ = window.hide();
                     api.prevent_close();
                 }
