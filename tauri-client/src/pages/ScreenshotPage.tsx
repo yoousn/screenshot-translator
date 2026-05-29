@@ -67,6 +67,9 @@ export default function ScreenshotPage() {
     const currentId = captureIdRef.current;
     console.log("[ScreenshotPage] new capture session", currentId);
 
+    // Clear any residual notifications from previous session
+    message.destroy();
+
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -463,12 +466,13 @@ export default function ScreenshotPage() {
       const canvas = canvasRef.current;
       const maxW = canvas?.width || window.innerWidth;
       const maxH = canvas?.height || window.innerHeight;
-      rectRef.current = {
+      const next = {
         x: Math.max(0, Math.min(maxW - rectRef.current.w, rectRef.current.x + dx)),
         y: Math.max(0, Math.min(maxH - rectRef.current.h, rectRef.current.y + dy)),
         w: rectRef.current.w,
         h: rectRef.current.h,
       };
+      setCurrentRect(next, true);
       renderNeededRef.current = true;
       return;
     }
@@ -486,7 +490,8 @@ export default function ScreenshotPage() {
       if (handle.includes("w")) x1 = r.x + dx;
       if (handle.includes("s")) y2 = r.y + r.h + dy;
       if (handle.includes("n")) y1 = r.y + dy;
-      rectRef.current = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+      const next = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+      setCurrentRect(next, true);
       renderNeededRef.current = true;
       return;
     }
@@ -500,7 +505,8 @@ export default function ScreenshotPage() {
       }
       const snapCx = snap(cx, snapX);
       const snapCy = snap(cy, snapY);
-      rectRef.current = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
+      const next = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
+      setCurrentRect(next, true);
       renderNeededRef.current = true;
       return;
     }
@@ -952,20 +958,26 @@ export default function ScreenshotPage() {
       if (data.status !== "success") throw new Error(data.error || data.detail || "OCR 服务返回失败状态");
 
       const items = Array.isArray(data.ocr) ? data.ocr : [];
+      const texts = items.map((item: any) => item.text).filter(Boolean).join("\n");
+
+      message.destroy();
+      setIsOCRing(false);
+      
       if (items.length > 0) {
-        const texts = items.map((item: any) => item.text).filter(Boolean).join("\n");
         setOcrResultText(texts);
         setOcrPreviewBase64(base64);
-        message.success({ content: `识别到 ${items.length} 条文本，可编辑后复制`, key: "ocr" });
+        message.success({ content: `识别完成，已自动复制`, key: "ocr" });
+        try {
+          await navigator.clipboard.writeText(texts);
+        } catch {}
       } else {
         setOcrResultText("");
         setOcrPreviewBase64(base64);
-        message.info({ content: "未识别到文字，可手动输入后复制", key: "ocr" });
+        message.info({ content: "未识别到文字", key: "ocr" });
       }
     } catch (e: any) {
       const msg = e?.message || e?.toString?.() || String(e);
-      message.error({ content: `OCR 失败：${msg}`, key: "ocr", duration: 5 });
-    } finally {
+      message.error({ content: `OCR 失败：${msg}`, key: "ocr", duration: 3 });
       setIsOCRing(false);
     }
   };
@@ -1010,17 +1022,22 @@ export default function ScreenshotPage() {
       await emit("screenshot-captured", base64);
       if (action === "copy" || action === "both") {
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
-        message.success("图片已成功复制至剪贴板");
       }
-      if (action === "save") {
-        const savePath = await invoke<string>("save_image_to_file", { imageBase64: base64 });
-        message.success(`图片成功保存至: ${savePath}`);
-      }
+      // Clear messages and close overlay first
+      message.destroy();
       resetScreenshotState();
       await invoke("cancel_screenshot");
+      if (action === "save") {
+        try {
+          await invoke<string>("save_image_to_file", { imageBase64: base64 });
+        } catch (saveErr: any) {
+          if (saveErr !== "用户取消了保存") {
+            message.error("保存失败: " + (saveErr.message || saveErr.toString()));
+          }
+        }
+      }
     } catch (e: any) {
-      if (e === "用户取消了保存") message.info("已取消保存");
-      else message.error("截图操作失败: " + (e.message || e.toString()));
+      message.error("截图操作失败: " + (e.message || e.toString()));
     }
   };
 
@@ -1051,8 +1068,8 @@ export default function ScreenshotPage() {
             <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图 (P)</Button>
             <Button size="small" icon={<CopyOutlined />} onClick={() => confirmScreenshot("copy")}>复制</Button>
             <Button size="small" icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")}>保存</Button>
-            <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => confirmScreenshot("both")}>完成</Button>
             <Button size="small" icon={<CloseOutlined />} onClick={cancelScreenshot} danger />
+            <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => confirmScreenshot("both")}>完成</Button>
           </Space>
         </div>
       )}

@@ -320,6 +320,11 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
 
+    // Hide main window before capture to prevent focus-steal that requires an extra click
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.hide();
+    }
+
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
         let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
@@ -408,9 +413,8 @@ async fn overlay_ready_to_show(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
-    if CAPTURING.swap(true, Ordering::SeqCst) {
-        return Ok(());
-    }
+    // Allow re-entry: pressing hotkey again while capturing restarts the session
+    CAPTURING.store(true, Ordering::SeqCst);
 
     match start_screenshot_impl(app, mode).await {
         Ok(()) => Ok(()),
