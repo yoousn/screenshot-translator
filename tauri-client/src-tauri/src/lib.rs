@@ -428,7 +428,11 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
 fn quick_fullscreen_capture() -> Result<(), String> {
     let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
     if screens.is_empty() { return Err("未检测到显示器".to_string()); }
-    let screen = &screens[0];
+    let screen = if let Some((cx, cy)) = get_cursor_position() {
+        Screen::from_point(cx, cy).unwrap_or_else(|_| screens[0])
+    } else {
+        screens[0]
+    };
     let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
     let (width, height) = image.dimensions();
     let mut clipboard = Clipboard::new().map_err(|e| format!("初始化系统剪贴板失败：{}", e))?;
@@ -637,12 +641,24 @@ async fn api_translate(base64_image: String, server_url: String, client_token: S
         .unwrap_or("")
         .to_string();
         
+    let blocks_count = resp.headers().get("X-Trace-Translate-Units")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+        
+    let channel = resp.headers().get("X-Trace-Channel")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+        
     let result_bytes = resp.bytes().await.map_err(|e| format!("读取翻译结果失败：{}", e))?;
     let image_base64 = BASE64_STANDARD.encode(&result_bytes);
     
     let result = serde_json::json!({
         "image": image_base64,
-        "texts": texts_json
+        "texts": texts_json,
+        "blocks": blocks_count,
+        "channel": channel
     });
     Ok(result)
 }

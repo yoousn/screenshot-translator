@@ -196,6 +196,10 @@ export default function ScreenshotPage() {
         e.preventDefault();
         handleTranslate();
       }
+      if (!e.ctrlKey && !e.metaKey && (e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        handlePin();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
 
@@ -729,27 +733,53 @@ export default function ScreenshotPage() {
 
   const handlePin = async () => {
     if (!hasSelected || rect.w <= 0 || rect.h <= 0) return;
-    const base64 = cropSelectionFromLoadedImage().base64;
+    const { base64, x: px, y: py, w: pw, h: ph } = cropSelectionFromLoadedImage();
     if (!base64) return;
     
     const pinId = Date.now().toString();
     const label = `pin_${pinId}`;
-    localStorage.setItem(label, translatedResult || base64);
+    const imgData = translatedResult || base64;
+    
+    let finalX = px;
+    let finalY = py;
+    let factor = 1;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      const pos = await win.outerPosition();
+      factor = await win.scaleFactor();
+      finalX += pos.x;
+      finalY += pos.y;
+    } catch (e) {
+      console.warn("Failed to get window position", e);
+    }
+    
+    // Convert physical to logical for WebviewWindow creation
+    const logicalX = finalX / factor;
+    const logicalY = finalY / factor;
+    const logicalW = pw / factor;
+    const logicalH = ph / factor;
     
     try {
-      new WebviewWindow(label, {
+      const win = new WebviewWindow(label, {
         url: "index.html",
         title: "Pin",
         transparent: true,
         decorations: false,
         alwaysOnTop: true,
-        x: Math.round(rect.x),
-        y: Math.round(rect.y),
-        width: Math.round(rect.w),
-        height: Math.round(rect.h),
+        x: logicalX,
+        y: logicalY,
+        width: logicalW,
+        height: logicalH,
         skipTaskbar: true
       });
-      // Optionally close screenshot
+      
+      win.once('tauri://created', () => {
+        // 多次 emit 提高大图事件送达率，避免依赖 localStorage
+        setTimeout(() => emit(`pin-image-${label}`, imgData), 100);
+        setTimeout(() => emit(`pin-image-${label}`, imgData), 300);
+      });
+      
       cancelScreenshot();
     } catch (e) {
       console.error("Failed to create pin window", e);
@@ -766,6 +796,9 @@ export default function ScreenshotPage() {
       setIsTranslating(true);
       message.loading({ content: "正在请求翻译重绘...", key: "translate", duration: 0 });
       const base64 = await captureRegionBase64();
+      
+      let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
+      let blocksCount = 1;
       
       let resultBase64 = "";
       if (configRef.current.useLocalOcr) {
@@ -808,23 +841,30 @@ export default function ScreenshotPage() {
             throw new Error(transData.error || "翻译引擎未成功返回结果");
           }
           
+          usedChannel = transData.channel || usedChannel;
+          blocksCount = ocrBlocks.length;
+          
           console.log("[Local OCR Flow] 翻译获取成功，开始本地重绘渲染...");
           resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, transData.translations);
           setTranslatePairs(ocrBlocks.map((b, i) => ({ o: b.text, t: transData.translations[i] || b.text })));
         } catch (localErr: any) {
           console.warn("[Local OCR Flow] 本地识别与重绘链条出错，尝试云端后备...", localErr);
           if (configRef.current.fallbackToRemoteOcr) {
-            const res = await invoke<{image: string, texts: string}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
+            const res = await invoke<{image: string, texts: string, channel?: string, blocks?: number}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
             resultBase64 = res.image;
             if (res.texts) setTranslatePairs(JSON.parse(atob(res.texts)));
+            usedChannel = res.channel || usedChannel;
+            blocksCount = res.blocks || blocksCount;
           } else {
             throw localErr;
           }
         }
       } else {
-        const res = await invoke<{image: string, texts: string}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
+        const res = await invoke<{image: string, texts: string, channel?: string, blocks?: number}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
         resultBase64 = res.image;
         if (res.texts) setTranslatePairs(JSON.parse(atob(res.texts)));
+        usedChannel = res.channel || usedChannel;
+        blocksCount = res.blocks || blocksCount;
       }
       
       const dataUrl = "data:image/png;base64," + resultBase64;
@@ -846,8 +886,8 @@ export default function ScreenshotPage() {
           id: "rec-" + Date.now(),
           time: new Date().toLocaleString(),
           filename: "Screenshot_" + Date.now() + ".png",
-          blocks: 1, // Optional: if you have ocrBlocks, you could pass ocrBlocks.length
-          channel: configRef.current.channel || configRef.current.targetLang || "auto",
+          blocks: blocksCount,
+          channel: usedChannel,
           duration: durationSec + "s",
           status: "success"
         };

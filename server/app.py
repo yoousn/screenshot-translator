@@ -25,7 +25,8 @@ app.add_middleware(
         "http://localhost:1420", 
         "http://127.0.0.1:1420", 
         "tauri://localhost",
-        "https://tauri.localhost"
+        "https://tauri.localhost",
+        "http://tauri.localhost"
     ],
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -51,8 +52,8 @@ threading.Thread(target=warm_up_ocr_async, daemon=True).start()
 # 🔑 启动时打印当前 client_token，供运维人员在客户端配置
 _startup_cfg = load_server_config()
 _token_val = _startup_cfg['client_token']
-print(f"[Security] 当前 client_token: {_token_val}")
-print("[Security] 请将此 token 填入客户端「系统设置 → 令牌」中，或通过环境变量 SS_TRANSLATOR_TOKEN 覆盖。")
+logger.warning(f"[Security] 当前 client_token: {_token_val}")
+logger.warning("[Security] 请将此 token 填入客户端「系统设置 → 令牌」中，或通过环境变量 SS_TRANSLATOR_TOKEN 覆盖。")
 del _startup_cfg, _token_val
 
 
@@ -151,15 +152,16 @@ async def c_hello(asker: str = ""):
         "server": "local"
     }
 
-@app.post("/api/translate")
+import asyncio
 
-def translate_image(
+@app.post("/api/translate")
+async def translate_image(
     image: UploadFile = File(...),
     target_lang: str = Form("zh"),
     x_api_key: str = Header(None)
 ):
     verify_token(x_api_key)
-    img_bytes = image.file.read()
+    img_bytes = await image.read()
     
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
@@ -167,7 +169,9 @@ def translate_image(
         return translator.translate_batch(texts, "auto", target_lang or "zh", stats_ref)
         
     try:
-        out_bytes, stats = processor.process_and_draw(img_bytes, translator_batch_fn, config=get_config())
+        out_bytes, stats = await asyncio.to_thread(
+            processor.process_and_draw, img_bytes, translator_batch_fn, config=get_config(), target_lang=(target_lang or "zh")
+        )
         
         # 终端漂亮的可视化耗时报告
         if get_config().get("debug_trace", False):
@@ -203,6 +207,7 @@ def translate_image(
             "X-Trace-Ocr-Blocks": str(stats["ocr_blocks"]),
             "X-Trace-Translate-Units": str(stats["translate_units"]),
             "X-Trace-Cache-Hits": str(stats["cache_hits"]),
+            "X-Trace-Channel": str(get_config().get("active_channel", "google")),
             "X-Ocr-Ready": "true" if stats.get("ocr_ready", False) else "false",
             "X-Ocr-Cache-Hit": "true" if stats.get("ocr_cache_hit", False) else "false"
         }

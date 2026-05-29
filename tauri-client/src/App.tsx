@@ -49,9 +49,19 @@ function AppContent() {
     } catch (e: any) {
       const errMsg = e.toString();
       setShortcutError(errMsg);
+      
+      let hotkey = "Alt+A";
+      try {
+        const configStr = await invoke<string>("get_config");
+        const parsedConfig = JSON.parse(configStr);
+        if (parsedConfig.hotkey) {
+          hotkey = parsedConfig.hotkey;
+        }
+      } catch (_) {}
+      
       notification.error({
-        message: "全局快捷键 (Alt + A) 注册失败",
-        description: `无法成功在系统中注册截图快捷键 Alt+A。该热键可能已被微信、QQ 或其他运行中的软件占用。请尝试关闭相应软件后重新运行本程序以激活快捷键。`,
+        message: `全局快捷键 (${hotkey}) 注册失败`,
+        description: `无法成功在系统中注册截图快捷键 ${hotkey}。该热键可能已被其他运行中的软件占用。请尝试关闭相应软件或在设置中修改快捷键。`,
         duration: 0,
         placement: "topRight"
       });

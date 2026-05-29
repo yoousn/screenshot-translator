@@ -59,6 +59,23 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       if (parsedConfig.newApiBase && parsedConfig.newApiKey) {
         setAvailableModels([parsedConfig.newApiModel || "gemini-3.5-flash"]);
       }
+
+      if (parsedConfig.serverUrl) {
+        try {
+          const response = await fetch(`${parsedConfig.serverUrl.replace(/\/$/, "")}/api/config/current`, {
+            headers: {
+              "x-api-key": parsedConfig.clientToken || ""
+            }
+          });
+          const serverConfig = await response.json();
+          if (serverConfig.status === "success" && serverConfig.active_channel) {
+            setCurrentChannel(serverConfig.active_channel);
+            form.setFieldValue("channel", serverConfig.active_channel);
+          }
+        } catch (e) {
+          console.warn("Failed to sync server active channel", e);
+        }
+      }
     } catch (error) {
       console.error(error);
       message.error("加载配置文件失败");

@@ -89,7 +89,17 @@ class ImageProcessor:
         else:
             self.ocr = None
 
-    def _ensure_ocr(self):
+    def _ensure_ocr(self, config: dict = None):
+        cfg = config or {}
+        det_db_box_thresh = cfg.get("ocr_det_db_box_thresh", 0.3)
+        det_db_thresh = cfg.get("ocr_det_db_thresh", 0.2)
+        det_db_unclip_ratio = cfg.get("ocr_det_db_unclip_ratio", 1.6)
+        
+        # 缓存当前的参数，用于判断是否需要重新初始化 OCR 模型
+        current_params = (det_db_box_thresh, det_db_thresh, det_db_unclip_ratio)
+        if hasattr(self, '_ocr_params') and self._ocr_params != current_params:
+            self.ocr = None # 强制重新加载
+
         with self._ocr_lock:
             if self.ocr is None:
                 start_init = time.perf_counter()
@@ -97,11 +107,12 @@ class ImageProcessor:
                 self.ocr = PaddleOCR(
                     lang="ch",
                     enable_mkldnn=False,
-                    det_db_box_thresh=0.3,
-                    det_db_thresh=0.2,
-                    det_db_unclip_ratio=1.6,
+                    det_db_box_thresh=det_db_box_thresh,
+                    det_db_thresh=det_db_thresh,
+                    det_db_unclip_ratio=det_db_unclip_ratio,
                     show_log=False
                 )
+                self._ocr_params = current_params
                 try:
                     dummy_img = np.zeros((32, 32, 3), dtype=np.uint8)
                     with self._ocr_infer_lock:
@@ -123,13 +134,13 @@ class ImageProcessor:
         joined = " ".join([str(t or "") for t in texts]).strip().lower()
         return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", joined)
 
-    def _make_text_cache_key(self, texts: list[str], config: dict | None) -> str:
+    def _make_text_cache_key(self, texts: list[str], config: dict | None, target_lang: str = "zh") -> str:
         cfg = config or {}
         channel = cfg.get("active_channel", "default")
-        namespace = channel
+        namespace = f"{channel}:{target_lang}"
         if channel == "new-api":
             llm_cfg = cfg.get("channels", {}).get("new-api", {})
-            namespace = f"new-api:{llm_cfg.get('base_url', '')}:{llm_cfg.get('model', '')}"
+            namespace = f"new-api:{target_lang}:{llm_cfg.get('base_url', '')}:{llm_cfg.get('model', '')}"
         return f"{namespace}:{self._normalize_ocr_text(texts)}"
 
     def _merge_blocks(self, blocks: list[dict]) -> dict:
@@ -280,7 +291,7 @@ class ImageProcessor:
             lines.append(current)
         return lines if lines else [text]
 
-    def process_and_draw(self, img_bytes: bytes, translator_batch_fn, config: dict = None) -> tuple[bytes, dict]:
+    def process_and_draw(self, img_bytes: bytes, translator_batch_fn, config: dict = None, target_lang: str = "zh") -> tuple[bytes, dict]:
         stats = {"init_ms": 0.0, "ocr_ms": 0.0, "translate_ms": 0.0, "render_ms": 0.0, "encode_ms": 0.0, "other_ms": 0.0, "total_ms": 0.0, "ocr_blocks": 0, "translate_units": 0, "cache_hits": 0, "ocr_ready": self.ocr_ready, "ocr_cache_hit": False, "text_cache_hit": False}
         start_time = time.perf_counter()
         try:
@@ -293,11 +304,17 @@ class ImageProcessor:
 
             ocr_max_side = config.get("ocr_max_side", 1280) if config else 1280
             ocr_cache_enabled = config.get("ocr_cache_enabled", True) if config else True
+            
+            cfg = config or {}
+            det_db_box_thresh = cfg.get("ocr_det_db_box_thresh", 0.3)
+            det_db_thresh = cfg.get("ocr_det_db_thresh", 0.2)
+            det_db_unclip_ratio = cfg.get("ocr_det_db_unclip_ratio", 1.6)
+            
             import hashlib
             img_md5 = hashlib.md5(img_bytes).hexdigest()
-            ocr_cache_key = f"{img_md5}_ppocr_v4_{ocr_max_side}_ch_0.3_0.2_1.6"
+            ocr_cache_key = f"{img_md5}_ppocr_v4_{ocr_max_side}_ch_{det_db_box_thresh}_{det_db_thresh}_{det_db_unclip_ratio}"
 
-            self._ensure_ocr()
+            self._ensure_ocr(config)
             stats["init_ms"] = getattr(self, "_last_init_ms", 0.0)
             stats["ocr_ready"] = self.ocr_ready
             ocr_start = time.perf_counter()
@@ -335,7 +352,7 @@ class ImageProcessor:
             original_texts = [b["text"] for b in line_blocks]
 
             translate_start = time.perf_counter()
-            text_cache_key = self._make_text_cache_key(original_texts, config)
+            text_cache_key = self._make_text_cache_key(original_texts, config, target_lang)
             cached_translation = self._text_translation_cache.get(text_cache_key) if text_cache_key.split(":", 1)[1] else None
             if cached_translation and len(cached_translation.get("texts", [])) != len(line_blocks):
                 cached_translation = None
