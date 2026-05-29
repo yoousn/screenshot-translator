@@ -172,12 +172,53 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     }
   };
 
+  const buildServerChannelPayload = (values: any) => {
+    const channel = values.channel || "google";
+    const payload: any = { channel, config: {} };
+    if (channel === "baidu") {
+      payload.config = {
+        app_id: values.baiduAppId || "",
+        secret_key: values.baiduSecretKey || "",
+      };
+    } else if (channel === "new-api") {
+      payload.config = {
+        base_url: values.newApiBase || "",
+        api_key: values.newApiKey || "",
+        model: values.newApiModel || "",
+      };
+    }
+    return payload;
+  };
+
+  const saveServerChannelConfig = async (values: any) => {
+    const serverUrl = values.serverUrl;
+    const clientToken = values.clientToken || "";
+    if (!serverUrl) {
+      throw new Error("请先配置服务器 URL");
+    }
+
+    const response = await fetch(`${serverUrl.replace(/\/$/, "")}/api/config/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": clientToken,
+      },
+      body: JSON.stringify(buildServerChannelPayload(values)),
+    });
+    const resData = await response.json().catch(() => ({}));
+    if (!response.ok || resData.status !== "success") {
+      throw new Error(resData.error || `服务器配置保存失败，状态码: ${response.status}`);
+    }
+  };
+
   const onFinish = async (values: any) => {
     setIsSaving(true);
     try {
       const { autostart: autostartVal, ...configValues } = values;
+      await saveServerChannelConfig(configValues);
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
+      await invoke("re_register_shortcut", { hotkey: configValues.hotkey || "Alt+A" });
       await invoke("set_autostart_enabled", { enabled: Boolean(autostartVal) });
 
       message.success("设置保存成功！");
@@ -193,6 +234,16 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     { value: "google", label: "谷歌翻译 (默认/免密)" },
     { value: "baidu", label: "百度翻译 (开放平台)" },
     { value: "new-api", label: "中转大模型 (New API)" },
+  ];
+
+  const targetLangOptions = [
+    { value: "zh", label: "中文" },
+    { value: "en", label: "英语" },
+    { value: "ja", label: "日语" },
+    { value: "ko", label: "韩语" },
+    { value: "fr", label: "法语" },
+    { value: "de", label: "德语" },
+    { value: "es", label: "西班牙语" },
   ];
 
   return (
@@ -261,6 +312,14 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
             initialValue="google"
           >
             <Select options={channelOptions} style={{ height: 32 }} />
+          </Form.Item>
+
+          <Form.Item
+            label={<Text strong style={{ fontSize: 12 }}>目标语言</Text>}
+            name="targetLang"
+            initialValue="zh"
+          >
+            <Select options={targetLangOptions} style={{ height: 32 }} />
           </Form.Item>
 
           {currentChannel === "baidu" && (
@@ -381,11 +440,15 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
               </Text>
             </Col>
             <Col span={12}>
-              <Form.Item label="全局截图快捷键" name="hotkey">
+              <Form.Item
+                label="全局截图快捷键"
+                name="hotkey"
+                rules={[{ pattern: /^(Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows)(\s*\+\s*(Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows))*\s*\+\s*.+$/i, message: "格式示例：Alt+A、Ctrl+Shift+S" }]}
+              >
                 <Input placeholder="Alt+A" style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
-                用于全局唤醒截图的物理按键组合。
+                保存后立即生效；示例：Alt+A、Ctrl+Shift+S。翻译快捷键 Alt+T 保持固定。
               </Text>
             </Col>
           </Row>

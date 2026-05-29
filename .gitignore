@@ -5,8 +5,9 @@ __pycache__/
 *.pyd
 
 # C++ build directories
-/client/build/
-/client/out/
+# Tauri build directories
+tauri-client/src-tauri/target/
+tauri-client/dist/
 *.user
 *.suo
 *.userosscache
@@ -32,15 +33,15 @@ htmlcov/
 
 # Local configuration files
 server/config.yaml
-client/config.json
+tauri-client/src-tauri/config.json
 
 # Scratch directories and internal system logs
 .superpowers/
 .gemini/
 *tmp*
 
-# Local OCR Engine Binaries
-/server/ocr/
+# Test artifacts
+server/*.png
 
 # Windows Client Executables & Rust Build target
 /tauri-client.exe

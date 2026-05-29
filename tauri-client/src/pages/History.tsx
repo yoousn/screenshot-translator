@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { 
   List, 
   Button, 
@@ -29,57 +30,37 @@ interface HistoryRecord {
   status: "success" | "warning";
 }
 
-const mockHistory: HistoryRecord[] = [
-  {
-    id: "rec-1",
-    time: "2026-05-27 01:42:15",
-    filename: "Screenshot_20260527_0142.png",
-    blocks: 14,
-    channel: "new-api (gemini-3.5-flash)",
-    duration: "1.24s",
-    status: "success",
-  },
-  {
-    id: "rec-2",
-    time: "2026-05-27 01:21:03",
-    filename: "Screenshot_20260527_0120.png",
-    blocks: 22,
-    channel: "baidu",
-    duration: "420ms",
-    status: "success",
-  },
-  {
-    id: "rec-3",
-    time: "2026-05-26 23:59:12",
-    filename: "IDE_Code_Block_English.png",
-    blocks: 8,
-    channel: "google",
-    duration: "310ms",
-    status: "success",
-  },
-  {
-    id: "rec-4",
-    time: "2026-05-26 21:05:44",
-    filename: "Unity_Inspector_Error.png",
-    blocks: 31,
-    channel: "new-api (gemini-3.5-flash)",
-    duration: "2.11s",
-    status: "success",
-  },
-  {
-    id: "rec-5",
-    time: "2026-05-26 19:40:02",
-    filename: "Github_PR_Merge.png",
-    blocks: 5,
-    channel: "baidu",
-    duration: "380ms",
-    status: "success",
-  }
-];
+
 
 export default function History() {
-  const handleClearHistory = () => {
-    message.info("暂无可清理的历史数据");
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadHistory = async () => {
+    setLoading(true);
+    try {
+      const historyStr = await invoke<string>("get_history");
+      setHistory(JSON.parse(historyStr));
+    } catch (err) {
+      console.error("Failed to load history:", err);
+      message.error("加载历史记录失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClearHistory = async () => {
+    try {
+      await invoke("clear_history");
+      setHistory([]);
+      message.success("已清空历史记录");
+    } catch (err) {
+      message.error("清空历史记录失败");
+    }
   };
 
   return (
@@ -112,7 +93,9 @@ export default function History() {
 
       <List
         itemLayout="horizontal"
-        dataSource={mockHistory}
+        dataSource={history}
+        loading={loading}
+        locale={{ emptyText: "暂无历史翻译记录" }}
         renderItem={(item) => (
           <List.Item
             style={{

@@ -4,6 +4,7 @@ use std::os::windows::process::CommandExt;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::str::FromStr;
 use screenshots::Screen;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use tauri::Manager;
@@ -23,6 +24,141 @@ fn get_screenshot_jpeg() -> &'static Mutex<Option<Vec<u8>>> {
 }
 
 struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
+
+const DEFAULT_SCREENSHOT_HOTKEY: &str = "Alt+A";
+const TRANSLATE_HOTKEY_LABEL: &str = "Alt+T";
+
+
+fn normalize_key_code(key: &str) -> Option<String> {
+    let trimmed = key.trim();
+    if trimmed.len() == 1 {
+        let ch = trimmed.chars().next()?.to_ascii_uppercase();
+        if ch.is_ascii_alphabetic() {
+            return Some(format!("Key{}", ch));
+        }
+        if ch.is_ascii_digit() {
+            return Some(format!("Digit{}", ch));
+        }
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    let code = match lowered.as_str() {
+        "esc" | "escape" => "Escape",
+        "space" | "spacebar" => "Space",
+        "enter" | "return" => "Enter",
+        "tab" => "Tab",
+        "backspace" => "Backspace",
+        "delete" | "del" => "Delete",
+        "up" | "arrowup" => "ArrowUp",
+        "down" | "arrowdown" => "ArrowDown",
+        "left" | "arrowleft" => "ArrowLeft",
+        "right" | "arrowright" => "ArrowRight",
+        "minus" | "-" => "Minus",
+        "equal" | "=" => "Equal",
+        "comma" | "," => "Comma",
+        "period" | "." => "Period",
+        "slash" | "/" => "Slash",
+        "backslash" | "\\" => "Backslash",
+        "quote" | "'" => "Quote",
+        "semicolon" | ";" => "Semicolon",
+        "backquote" | "`" => "Backquote",
+        _ if lowered.starts_with('f') && lowered[1..].parse::<u8>().is_ok() => trimmed,
+        _ => return None,
+    };
+    Some(code.to_string())
+}
+
+fn parse_hotkey(hotkey: &str) -> Result<Shortcut, String> {
+    let parts: Vec<&str> = hotkey
+        .split(|ch| ch == '+' || ch == '-')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return Err("快捷键至少需要一个修饰键，例如 Alt+A".to_string());
+    }
+
+    let mut modifiers = Modifiers::empty();
+    for part in &parts[..parts.len() - 1] {
+        match part.to_ascii_lowercase().as_str() {
+            "alt" | "option" => modifiers |= Modifiers::ALT,
+            "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
+            "shift" => modifiers |= Modifiers::SHIFT,
+            "cmd" | "command" | "meta" | "win" | "windows" | "super" => modifiers |= Modifiers::META,
+            other => return Err(format!("不支持的修饰键: {}", other)),
+        }
+    }
+    if modifiers.is_empty() {
+        return Err("快捷键至少需要 Alt/Ctrl/Shift/Win 中的一个修饰键".to_string());
+    }
+
+    let key_part = parts.last().copied().unwrap_or_default();
+    let code_name = normalize_key_code(key_part).ok_or_else(|| format!("不支持的按键: {}", key_part))?;
+    let code = Code::from_str(&code_name).map_err(|_| format!("不支持的按键: {}", key_part))?;
+    Ok(Shortcut::new(Some(modifiers), code))
+}
+
+fn read_configured_hotkey() -> String {
+    let mut path = app_data_dir();
+    path.push("config.json");
+    let Ok(config_str) = fs::read_to_string(path) else {
+        return DEFAULT_SCREENSHOT_HOTKEY.to_string();
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) else {
+        return DEFAULT_SCREENSHOT_HOTKEY.to_string();
+    };
+    config
+        .get("hotkey")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(DEFAULT_SCREENSHOT_HOTKEY)
+        .to_string()
+}
+
+fn register_global_shortcuts(app: &tauri::AppHandle, screenshot_hotkey: &str) -> Result<(), String> {
+    let screenshot_shortcut = parse_hotkey(screenshot_hotkey)?;
+    let translate_shortcut = parse_hotkey(TRANSLATE_HOTKEY_LABEL)?;
+
+    app.global_shortcut().unregister_all().map_err(|e| e.to_string())?;
+
+    let reg_res = app.global_shortcut().on_shortcut(screenshot_shortcut, move |app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {
+            let app_h = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = start_screenshot(app_h, None).await {
+                    eprintln!("Failed to start screenshot: {}", e);
+                }
+            });
+        }
+    });
+
+    let reg_res_t = app.global_shortcut().on_shortcut(translate_shortcut, move |app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {
+            let app_h = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = start_screenshot(app_h, Some("translate".to_string())).await {
+                    eprintln!("Failed to start translate screenshot: {}", e);
+                }
+            });
+        }
+    });
+
+    match (reg_res, reg_res_t) {
+        (Ok(_), Ok(_)) => Ok(()),
+        (Err(e1), Err(e2)) => Err(format!("{}: {}; {}: {}", screenshot_hotkey, e1, TRANSLATE_HOTKEY_LABEL, e2)),
+        (Err(e), Ok(_)) => Err(format!("{}: {}", screenshot_hotkey, e)),
+        (Ok(_), Err(e)) => Err(format!("{}: {}", TRANSLATE_HOTKEY_LABEL, e)),
+    }
+}
+
+
+#[tauri::command]
+fn re_register_shortcut(app: tauri::AppHandle, state: tauri::State<'_, AppShortcutStatus>, hotkey: String) -> Result<(), String> {
+    let status = register_global_shortcuts(&app, hotkey.trim());
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    *guard = status.clone();
+    status
+}
 
 
 
@@ -469,13 +605,15 @@ async fn api_ocr(base64_image: String, server_url: String, client_token: String)
 }
 
 #[tauri::command]
-async fn api_translate(base64_image: String, server_url: String, client_token: String) -> Result<String, String> {
+async fn api_translate(base64_image: String, server_url: String, client_token: String, target_lang: Option<String>) -> Result<serde_json::Value, String> {
     let bytes = BASE64_STANDARD.decode(&base64_image).map_err(|e| format!("Base64解码失败：{}", e))?;
     let part = reqwest::multipart::Part::bytes(bytes)
         .file_name("region.png")
         .mime_str("image/png")
         .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new().part("image", part);
+    let form = reqwest::multipart::Form::new()
+        .part("image", part)
+        .text("target_lang", target_lang.unwrap_or_else(|| "zh".to_string()));
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(60))
@@ -493,8 +631,20 @@ async fn api_translate(base64_image: String, server_url: String, client_token: S
         let body = resp.text().await.unwrap_or_default();
         return Err(format!("服务器返回错误 {}：{}", status, body));
     }
+    
+    let texts_json = resp.headers().get("X-Translate-Texts")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+        
     let result_bytes = resp.bytes().await.map_err(|e| format!("读取翻译结果失败：{}", e))?;
-    Ok(BASE64_STANDARD.encode(&result_bytes))
+    let image_base64 = BASE64_STANDARD.encode(&result_bytes);
+    
+    let result = serde_json::json!({
+        "image": image_base64,
+        "texts": texts_json
+    });
+    Ok(result)
 }
 
 use serde::{Deserialize, Serialize};
@@ -715,6 +865,62 @@ async fn run_local_ocr(
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HistoryRecord {
+    pub id: String,
+    pub time: String,
+    pub filename: String,
+    pub blocks: i32,
+    pub channel: String,
+    pub duration: String,
+    pub status: String,
+}
+
+#[tauri::command]
+fn get_history() -> Result<String, String> {
+    let mut path = app_data_dir();
+    path.push("history.json");
+    if !path.exists() {
+        return Ok("[]".to_string());
+    }
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_history(record: String) -> Result<(), String> {
+    let mut path = app_data_dir();
+    if !path.exists() {
+        fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    }
+    path.push("history.json");
+    let mut history: Vec<serde_json::Value> = if path.exists() {
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    if let Ok(new_record) = serde_json::from_str::<serde_json::Value>(&record) {
+        history.insert(0, new_record); // Add to beginning
+        if history.len() > 100 { // Keep last 100 records max
+            history.truncate(100);
+        }
+        let json_str = serde_json::to_string_pretty(&history).map_err(|e| e.to_string())?;
+        fs::write(path, json_str).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_history() -> Result<(), String> {
+    let mut path = app_data_dir();
+    path.push("history.json");
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -722,7 +928,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_shortcut_status,
-            get_config,
+            get_config, get_history, add_history, clear_history,
             save_config,
             is_autostart_enabled,
             set_autostart_enabled,
@@ -737,7 +943,8 @@ pub fn run() {
             api_ocr,
             api_translate,
             overlay_ready_to_show,
-            run_local_ocr
+            run_local_ocr,
+            re_register_shortcut
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -745,36 +952,8 @@ pub fn run() {
                 disable_windows_transition(&screenshot_win);
             }
 
-            let shortcut_a = Shortcut::new(Some(Modifiers::ALT), Code::KeyA);
-            let reg_res = app.global_shortcut().on_shortcut(shortcut_a, move |app, _shortcut, event| {
-                if event.state() == ShortcutState::Pressed {
-                    let app_h = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = start_screenshot(app_h, None).await {
-                            eprintln!("Failed to start screenshot: {}", e);
-                        }
-                    });
-                }
-            });
-
-            let shortcut_t = Shortcut::new(Some(Modifiers::ALT), Code::KeyT);
-            let reg_res_t = app.global_shortcut().on_shortcut(shortcut_t, move |app, _shortcut, event| {
-                if event.state() == ShortcutState::Pressed {
-                    let app_h = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = start_screenshot(app_h, Some("translate".to_string())).await {
-                            eprintln!("Failed to start translate screenshot: {}", e);
-                        }
-                    });
-                }
-            });
-
-            let shortcut_status = match (reg_res, reg_res_t) {
-                (Ok(_), Ok(_)) => Ok(()),
-                (Err(e1), Err(e2)) => Err(format!("Alt+A: {}; Alt+T: {}", e1, e2)),
-                (Err(e), Ok(_)) => Err(format!("Alt+A: {}", e)),
-                (Ok(_), Err(e)) => Err(format!("Alt+T: {}", e)),
-            };
+            let configured_hotkey = read_configured_hotkey();
+            let shortcut_status = register_global_shortcuts(app.handle(), &configured_hotkey);
             app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
 
             let screenshot_item = tauri::menu::MenuItemBuilder::new("立即截图").id("screenshot").build(app)?;

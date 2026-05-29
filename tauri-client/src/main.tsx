@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import ScreenshotPage from "./pages/ScreenshotPage";
+import PinPage from "./pages/PinPage";
 import "./index.css";
 
 const label = getCurrentWindow().label;
@@ -18,6 +19,8 @@ if (label === "screenshot") {
 let Component: React.ComponentType;
 if (label === "screenshot") {
   Component = ScreenshotPage;
+} else if (label.startsWith("pin_")) {
+  Component = PinPage;
 } else {
   Component = App;
 }

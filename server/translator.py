@@ -7,6 +7,7 @@ import random
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
+from security import normalize_public_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,9 @@ class BaseTranslator(abc.ABC):
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         pass
 
+    def cache_namespace(self) -> str:
+        return self.__class__.__name__.lower().replace("translator", "")
+
     def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
@@ -87,7 +91,7 @@ class BaseTranslator(abc.ABC):
         miss_indices = []
         miss_texts = []
         
-        channel_name = self.__class__.__name__.lower().replace("translator", "")
+        channel_name = self.cache_namespace()
         # 后续如果有版本区分可从配置读取，目前固定 "1.0"
         version = "1.0"
         
@@ -184,15 +188,67 @@ class GoogleTranslator(BaseTranslator):
         return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
 class LLMTranslator(BaseTranslator):
+    SEGMENT_MARKER_START = "\uE000"
+    SEGMENT_MARKER_END = "\uE001"
+
     def __init__(self, base_url: str, api_key: str, model: str):
         super().__init__()
-        self.base_url = base_url.rstrip('/')
-        if not self.base_url.startswith("http://") and not self.base_url.startswith("https://"):
-            self.base_url = "https://" + self.base_url
+        self.base_url = normalize_public_base_url(base_url)
         self.api_key = api_key
         self.model = model
 
+    def cache_namespace(self) -> str:
+        parsed = urllib.parse.urlparse(self.base_url)
+        host = parsed.hostname or self.base_url
+        return f"llm:{host}:{self.model}"
+
+    def _target_language_name(self, target_lang: str) -> str:
+        language_names = {
+            "zh": "Simplified Chinese",
+            "en": "English",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "fr": "French",
+            "de": "German",
+            "es": "Spanish",
+        }
+        return language_names.get(target_lang, target_lang or "Simplified Chinese")
+
+    def _segment_marker(self, idx: int) -> str:
+        return f"{self.SEGMENT_MARKER_START}{idx}{self.SEGMENT_MARKER_END}"
+
+    def _pack_segments(self, texts: list[str]) -> str:
+        return "\n".join([f"{self._segment_marker(idx)}{text}" for idx, text in enumerate(texts)])
+
+    def _strip_markdown_fence(self, content: str) -> str:
+        content = (content or "").strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines).strip()
+        return content
+
+    def _parse_segment_response(self, content: str, expected_count: int) -> dict[int, str]:
+        content = self._strip_markdown_fence(content)
+        start = re.escape(self.SEGMENT_MARKER_START)
+        end = re.escape(self.SEGMENT_MARKER_END)
+        pattern = re.compile(rf"{start}(\d+){end}\s*(.*?)(?=\s*{start}\d+{end}|$)", re.DOTALL)
+        matches = pattern.findall(content)
+        parsed = {int(idx_str): body.strip() for idx_str, body in matches if body.strip()}
+        expected = set(range(expected_count))
+        if len(matches) != expected_count or set(parsed.keys()) != expected:
+            logger.warning(
+                "LLM segment response failed validation: expected indexes %s, got indexes %s, match_count=%d",
+                sorted(expected), sorted(parsed.keys()), len(matches)
+            )
+            return {}
+        return parsed
+
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        target_language = self._target_language_name(target_lang)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -200,7 +256,7 @@ class LLMTranslator(BaseTranslator):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "You are a translation assistant. Translate the following text into Simplified Chinese. Output ONLY the translated text, do not include any commentary, explanations, or quotes."},
+                {"role": "system", "content": f"You are a translation assistant. Translate the following text into {target_language}. Output ONLY the translated text, do not include any commentary, explanations, or quotes."},
                 {"role": "user", "content": text}
             ],
             "temperature": 0.3
@@ -213,18 +269,19 @@ class LLMTranslator(BaseTranslator):
     def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
+        target_language = self._target_language_name(target_lang)
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        # 1. 使用 XML 风格标记将多行合并成一个文本块以节省 Token 并加速
-        packed_input = "\n".join([f"<SEG{i}>{t}" for i, t in enumerate(texts)])
+        # 1. 使用私有区标记将多行合并成一个文本块，避免与原文/译文中的 <SEG1> 等普通文本冲突
+        packed_input = self._pack_segments(texts)
         prompt = (
-            "You are a translation assistant. Translate each segment marked with <SEG{idx}> into Simplified Chinese.\n"
-            "You MUST keep the exact same <SEG{idx}> marker at the start of each translated segment, in the same order.\n"
-            "Output ONLY the translated segments with their prefixes. Do not include any extra descriptions, markdown blocks, formatting or explanations."
+            f"You are a translation assistant. Translate each segment marked with private-use markers like {self._segment_marker(0)} into {target_language}.\n"
+            "You MUST keep each exact marker at the start of its translated segment, preserve order, and output the same number of segments as input.\n"
+            "Output ONLY the translated segments with their markers. Do not include any extra descriptions, markdown blocks, formatting or explanations."
         )
         
         payload = {
@@ -241,21 +298,7 @@ class LLMTranslator(BaseTranslator):
             res = self.session.post(f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
             if res.status_code == 200:
                 content = res.json()["choices"][0]["message"]["content"].strip()
-                
-                # 清除常见的 Markdown 代码块包装
-                if content.startswith("```"):
-                    lines = content.splitlines()
-                    if lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines and lines[-1].startswith("```"):
-                        lines = lines[:-1]
-                    content = "\n".join(lines).strip()
-                
-                # 正则匹配提取 <SEG(\d+)> 后面的文本
-                pattern = re.compile(r"<SEG(\d+)>\s*(.*?)(?=\s*<SEG\d+>|$)", re.DOTALL)
-                matches = pattern.findall(content)
-                for idx_str, body in matches:
-                    parsed[int(idx_str)] = body.strip()
+                parsed = self._parse_segment_response(content, len(texts))
         except Exception as e:
             logger.warning("LLM segment-based batch translation failed: %s", e)
             

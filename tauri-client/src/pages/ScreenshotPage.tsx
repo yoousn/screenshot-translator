@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { Button, Space, message, Input } from "antd";
 import {
   CopyOutlined,
@@ -9,7 +9,9 @@ import {
   CheckOutlined,
   TranslationOutlined,
   ScanOutlined,
+  PushpinOutlined,
 } from "@ant-design/icons";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 interface Config {
   serverUrl?: string;
@@ -19,6 +21,7 @@ interface Config {
   localOcrExecutablePath?: string;
   localOcrTimeoutMs?: number;
   targetLang?: string;
+  channel?: string;
 }
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -51,6 +54,7 @@ export default function ScreenshotPage() {
   const [config, setConfig] = useState<Config>({});
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [ocrResultText, setOcrResultText] = useState<string | null>(null);
+  const [translatePairs, setTranslatePairs] = useState<Array<{o: string, t: string}> | null>(null);
   const [ocrPreviewBase64, setOcrPreviewBase64] = useState<string | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
@@ -72,6 +76,7 @@ export default function ScreenshotPage() {
     translatedImgRef.current = null;
     setTranslatedResult(null);
     setOcrResultText(null);
+    setTranslatePairs(null);
     setOcrPreviewBase64(null);
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
@@ -406,6 +411,7 @@ export default function ScreenshotPage() {
         setTranslatedResult(null);
         translatedImgRef.current = null;
         setOcrResultText(null);
+    setTranslatePairs(null);
         setOcrPreviewBase64(null);
         renderNeededRef.current = true;
       } else {
@@ -624,7 +630,7 @@ export default function ScreenshotPage() {
         const canvas = document.createElement("canvas");
         canvas.width = img.width;
         canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) {
           reject(new Error("无法创建 2D 画布上下文"));
           return;
@@ -721,9 +727,41 @@ export default function ScreenshotPage() {
     });
   };
 
+  const handlePin = async () => {
+    if (!hasSelected || rect.w <= 0 || rect.h <= 0) return;
+    const base64 = cropSelectionFromLoadedImage().base64;
+    if (!base64) return;
+    
+    const pinId = Date.now().toString();
+    const label = `pin_${pinId}`;
+    localStorage.setItem(label, translatedResult || base64);
+    
+    try {
+      new WebviewWindow(label, {
+        url: "index.html",
+        title: "Pin",
+        transparent: true,
+        decorations: false,
+        alwaysOnTop: true,
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.w),
+        height: Math.round(rect.h),
+        skipTaskbar: true
+      });
+      // Optionally close screenshot
+      cancelScreenshot();
+    } catch (e) {
+      console.error("Failed to create pin window", e);
+      message.error("钉图失败");
+    }
+  };
+  
   const handleTranslate = async () => {
+    const startTime = performance.now();
     const serverUrl = configRef.current.serverUrl || "https://ocr.yousn.me";
     const token = configRef.current.clientToken || "";
+    const targetLang = configRef.current.targetLang || "zh";
     try {
       setIsTranslating(true);
       message.loading({ content: "正在请求翻译重绘...", key: "translate", duration: 0 });
@@ -757,7 +795,7 @@ export default function ScreenshotPage() {
                 box: b.box_coords
               })),
               source_lang: "auto",
-              target_lang: "zh"
+              target_lang: targetLang
             })
           });
           
@@ -772,30 +810,53 @@ export default function ScreenshotPage() {
           
           console.log("[Local OCR Flow] 翻译获取成功，开始本地重绘渲染...");
           resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, transData.translations);
+          setTranslatePairs(ocrBlocks.map((b, i) => ({ o: b.text, t: transData.translations[i] || b.text })));
         } catch (localErr: any) {
           console.warn("[Local OCR Flow] 本地识别与重绘链条出错，尝试云端后备...", localErr);
           if (configRef.current.fallbackToRemoteOcr) {
-            resultBase64 = await invoke<string>("api_translate", { base64Image: base64, serverUrl, clientToken: token });
+            const res = await invoke<{image: string, texts: string}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
+            resultBase64 = res.image;
+            if (res.texts) setTranslatePairs(JSON.parse(atob(res.texts)));
           } else {
             throw localErr;
           }
         }
       } else {
-        resultBase64 = await invoke<string>("api_translate", { base64Image: base64, serverUrl, clientToken: token });
+        const res = await invoke<{image: string, texts: string}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
+        resultBase64 = res.image;
+        if (res.texts) setTranslatePairs(JSON.parse(atob(res.texts)));
       }
       
       const dataUrl = "data:image/png;base64," + resultBase64;
-      const overlayImg = new Image();
-      overlayImg.onload = () => {
-        translatedImgRef.current = overlayImg;
-        draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
-        setTranslatedResult(resultBase64);
-        message.success({ content: "翻译完成！", key: "translate" });
-        renderNeededRef.current = true;
-        setIsTranslating(false);
-      };
-      overlayImg.onerror = () => { throw new Error("翻译结果图片解码失败"); };
-      overlayImg.src = dataUrl;
+      const overlayImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("翻译结果图片解码失败"));
+        img.src = dataUrl;
+      });
+
+      translatedImgRef.current = overlayImg;
+      draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
+      setTranslatedResult(resultBase64);
+      message.success({ content: "翻译完成！", key: "translate" });
+      
+      try {
+        const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
+        const record = {
+          id: "rec-" + Date.now(),
+          time: new Date().toLocaleString(),
+          filename: "Screenshot_" + Date.now() + ".png",
+          blocks: 1, // Optional: if you have ocrBlocks, you could pass ocrBlocks.length
+          channel: configRef.current.channel || configRef.current.targetLang || "auto",
+          duration: durationSec + "s",
+          status: "success"
+        };
+        await invoke("add_history", { record: JSON.stringify(record) });
+      } catch (err) {
+        console.error("Failed to save history:", err);
+      }
+      renderNeededRef.current = true;
+      setIsTranslating(false);
     } catch (e: any) {
       message.error({ content: `翻译失败: ${e.message || e}`, key: "translate" });
       setIsTranslating(false);
@@ -887,6 +948,7 @@ export default function ScreenshotPage() {
     setHasSelected(false);
     setTranslatedResult(null);
     setOcrResultText(null);
+    setTranslatePairs(null);
     setOcrPreviewBase64(null);
     setIsTranslating(false);
     setIsOCRing(false);
@@ -905,6 +967,7 @@ export default function ScreenshotPage() {
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
     try {
       const base64 = translatedResult || await captureRegionBase64();
+      await emit("screenshot-captured", base64);
       if (action === "copy" || action === "both") {
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
         message.success("图片已成功复制至剪贴板");
@@ -941,14 +1004,54 @@ export default function ScreenshotPage() {
       <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }} />
 
       {overlayVisible && hasSelected && !isSelecting && (
-        <div style={{ position: "absolute", top: rect.y + rect.h + 8 + 36 > window.innerHeight ? rect.y - 44 : rect.y + rect.h + 8, left: Math.max(8, Math.min(rect.x + rect.w - 480, window.innerWidth - 496)), zIndex: 100, background: "#fff", padding: "6px 10px", borderRadius: 8, boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)", border: "1px solid #e8e8e8" }} onContextMenu={(e) => e.stopPropagation()}>
+        <div style={{ position: "absolute", top: Math.max(8, Math.min(rect.y + rect.h + 8 + 44 > window.innerHeight ? rect.y - 44 : rect.y + rect.h + 8, window.innerHeight - 44)), left: Math.max(8, Math.min(rect.x + rect.w - 480 > 0 ? rect.x + rect.w - 480 : rect.x, window.innerWidth - 496)), zIndex: 100, background: "#fff", padding: "6px 10px", borderRadius: 8, boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)", border: "1px solid #e8e8e8" }} onContextMenu={(e) => e.stopPropagation()}>
           <Space size="small" wrap>
             <Button size="small" icon={<TranslationOutlined />} type="primary" ghost onClick={handleTranslate} loading={isTranslating}>翻译 (Ctrl+Q)</Button>
             <Button size="small" icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing}>识字</Button>
+            <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图 (P)</Button>
             <Button size="small" icon={<CopyOutlined />} onClick={() => confirmScreenshot("copy")}>复制</Button>
             <Button size="small" icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")}>保存</Button>
             <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => confirmScreenshot("both")}>完成</Button>
             <Button size="small" icon={<CloseOutlined />} onClick={cancelScreenshot} danger />
+          </Space>
+        </div>
+      )}
+
+            {hasSelected && !isSelecting && translatePairs !== null && ocrResultText === null && (
+        <div
+          style={{
+            position: "absolute",
+            top: Math.max(8, Math.min(rect.y, window.innerHeight - 360)),
+            left: Math.max(8, Math.min(rect.x + rect.w + 12, window.innerWidth - 420)),
+            width: 350,
+            maxHeight: "80vh",
+            overflowY: "auto",
+            zIndex: 120,
+            background: "#fff",
+            padding: 12,
+            borderRadius: 10,
+            boxShadow: "0 6px 24px rgba(0, 0, 0, 0.18)",
+            border: "1px solid #e8e8e8",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.stopPropagation()}
+        >
+          <div style={{ marginBottom: 12, fontWeight: "bold", fontSize: 14 }}>翻译原文对照</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+            {translatePairs.map((p, i) => (
+              <div key={i} style={{ padding: 8, background: "#f5f5f5", borderRadius: 6, fontSize: 12 }}>
+                <div style={{ color: "#8c8c8c", marginBottom: 4 }}>{p.o}</div>
+                <div style={{ color: "#1f1f1f", fontWeight: "bold" }}>{p.t}</div>
+              </div>
+            ))}
+          </div>
+          <Space size="small">
+            <Button size="small" type="primary" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText(translatePairs.map(p => p.t).join("\n"))}>
+              复制全部译文
+            </Button>
+            <Button size="small" icon={<CloseOutlined />} onClick={() => setTranslatePairs(null)}>
+              关闭
+            </Button>
           </Space>
         </div>
       )}

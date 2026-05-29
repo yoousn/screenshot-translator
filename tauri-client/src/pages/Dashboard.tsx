@@ -47,12 +47,13 @@ interface Config {
 interface DashboardProps {
   onStartScreenshot: () => void;
   shortcutError?: string | null;
+  serverStatus: "checking" | "online" | "offline";
+  responseTime: number | null;
+  onRefreshStatus: () => void;
 }
 
-export default function Dashboard({ onStartScreenshot, shortcutError }: DashboardProps) {
+export default function Dashboard({ onStartScreenshot, shortcutError, serverStatus, responseTime, onRefreshStatus }: DashboardProps) {
   const [config, setConfig] = useState<Config>({});
-  const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
-  const [responseTime, setResponseTime] = useState<number | null>(null);
   
   // Translation tester states
   const [isTranslating, setIsTranslating] = useState(false);
@@ -129,35 +130,8 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
       const configStr = await invoke<string>("get_config");
       const parsedConfig = JSON.parse(configStr);
       setConfig(parsedConfig);
-      checkServer(parsedConfig.serverUrl);
     } catch (error) {
       console.error("Failed to load config:", error);
-    }
-  };
-
-  const checkServer = async (url?: string) => {
-    const targetUrl = url || config.serverUrl || "https://ocr.yousn.me";
-    setServerStatus("checking");
-    const start = performance.now();
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      
-      const response = await fetch(`${targetUrl.replace(/\/$/, "")}/api/health`, {
-        method: "GET",
-        signal: controller.signal,
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        setServerStatus("online");
-        setResponseTime(Math.round(performance.now() - start));
-      } else {
-        setServerStatus("offline");
-      }
-    } catch (e) {
-      setServerStatus("offline");
     }
   };
 
@@ -312,7 +286,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError }: Dashboar
               actions={[
                 <Space size="middle" align="center" key="actions">
                   {item.title === "截图" && shortcutError ? (
-                    <Tooltip title={`快捷键 Alt+A 注册失败: ${shortcutError}。可能是热键冲突，请重启以重新尝试。`}>
+                    <Tooltip title={`快捷键 ${item.hotkey} 注册失败: ${shortcutError}。可能是热键冲突，请到设置中更换后保存。`}>
                       <Tag
                         color="error"
                         style={{

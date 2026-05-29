@@ -3,26 +3,32 @@ import os
 # Ensure server directory is in sys.path so imports work regardless of CWD
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Response
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import requests
 import cv2
 import numpy as np
-import urllib.parse
-import socket
-import ipaddress
 import time
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
 from image_processor import ImageProcessor
+from security import normalize_public_base_url
+import logging
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Screenshot Translator API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:1420", 
+        "http://127.0.0.1:1420", 
+        "tauri://localhost",
+        "https://tauri.localhost"
+    ],
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -33,14 +39,21 @@ processor = ImageProcessor(load_ocr=False)
 def warm_up_ocr_async():
     try:
         time.sleep(1.5)
-        print("[OCR Background Warmup] Waking up PaddleOCR models silently...")
+        logger.info("[OCR Warmup] Loading PaddleOCR models...")
         processor._ensure_ocr()
-        print("[OCR Background Warmup] PaddleOCR models are 100% warmed up and ready for hot-requests!")
+        logger.info("[OCR Warmup] PaddleOCR models warmed up and ready.")
     except Exception as e:
-        print("[OCR Background Warmup] Warmup background thread warning:", e)
+        logger.error("[OCR Warmup] Background warmup failed: %s", e, exc_info=True)
 
 import threading
 threading.Thread(target=warm_up_ocr_async, daemon=True).start()
+
+# 🔑 启动时打印当前 client_token，供运维人员在客户端配置
+_startup_cfg = load_server_config()
+_token_val = _startup_cfg['client_token']
+print(f"[Security] 当前 client_token: {_token_val}")
+print("[Security] 请将此 token 填入客户端「系统设置 → 令牌」中，或通过环境变量 SS_TRANSLATOR_TOKEN 覆盖。")
+del _startup_cfg, _token_val
 
 
 _config_cache = None
@@ -60,42 +73,74 @@ def verify_token(x_api_key: str):
     if not x_api_key or x_api_key != cfg["client_token"]:
         raise HTTPException(status_code=401, detail="Unauthorized client token.")
 
+# Translator instance cache to avoid re-creating per request (fix 4.3)
+_translator_cache = {"key": None, "instance": None}
+
+def _translator_cache_key(cfg: dict) -> str:
+    channel = cfg.get("active_channel", "google")
+    if channel == "new-api":
+        c = cfg.get("channels", {}).get("new-api", {})
+        return f"new-api:{c.get('base_url', '')}:{c.get('api_key', '')[:8]}:{c.get('model', '')}"
+    elif channel == "baidu":
+        c = cfg.get("channels", {}).get("baidu", {})
+        return f"baidu:{c.get('app_id', '')}"
+    return "google"
+
 def get_active_translator():
     cfg = get_config()
     channel = cfg.get("active_channel", "google")
-    print(f"[Active Translator] 服务器当前激活的翻译通道为: '{channel}'")
+    cache_key = _translator_cache_key(cfg)
+    if _translator_cache["key"] == cache_key and _translator_cache["instance"] is not None:
+        logger.debug("Reusing cached translator: %s", channel)
+        return _translator_cache["instance"]
+    logger.debug("Creating translator for channel: %s", channel)
     if channel == "new-api":
         c = cfg["channels"]["new-api"]
-        print(f"[Active Translator] 正在调用大模型翻译 (中转: {c.get('base_url')}, 模型: {c.get('model')})")
-        return LLMTranslator(c["base_url"], c["api_key"], c["model"])
+        logger.info("LLM translator (relay: %s, model: %s)", c.get('base_url'), c.get('model'))
+        instance = LLMTranslator(c["base_url"], c["api_key"], c["model"])
     elif channel == "baidu":
         c = cfg["channels"]["baidu"]
-        print(f"[Active Translator] 正在调用百度翻译 (AppID: {c.get('app_id')})")
-        return BaiduTranslator(c["app_id"], c["secret_key"])
-    print("[Active Translator] 未识别或默认通道，正在回退调用 Google 免费翻译接口 (无凭证)")
-    return GoogleTranslator()
+        logger.info("Baidu translator (AppID: %s)", c.get('app_id'))
+        instance = BaiduTranslator(c["app_id"], c["secret_key"])
+    else:
+        logger.info("Google free translator (no credentials)")
+        instance = GoogleTranslator()
+    _translator_cache["key"] = cache_key
+    _translator_cache["instance"] = instance
+    return instance
 
-def _validate_url(url: str) -> bool:
-    try:
-        parsed = urllib.parse.urlparse(url)
-        hostname = parsed.hostname
-        if not hostname:
-            return False
-        addr_info = socket.getaddrinfo(hostname, None)
-        for family, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            if '%' in ip_str:
-                ip_str = ip_str.split('%')[0]
-            ip = ipaddress.ip_address(ip_str)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                return False
-        return True
-    except Exception:
-        return False
+def invalidate_config_cache():
+    global _config_cache, _config_cache_time
+    _config_cache = None
+    _config_cache_time = 0.0
+    _translator_cache["key"] = None
+    _translator_cache["instance"] = None
+
+
+def _server_config_payload(payload: dict) -> tuple[str, dict]:
+    channel = payload.get("channel")
+    c = payload.get("config", {}) or {}
+    if channel not in {"google", "baidu", "new-api"}:
+        raise ValueError("未知翻译通道")
+    if channel == "new-api":
+        c = dict(c)
+        c["base_url"] = normalize_public_base_url(c.get("base_url"))
+    return channel, c
+
+
+def _save_channel_config(channel: str, channel_config: dict):
+    cfg = load_server_config()
+    cfg["active_channel"] = channel
+    if channel in cfg.get("channels", {}):
+        for key in cfg["channels"][channel].keys():
+            if key in channel_config:
+                cfg["channels"][channel][key] = channel_config[key]
+    save_server_config(cfg)
+    invalidate_config_cache()
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "ocr_ready": processor.ocr_ready}
 
 @app.get("/c_hello")
 async def c_hello(asker: str = ""):
@@ -108,20 +153,24 @@ async def c_hello(asker: str = ""):
 
 @app.post("/api/translate")
 
-def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
+def translate_image(
+    image: UploadFile = File(...),
+    target_lang: str = Form("zh"),
+    x_api_key: str = Header(None)
+):
     verify_token(x_api_key)
     img_bytes = image.file.read()
     
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
     def translator_batch_fn(texts, stats_ref):
-        return translator.translate_batch(texts, "auto", "zh", stats_ref)
+        return translator.translate_batch(texts, "auto", target_lang or "zh", stats_ref)
         
     try:
         out_bytes, stats = processor.process_and_draw(img_bytes, translator_batch_fn, config=get_config())
         
         # 终端漂亮的可视化耗时报告
-        if get_config().get("debug_trace", True):
+        if get_config().get("debug_trace", False):
             total = max(stats["total_ms"], 0.001)
             report_lines = [
                 "+--------------------------------------------------------+",
@@ -141,10 +190,7 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
                 "+--------------------------------------------------------+"
             ]
             for line in report_lines:
-                try:
-                    print(line)
-                except UnicodeEncodeError:
-                    print(line.encode('ascii', 'ignore').decode('ascii'))
+                logger.info(line)
 
         headers = {
             "X-Trace-Total-Ms": f"{stats['total_ms']:.2f}",
@@ -160,9 +206,12 @@ def translate_image(image: UploadFile = File(...), x_api_key: str = Header(None)
             "X-Ocr-Ready": "true" if stats.get("ocr_ready", False) else "false",
             "X-Ocr-Cache-Hit": "true" if stats.get("ocr_cache_hit", False) else "false"
         }
+        if "texts_json" in stats:
+            headers["X-Translate-Texts"] = stats["texts_json"]
+            
         return Response(content=out_bytes, media_type="image/png", headers=headers)
     except Exception as e:
-        print(f"[translate_image] error during process_and_draw: {e}")
+        logger.exception("translate_image failed")
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
 
@@ -177,8 +226,7 @@ async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)
         if img_cv is None:
             return JSONResponse(status_code=400, content={"status": "failed", "error": "图片解码失败"})
 
-        processor._ensure_ocr()
-        ocr_result = processor.ocr.ocr(img_cv, cls=True)
+        ocr_result = processor.run_ocr(img_cv, cls=True)
 
         results = []
         if ocr_result and ocr_result[0]:
@@ -236,7 +284,7 @@ async def translate_text_endpoint(
     try:
         translations = translator.translate_batch(texts, req.source_lang, req.target_lang, stats_ref)
     except Exception as e:
-        print(f"[translate_text] error during batch translation: {e}")
+        logger.warning("translate_text batch failed, falling back to single: %s", e)
         # 降级：如果 translate_batch 崩溃，则对单个单词独立处理，容错性极强
         translations = []
         for text in texts:
@@ -256,10 +304,9 @@ async def translate_text_endpoint(
 @app.post("/api/config/test")
 def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
     verify_token(x_api_key)
-    channel = payload.get("channel")
-    c = payload.get("config", {})
     
     try:
+        channel, c = _server_config_payload(payload)
         # 1. 临时实例化对应的翻译器进行连通性验证
         if channel == "new-api":
             temp_t = LLMTranslator(c.get("base_url"), c.get("api_key"), c.get("model"))
@@ -271,35 +318,43 @@ def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
         test_res = temp_t.translate("Test Connection", "en", "zh")
         
         # 2. 验证成功，持久化写入 N100 配置文件
-        cfg = load_server_config()
-        cfg["active_channel"] = channel
-        if channel in cfg["channels"]:
-            for k in cfg["channels"][channel].keys():
-                if k in c:
-                    cfg["channels"][channel][k] = c[k]
-        save_server_config(cfg)
-        global _config_cache
-        _config_cache = None # invalidate cache
+        _save_channel_config(channel, c)
         
         return {"status": "success", "result": test_res}
     except Exception as e:
         return {"status": "failed", "error": str(e)}
 
+@app.post("/api/config/save")
+def save_channel_config(payload: dict, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    try:
+        channel, c = _server_config_payload(payload)
+        _save_channel_config(channel, c)
+        return {"status": "success", "active_channel": channel}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+@app.get("/api/config/current")
+def current_config(x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    cfg = get_config()
+    channel = cfg.get("active_channel", "google")
+    active_cfg = dict(cfg.get("channels", {}).get(channel, {}))
+    for secret_key in ("api_key", "secret_key"):
+        if active_cfg.get(secret_key):
+            active_cfg[secret_key] = "***"
+    return {"status": "success", "active_channel": channel, "config": active_cfg}
+
 @app.post("/api/config/fetch_models")
 def fetch_models(payload: dict, x_api_key: str = Header(None)):
     verify_token(x_api_key)
-    base_url = payload.get("base_url", "").rstrip('/')
+    base_url = payload.get("base_url", "")
     api_key = payload.get("api_key", "")
-    
-    if not base_url:
-        return {"status": "failed", "error": "中转地址不能为空"}
-        
-    # 自动处理纯域名，补足协议头
-    if not base_url.startswith("http://") and not base_url.startswith("https://"):
-        base_url = "https://" + base_url
 
-    if not _validate_url(base_url):
-        return {"status": "failed", "error": "请求地址不合法 (IP 为私有、回环或保留地址)"}
+    try:
+        base_url = normalize_public_base_url(base_url)
+    except ValueError as e:
+        return {"status": "failed", "error": str(e)}
         
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -313,5 +368,7 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=18090, reload=True)
+    host = os.environ.get("SS_TRANSLATOR_HOST", "0.0.0.0")
+    port = int(os.environ.get("SS_TRANSLATOR_PORT", "8318"))
+    uvicorn.run("app:app", host=host, port=port, reload=True)
 

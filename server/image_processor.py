@@ -6,6 +6,9 @@ import io
 import threading
 import time
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class OcrCache:
@@ -121,8 +124,13 @@ class ImageProcessor:
         return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", joined)
 
     def _make_text_cache_key(self, texts: list[str], config: dict | None) -> str:
-        channel = (config or {}).get("active_channel", "default")
-        return f"{channel}:{self._normalize_ocr_text(texts)}"
+        cfg = config or {}
+        channel = cfg.get("active_channel", "default")
+        namespace = channel
+        if channel == "new-api":
+            llm_cfg = cfg.get("channels", {}).get("new-api", {})
+            namespace = f"new-api:{llm_cfg.get('base_url', '')}:{llm_cfg.get('model', '')}"
+        return f"{namespace}:{self._normalize_ocr_text(texts)}"
 
     def _merge_blocks(self, blocks: list[dict]) -> dict:
         x1 = min(b["rect"][0] for b in blocks)
@@ -171,6 +179,8 @@ class ImageProcessor:
             box = line[0]
             text = line[1][0].strip()
             confidence = line[1][1]
+            if confidence < 0.60:
+                continue
             xs = [pt[0] for pt in box]
             ys = [pt[1] for pt in box]
             x_min, y_min, x_max, y_max = min(xs), min(ys), max(xs), max(ys)
@@ -327,26 +337,28 @@ class ImageProcessor:
             translate_start = time.perf_counter()
             text_cache_key = self._make_text_cache_key(original_texts, config)
             cached_translation = self._text_translation_cache.get(text_cache_key) if text_cache_key.split(":", 1)[1] else None
+            if cached_translation and len(cached_translation.get("texts", [])) != len(line_blocks):
+                cached_translation = None
             if cached_translation:
                 stats["text_cache_hit"] = True
                 stats["cache_hits"] += max(1, len(original_texts))
                 cached_texts = cached_translation.get("texts", [])
-                cached_joined = cached_translation.get("joined", "")
-                if len(cached_texts) == len(line_blocks):
-                    translated_texts = cached_texts
-                else:
-                    line_blocks = [self._merge_blocks(line_blocks)]
-                    translated_texts = [cached_joined or " ".join(cached_texts)]
-                    stats["translate_units"] = 1
+                translated_texts = cached_texts
             else:
                 try:
                     translated_texts = translator_batch_fn(original_texts, stats)
                 except Exception as te:
-                    print("[translate] error:", te)
+                    logger.warning("Translation error: %s", te)
                     translated_texts = original_texts
                 if len(translated_texts) != len(original_texts):
                     translated_texts = original_texts
                 self._text_translation_cache.set(text_cache_key, {"texts": list(translated_texts), "joined": " ".join(translated_texts)})
+            
+            import base64
+            import json
+            texts_list = [{"o": o, "t": t} for o, t in zip(original_texts, translated_texts)]
+            stats["texts_json"] = base64.b64encode(json.dumps(texts_list, ensure_ascii=False).encode('utf-8')).decode('ascii')
+            
             stats["translate_ms"] = (time.perf_counter() - translate_start) * 1000
 
             render_start = time.perf_counter()

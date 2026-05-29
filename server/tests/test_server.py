@@ -28,7 +28,7 @@ def test_fetch_models_success():
     cfg = load_server_config()
     token = cfg["client_token"]
     
-    with patch("requests.get") as mock_get, patch("app._validate_url", return_value=True):
+    with patch("requests.get") as mock_get, patch("app.normalize_public_base_url", return_value="https://api.yousn.me"):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -50,6 +50,20 @@ def test_fetch_models_success():
         assert data["status"] == "success"
         assert "gemini-1.5-flash" in data["models"]
 
+def test_fetch_models_rejects_private_url():
+    cfg = load_server_config()
+    token = cfg["client_token"]
+
+    res = client.post(
+        "/api/config/fetch_models",
+        headers={"X-API-Key": token},
+        json={"base_url": "http://127.0.0.1:3001", "api_key": "sk-xxx"}
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "failed"
+    assert "请求地址" in data["error"]
+
 def test_config_test_google_success():
     cfg = load_server_config()
     token = cfg["client_token"]
@@ -66,6 +80,20 @@ def test_config_test_google_success():
         data = res.json()
         assert data["status"] == "success"
         assert data["result"] == "测试连接成功"
+
+def test_config_save_google_success():
+    cfg = load_server_config()
+    token = cfg["client_token"]
+
+    res = client.post(
+        "/api/config/save",
+        headers={"X-API-Key": token},
+        json={"channel": "google", "config": {}}
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert data["active_channel"] == "google"
 
 def test_ocr_unauthorized():
     res = client.post("/api/ocr", files={"image": ("fake.png", b"fake-data", "image/png")})
@@ -90,7 +118,7 @@ def test_ocr_unexpected_exception():
     # Mock cv2.imdecode to return a valid numpy array so it passes image decoding check,
     # but mock processor._ensure_ocr to raise an Exception.
     with patch("cv2.imdecode", return_value=MagicMock()), \
-         patch("app.processor._ensure_ocr", side_effect=Exception("Mocked PaddleOCR Failure")):
+         patch("app.processor.run_ocr", side_effect=Exception("Mocked PaddleOCR Failure")):
         res = client.post(
             "/api/ocr",
             headers={"X-API-Key": token},

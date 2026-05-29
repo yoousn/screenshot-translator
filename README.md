@@ -18,10 +18,10 @@
 
 ```text
 d:\Desktop\自制截图\
-├── client/                   # Windows React + Tauri 前端 + 本地后端
+├── tauri-client/             # Windows React + Tauri 前端 + 本地后端
 │   ├── src/                  # UI 与交互逻辑
-│   ├── main.rs               # Tauri 后端逻辑
-│   └── config.*              # 本地配置文件
+│   ├── src-tauri/src/lib.rs  # Tauri 后端逻辑
+│   └── config.json           # 本地配置文件 (或 yaml)
 ├── server/                   # N100 FastAPI 服务端
 │   ├── app.py                # 服务入口
 │   ├── translator.py         # 翻译引擎
@@ -40,6 +40,7 @@ d:\Desktop\自制截图\
 
 * Python 3.10+
 * 依赖包：`fastapi`, `uvicorn`, `requests`, `pyyaml`, `numpy`, `pillow`, `paddleocr`, `opencv-contrib-python`
+> **⚠️ 依赖提醒：** `paddleocr` 请固定安装 2.x 版本系列，以防未来 3.x 版本升级带来的模型接口与结构变更导致无法加载默认的 PP-OCRv4。
 
 #### 启动
 
@@ -48,7 +49,7 @@ cd server
 .venv/Scripts/python -m uvicorn app:app --host 0.0.0.0 --port 8318 --reload
 ```
 
-服务端默认配置：`~/.screenshot-translator/config.yaml`，包含 `client_token`: `ysn-screenshot-translator-token-666`。
+服务端默认配置：`~/.screenshot-translator/config.yaml`。首次启动时会自动生成随机 `client_token` 并打印到控制台，请将其填入客户端设置。也可通过环境变量 `SS_TRANSLATOR_TOKEN` 覆盖。
 
 ---
 

@@ -33,6 +33,7 @@ function AppContent() {
   const [serverUrl, setServerUrl] = useState<string>("https://ocr.yousn.me");
   const [isOnline, setIsOnline] = useState<"checking" | "online" | "offline">("checking");
   const [isChecking, setIsChecking] = useState(false);
+  const [responseTime, setResponseTime] = useState<number | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const { message, notification } = AntdApp.useApp();
 
@@ -76,9 +77,10 @@ function AppContent() {
   const checkStatus = async (url: string) => {
     setIsChecking(true);
     setIsOnline("checking");
+    const start = performance.now();
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
       const response = await fetch(`${url.replace(/\/$/, "")}/api/health`, {
         method: "GET",
         signal: controller.signal,
@@ -86,11 +88,14 @@ function AppContent() {
       clearTimeout(timeoutId);
       if (response.ok) {
         setIsOnline("online");
+        setResponseTime(Math.round(performance.now() - start));
       } else {
         setIsOnline("offline");
+        setResponseTime(null);
       }
     } catch (e) {
       setIsOnline("offline");
+      setResponseTime(null);
     } finally {
       setIsChecking(false);
     }
@@ -132,7 +137,7 @@ function AppContent() {
   const renderContent = () => {
     switch (activeKey) {
       case "dashboard":
-        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onRefreshStatus={() => checkStatus(serverUrl)} />;
       case "settings":
         return <Settings onConfigSaved={fetchServerUrl} />;
       case "history":
@@ -140,7 +145,7 @@ function AppContent() {
       case "about":
         return <About />;
       default:
-        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onRefreshStatus={() => checkStatus(serverUrl)} />;
     }
   };
 
