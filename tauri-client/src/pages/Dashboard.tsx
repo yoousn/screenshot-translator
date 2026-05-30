@@ -40,6 +40,7 @@ interface Config {
   serverUrl?: string;
   clientToken?: string;
   channel?: string;
+  targetLang?: string;
   useLocalOcr?: boolean;
   hotkey?: string;
 }
@@ -154,9 +155,12 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
     
     const targetUrl = config.serverUrl || "https://ocr.yousn.me";
     const token = config.clientToken || "";
+    const targetLang = config.targetLang || "zh";
+    const startTime = performance.now();
     
     const formData = new FormData();
     formData.append("image", selectedFile);
+    formData.append("target_lang", targetLang);
     
     try {
       const response = await fetch(`${targetUrl.replace(/\/$/, "")}/api/translate`, {
@@ -175,6 +179,20 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       const blob = await response.blob();
       const imageUrl = URL.createObjectURL(blob);
       setTranslatedImage(imageUrl);
+      const blocks = Number(response.headers.get("X-Trace-Translate-Units") || "0");
+      const channel = response.headers.get("X-Trace-Channel") || config.channel || "auto";
+      const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
+      await invoke("add_history", {
+        record: JSON.stringify({
+          id: "rec-" + Date.now(),
+          time: new Date().toLocaleString(),
+          filename: selectedFile.name || "Dashboard_Test_" + Date.now() + ".png",
+          blocks,
+          channel,
+          duration: durationSec + "s",
+          status: "success"
+        })
+      }).catch((err) => console.error("Failed to save dashboard history:", err));
       message.success("翻译重绘成功！");
     } catch (e: any) {
       console.error(e);

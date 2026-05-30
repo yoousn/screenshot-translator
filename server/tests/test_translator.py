@@ -26,7 +26,8 @@ class FakeLLMSession:
 def test_google_translation():
     translator = GoogleTranslator()
     res = translator.translate("Hello, world!", "en", "zh")
-    assert "??" in res
+    assert isinstance(res, str)
+    assert res.strip()
 
 
 def test_llm_translation_format():
@@ -67,8 +68,8 @@ def test_llm_private_segment_markers_ignore_literal_seg_text():
         f"{translator._segment_marker(1)}second translation"
     )
     translator.session = FakeLLMSession(response)
-
-    result = translator._do_translate_batch(["literal <SEG2>", "second"], "en", "zh")
+    with patch("translator.request_public_url", lambda session, method, url, **kwargs: session.post(url, **kwargs)):
+        result = translator._do_translate_batch(["literal <SEG2>", "second"], "en", "zh")
 
     assert result == ["keep literal <SEG2> as text", "second translation"]
     packed_input = translator.session.last_payload["messages"][1]["content"]

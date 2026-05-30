@@ -232,13 +232,24 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     setIsSaving(true);
     try {
       const { autostart: autostartVal, ...configValues } = values;
-      await saveServerChannelConfig(configValues);
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
-      await invoke("re_register_shortcut", { hotkey: configValues.hotkey || "Alt+A" });
+      try {
+        await invoke("re_register_shortcut", { hotkey: configValues.hotkey || "Alt+A" });
+      } catch (shortcutErr: any) {
+        message.warning(`本地配置已保存，但快捷键注册失败: ${shortcutErr.message || shortcutErr}`);
+      }
       await invoke("set_autostart_enabled", { enabled: Boolean(autostartVal) });
 
-      message.success("设置保存成功！");
+      let serverSaved = false;
+      try {
+        await saveServerChannelConfig(configValues);
+        serverSaved = true;
+      } catch (serverErr: any) {
+        message.warning(`本地设置已保存，但服务器配置未同步: ${serverErr.message || serverErr}`);
+      }
+
+      message.success(serverSaved ? "设置保存成功！" : "本地设置已保存");
       onConfigSaved();
     } catch (error: any) {
       message.error(`保存失败: ${error.message || error}`);

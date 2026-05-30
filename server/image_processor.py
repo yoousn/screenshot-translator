@@ -7,6 +7,7 @@ import threading
 import time
 import re
 import logging
+import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +104,38 @@ class ImageProcessor:
         with self._ocr_lock:
             if self.ocr is None:
                 start_init = time.perf_counter()
+                os.environ.setdefault("FLAGS_use_mkldnn", "0")
+                os.environ.setdefault("FLAGS_enable_pir_api", "0")
                 from paddleocr import PaddleOCR
-                self.ocr = PaddleOCR(
-                    lang="ch",
-                    enable_mkldnn=False,
-                    det_db_box_thresh=det_db_box_thresh,
-                    det_db_thresh=det_db_thresh,
-                    det_db_unclip_ratio=det_db_unclip_ratio,
-                    show_log=False
-                )
+                sig = inspect.signature(PaddleOCR)
+                params = sig.parameters
+                kwargs = {"lang": "ch"}
+                if "det_db_box_thresh" in params:
+                    kwargs.update({
+                        "enable_mkldnn": False,
+                        "det_db_box_thresh": det_db_box_thresh,
+                        "det_db_thresh": det_db_thresh,
+                        "det_db_unclip_ratio": det_db_unclip_ratio,
+                        "show_log": False,
+                    })
+                else:
+                    kwargs.update({
+                        "enable_mkldnn": False,
+                        "text_det_box_thresh": det_db_box_thresh,
+                        "text_det_thresh": det_db_thresh,
+                        "text_det_unclip_ratio": det_db_unclip_ratio,
+                        "use_doc_orientation_classify": False,
+                        "use_doc_unwarping": False,
+                        "use_textline_orientation": False,
+                    })
+                try:
+                    self.ocr = PaddleOCR(**kwargs)
+                except ValueError as exc:
+                    if "show_log" in kwargs and "show_log" in str(exc):
+                        kwargs.pop("show_log", None)
+                        self.ocr = PaddleOCR(**kwargs)
+                    else:
+                        raise
                 self._ocr_params = current_params
                 try:
                     dummy_img = np.zeros((32, 32, 3), dtype=np.uint8)
@@ -128,7 +152,30 @@ class ImageProcessor:
     def run_ocr(self, img_cv: np.ndarray, cls: bool = True):
         self._ensure_ocr()
         with self._ocr_infer_lock:
-            return self.ocr.ocr(img_cv, cls=cls)
+            try:
+                result = self.ocr.ocr(img_cv, cls=cls)
+            except TypeError as exc:
+                if "cls" in str(exc):
+                    result = self.ocr.ocr(img_cv)
+                else:
+                    raise
+            return self._normalize_ocr_result(result)
+
+    def _normalize_ocr_result(self, result):
+        if not result:
+            return result
+        first = result[0] if isinstance(result, list) else None
+        if not isinstance(first, dict) or "rec_texts" not in first:
+            return result
+        lines = []
+        for page in result:
+            texts = page.get("rec_texts") or []
+            scores = page.get("rec_scores") or []
+            polys = page.get("rec_polys") or page.get("dt_polys") or []
+            for text, score, poly in zip(texts, scores, polys):
+                points = poly.tolist() if hasattr(poly, "tolist") else poly
+                lines.append([points, [text, float(score or 0.0)]])
+        return [lines]
 
     def _normalize_ocr_text(self, texts: list[str]) -> str:
         joined = " ".join([str(t or "") for t in texts]).strip().lower()

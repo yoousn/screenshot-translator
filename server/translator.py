@@ -7,7 +7,7 @@ import random
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from security import normalize_public_base_url
+from security import normalize_public_base_url, request_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,7 @@ class LLMTranslator(BaseTranslator):
             ],
             "temperature": 0.3
         }
-        res = self.session.post(f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        res = request_public_url(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=10)
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"].strip()
         raise Exception(f"LLM translation failed: {res.text}")
@@ -295,7 +295,7 @@ class LLMTranslator(BaseTranslator):
         
         parsed = {}
         try:
-            res = self.session.post(f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
+            res = request_public_url(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
             if res.status_code == 200:
                 content = res.json()["choices"][0]["message"]["content"].strip()
                 parsed = self._parse_segment_response(content, len(texts))

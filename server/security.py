@@ -33,3 +33,24 @@ def normalize_public_base_url(url: str) -> str:
             raise ValueError("请求地址不合法 (IP 为私有、回环或保留地址)")
 
     return base_url
+
+
+def request_public_url(session, method: str, url: str, *, max_redirects: int = 3, **kwargs):
+    """Request a public URL while validating every redirect target."""
+    current_url = normalize_public_base_url(url)
+    redirects = 0
+    while True:
+        response = session.request(method, current_url, allow_redirects=False, **kwargs)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+        if redirects >= max_redirects:
+            raise ValueError("重定向次数过多")
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        current_url = normalize_public_base_url(urllib.parse.urljoin(current_url, location))
+        if response.status_code == 303:
+            method = "GET"
+            kwargs.pop("data", None)
+            kwargs.pop("json", None)
+        redirects += 1

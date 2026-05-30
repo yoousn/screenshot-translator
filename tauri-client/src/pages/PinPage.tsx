@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 
 export default function PinPage() {
   const [imgSrc, setImgSrc] = useState<string>("");
@@ -15,6 +15,7 @@ export default function PinPage() {
     listen<string>(`pin-image-${label}`, (event) => {
       setImgSrc(`data:image/png;base64,${event.payload}`);
     }).then(unsub => { unlistenFn = unsub; });
+    emit(`pin-ready-${label}`).catch(() => {});
 
     // Allow dragging the window
     const handleMouseDown = async (e: MouseEvent) => {

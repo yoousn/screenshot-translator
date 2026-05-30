@@ -640,7 +640,11 @@ async fn api_translate(base64_image: String, server_url: String, client_token: S
         return Err(format!("服务器返回错误 {}：{}", status, body));
     }
     
-    let texts_json = resp.headers().get("X-Translate-Texts")
+    let texts_json_header = resp.headers().get("X-Translate-Texts")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let meta_id = resp.headers().get("X-Translate-Meta-Id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
@@ -657,6 +661,20 @@ async fn api_translate(base64_image: String, server_url: String, client_token: S
         
     let result_bytes = resp.bytes().await.map_err(|e| format!("读取翻译结果失败：{}", e))?;
     let image_base64 = BASE64_STANDARD.encode(&result_bytes);
+    let mut texts_json = texts_json_header;
+    if texts_json.is_empty() && !meta_id.is_empty() {
+        let meta_resp = client
+            .get(format!("{}/api/translate/meta/{}", server_url.trim_end_matches('/'), meta_id))
+            .header("x-api-key", &client_token)
+            .send()
+            .await
+            .map_err(|e| format!("读取翻译文本元数据失败：{}", e))?;
+        if meta_resp.status().is_success() {
+            let meta_json: serde_json::Value = meta_resp.json().await
+                .map_err(|e| format!("解析翻译文本元数据失败：{}", e))?;
+            texts_json = meta_json.get("texts").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        }
+    }
     
     let result = serde_json::json!({
         "image": image_base64,
@@ -772,6 +790,28 @@ fn start_ocr_process(exe_path: &std::path::Path) -> Result<LocalOcrProcess, Stri
 
 #[tauri::command]
 async fn run_local_ocr(
+    app: tauri::AppHandle,
+    image_base64: String,
+    executable_path: Option<String>,
+    timeout_ms: Option<u64>
+) -> Result<Vec<OcrBlock>, String> {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(15000).clamp(500, 60000));
+    let task = tokio::task::spawn_blocking(move || run_local_ocr_sync(app, image_base64, executable_path));
+    match tokio::time::timeout(timeout, task).await {
+        Ok(joined) => joined.map_err(|e| format!("本地 OCR 任务执行失败: {}", e))?,
+        Err(_) => {
+            let manager = get_ocr_manager();
+            if let Ok(mut guard) = manager.try_lock() {
+                if let Some(mut proc) = guard.process.take() {
+                    let _ = proc.child.kill();
+                }
+            }
+            Err(format!("本地 OCR 超时 ({} ms)", timeout.as_millis()))
+        }
+    }
+}
+
+fn run_local_ocr_sync(
     app: tauri::AppHandle,
     image_base64: String,
     executable_path: Option<String>

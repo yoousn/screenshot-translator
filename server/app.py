@@ -13,8 +13,10 @@ import time
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
 from image_processor import ImageProcessor
-from security import normalize_public_base_url
+from security import normalize_public_base_url, request_public_url
 import logging
+import secrets
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,6 @@ def warm_up_ocr_async():
     except Exception as e:
         logger.error("[OCR Warmup] Background warmup failed: %s", e, exc_info=True)
 
-import threading
 threading.Thread(target=warm_up_ocr_async, daemon=True).start()
 
 # 🔑 启动时打印当前 client_token，供运维人员在客户端配置
@@ -76,6 +77,9 @@ def verify_token(x_api_key: str):
 
 # Translator instance cache to avoid re-creating per request (fix 4.3)
 _translator_cache = {"key": None, "instance": None}
+_translate_meta_cache = {}
+_translate_meta_lock = threading.Lock()
+_TRANSLATE_META_TTL = 600.0
 
 def _translator_cache_key(cfg: dict) -> str:
     channel = cfg.get("active_channel", "google")
@@ -116,6 +120,23 @@ def invalidate_config_cache():
     _config_cache_time = 0.0
     _translator_cache["key"] = None
     _translator_cache["instance"] = None
+
+
+def _store_translate_meta(stats: dict) -> str | None:
+    texts_json = stats.get("texts_json")
+    if not texts_json:
+        return None
+    meta_id = secrets.token_urlsafe(16)
+    with _translate_meta_lock:
+        now = time.time()
+        expired = [key for key, item in _translate_meta_cache.items() if item["expires_at"] <= now]
+        for key in expired:
+            _translate_meta_cache.pop(key, None)
+        _translate_meta_cache[meta_id] = {
+            "texts": texts_json,
+            "expires_at": now + _TRANSLATE_META_TTL,
+        }
+    return meta_id
 
 
 def _server_config_payload(payload: dict) -> tuple[str, dict]:
@@ -211,8 +232,11 @@ async def translate_image(
             "X-Ocr-Ready": "true" if stats.get("ocr_ready", False) else "false",
             "X-Ocr-Cache-Hit": "true" if stats.get("ocr_cache_hit", False) else "false"
         }
-        if "texts_json" in stats:
-            headers["X-Translate-Texts"] = stats["texts_json"]
+        meta_id = _store_translate_meta(stats)
+        if meta_id:
+            headers["X-Translate-Meta-Id"] = meta_id
+            if len(stats.get("texts_json", "")) <= 6000:
+                headers["X-Translate-Texts"] = stats["texts_json"]
             
         return Response(content=out_bytes, media_type="image/png", headers=headers)
     except Exception as e:
@@ -306,6 +330,17 @@ async def translate_text_endpoint(
         "channel": get_config().get("active_channel", "google")
     }
 
+
+@app.get("/api/translate/meta/{meta_id}")
+def translate_meta(meta_id: str, x_api_key: str = Header(None)):
+    verify_token(x_api_key)
+    with _translate_meta_lock:
+        item = _translate_meta_cache.get(meta_id)
+        if not item or item["expires_at"] <= time.time():
+            _translate_meta_cache.pop(meta_id, None)
+            raise HTTPException(status_code=404, detail="Translate metadata expired or not found.")
+        return {"status": "success", "texts": item["texts"]}
+
 @app.post("/api/config/test")
 def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
     verify_token(x_api_key)
@@ -363,7 +398,7 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
         
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
-        res = requests.get(f"{base_url}/v1/models", headers=headers, timeout=5)
+        res = request_public_url(requests, "GET", f"{base_url}/v1/models", headers=headers, timeout=5)
         if res.status_code == 200:
             m_list = [item["id"] for item in res.json().get("data", [])]
             return {"status": "success", "models": m_list}

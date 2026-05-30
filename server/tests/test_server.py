@@ -28,7 +28,7 @@ def test_fetch_models_success():
     cfg = load_server_config()
     token = cfg["client_token"]
     
-    with patch("requests.get") as mock_get, patch("app.normalize_public_base_url", return_value="https://api.yousn.me"):
+    with patch("app.request_public_url") as mock_request, patch("app.normalize_public_base_url", return_value="https://api.yousn.me"):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -38,7 +38,7 @@ def test_fetch_models_success():
                 {"id": "gpt-4o"}
             ]
         }
-        mock_get.return_value = mock_response
+        mock_request.return_value = mock_response
         
         res = client.post(
             "/api/config/fetch_models",

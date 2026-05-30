@@ -62,6 +62,11 @@ export default function ScreenshotPage() {
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
 
+  const decodeTextPairs = (encoded: string) => {
+    const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  };
+
   const startNewCaptureSession = () => {
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
@@ -767,6 +772,11 @@ export default function ScreenshotPage() {
     const logicalH = ph / factor;
     
     try {
+      let sent = false;
+      const unlistenReady = await listen(`pin-ready-${label}`, () => {
+        sent = true;
+        emit(`pin-image-${label}`, imgData).catch(() => {});
+      });
       const win = new WebviewWindow(label, {
         url: "index.html",
         title: "Pin",
@@ -781,10 +791,11 @@ export default function ScreenshotPage() {
       });
       
       win.once('tauri://created', () => {
-        // 多次 emit 提高大图事件送达率，避免依赖 localStorage
-        setTimeout(() => emit(`pin-image-${label}`, imgData), 100);
-        setTimeout(() => emit(`pin-image-${label}`, imgData), 300);
+        setTimeout(() => {
+          if (!sent) emit(`pin-image-${label}`, imgData).catch(() => {});
+        }, 1000);
       });
+      win.once('tauri://destroyed', () => unlistenReady());
       
       cancelScreenshot();
     } catch (e) {
@@ -812,7 +823,8 @@ export default function ScreenshotPage() {
           console.log("[Local OCR Flow] 触发本地识别...");
           const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
             imageBase64: base64,
-            executablePath: configRef.current.localOcrExecutablePath || null
+            executablePath: configRef.current.localOcrExecutablePath || null,
+            timeoutMs: configRef.current.localOcrTimeoutMs || 15000
           });
           
           if (!ocrBlocks || ocrBlocks.length === 0) {
@@ -858,7 +870,7 @@ export default function ScreenshotPage() {
           if (configRef.current.fallbackToRemoteOcr) {
             const res = await invoke<{image: string, texts: string, channel?: string, blocks?: number}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
             resultBase64 = res.image;
-            if (res.texts) setTranslatePairs(JSON.parse(atob(res.texts)));
+            if (res.texts) setTranslatePairs(decodeTextPairs(res.texts));
             usedChannel = res.channel || usedChannel;
             blocksCount = res.blocks || blocksCount;
           } else {
@@ -868,7 +880,7 @@ export default function ScreenshotPage() {
       } else {
         const res = await invoke<{image: string, texts: string, channel?: string, blocks?: number}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
         resultBase64 = res.image;
-        if (res.texts) setTranslatePairs(JSON.parse(atob(res.texts)));
+        if (res.texts) setTranslatePairs(decodeTextPairs(res.texts));
         usedChannel = res.channel || usedChannel;
         blocksCount = res.blocks || blocksCount;
       }
