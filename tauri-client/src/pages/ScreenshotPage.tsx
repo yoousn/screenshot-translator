@@ -27,6 +27,11 @@ interface Config {
 type Rect = { x: number; y: number; w: number; h: number };
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
+const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 520, height: 44 };
+const FLOATING_PANEL_MARGIN = 8;
+const FLOATING_PANEL_GAP = 8;
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
 
 const makeImageFormData = (base64: string) => {
   const byteCharacters = atob(base64);
@@ -44,8 +49,10 @@ const makeImageFormData = (base64: string) => {
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mouseTrackerRef = useRef<HTMLDivElement>(null);
+  const actionToolbarRef = useRef<HTMLDivElement>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
+  const [actionToolbarSize, setActionToolbarSize] = useState(ACTION_TOOLBAR_FALLBACK_SIZE);
   const [hasSelected, setHasSelected] = useState(false);
   const [windowRects, setWindowRects] = useState<Rect[]>([]);
   const [screenshotMode, setScreenshotMode] = useState("normal");
@@ -218,6 +225,28 @@ export default function ScreenshotPage() {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    const toolbar = actionToolbarRef.current;
+    if (!toolbar || !hasSelected) return;
+
+    const updateToolbarSize = () => {
+      const bounds = toolbar.getBoundingClientRect();
+      const next = {
+        width: Math.ceil(bounds.width) || ACTION_TOOLBAR_FALLBACK_SIZE.width,
+        height: Math.ceil(bounds.height) || ACTION_TOOLBAR_FALLBACK_SIZE.height,
+      };
+      setActionToolbarSize((current) => (
+        current.width === next.width && current.height === next.height ? current : next
+      ));
+    };
+
+    updateToolbarSize();
+
+    const observer = new ResizeObserver(updateToolbarSize);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, [hasSelected]);
 
   const loadConfig = async () => {
     try {
@@ -1053,6 +1082,37 @@ export default function ScreenshotPage() {
     }
   };
 
+  const getActionToolbarStyle = (): React.CSSProperties => {
+    const toolbarWidth = actionToolbarSize.width || ACTION_TOOLBAR_FALLBACK_SIZE.width;
+    const toolbarHeight = actionToolbarSize.height || ACTION_TOOLBAR_FALLBACK_SIZE.height;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const maxLeft = Math.max(FLOATING_PANEL_MARGIN, viewportWidth - toolbarWidth - FLOATING_PANEL_MARGIN);
+    const maxTop = Math.max(FLOATING_PANEL_MARGIN, viewportHeight - toolbarHeight - FLOATING_PANEL_MARGIN);
+    const hasSpaceBelow = rect.y + rect.h + FLOATING_PANEL_GAP + toolbarHeight <= viewportHeight - FLOATING_PANEL_MARGIN;
+    const topCandidate = hasSpaceBelow
+      ? rect.y + rect.h + FLOATING_PANEL_GAP
+      : rect.y - toolbarHeight - FLOATING_PANEL_GAP;
+    const leftCandidate = rect.x + rect.w - toolbarWidth >= FLOATING_PANEL_MARGIN
+      ? rect.x + rect.w - toolbarWidth
+      : rect.x;
+
+    return {
+      position: "absolute",
+      top: clamp(topCandidate, FLOATING_PANEL_MARGIN, maxTop),
+      left: clamp(leftCandidate, FLOATING_PANEL_MARGIN, maxLeft),
+      zIndex: 100,
+      background: "#fff",
+      padding: "6px 10px",
+      borderRadius: 8,
+      boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)",
+      border: "1px solid #e8e8e8",
+      width: "max-content",
+      maxWidth: `calc(100vw - ${FLOATING_PANEL_MARGIN * 2}px)`,
+      whiteSpace: "nowrap",
+    };
+  };
+
   return (
     <div
       className={`screenshot-root ${overlayVisible ? "ready" : "initializing"}`}
@@ -1073,8 +1133,8 @@ export default function ScreenshotPage() {
       <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }} />
 
       {overlayVisible && hasSelected && !isSelecting && (
-        <div style={{ position: "absolute", top: Math.max(8, Math.min(rect.y + rect.h + 8 + 44 > window.innerHeight ? rect.y - 44 : rect.y + rect.h + 8, window.innerHeight - 44)), left: Math.max(8, Math.min(rect.x + rect.w - 480 > 0 ? rect.x + rect.w - 480 : rect.x, window.innerWidth - 496)), zIndex: 100, background: "#fff", padding: "6px 10px", borderRadius: 8, boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)", border: "1px solid #e8e8e8" }} onContextMenu={(e) => e.stopPropagation()}>
-          <Space size="small" wrap>
+        <div ref={actionToolbarRef} style={getActionToolbarStyle()} onContextMenu={(e) => e.stopPropagation()}>
+          <Space size="small" style={{ display: "inline-flex", flexWrap: "nowrap", whiteSpace: "nowrap" }}>
             <Button size="small" icon={<TranslationOutlined />} type="primary" ghost onClick={handleTranslate} loading={isTranslating}>翻译 (Ctrl+Q)</Button>
             <Button size="small" icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing}>识字</Button>
             <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图 (P)</Button>
