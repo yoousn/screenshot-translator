@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import ScreenshotPage from "./pages/ScreenshotPage";
 import PinPage from "./pages/PinPage";
+import OcrPage from "./pages/OcrPage";
 import "./index.css";
 
 const label = getCurrentWindow().label;
@@ -21,6 +22,8 @@ if (label === "screenshot") {
   Component = ScreenshotPage;
 } else if (label.startsWith("pin_")) {
   Component = PinPage;
+} else if (label.startsWith("ocr_")) {
+  Component = OcrPage;
 } else {
   Component = App;
 }

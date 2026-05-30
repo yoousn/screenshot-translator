@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { Button, Space, message, Input } from "antd";
+import { Button, Space, message } from "antd";
 import {
   CopyOutlined,
   SaveOutlined,
@@ -28,6 +28,7 @@ type Rect = { x: number; y: number; w: number; h: number };
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
 const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 520, height: 44 };
+const OCR_WINDOW_SIZE = { width: 460, height: 360 };
 const FLOATING_PANEL_MARGIN = 8;
 const FLOATING_PANEL_GAP = 8;
 
@@ -60,9 +61,7 @@ export default function ScreenshotPage() {
   const [isOCRing, setIsOCRing] = useState(false);
   const [config, setConfig] = useState<Config>({});
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
-  const [ocrResultText, setOcrResultText] = useState<string | null>(null);
   const [translatePairs, setTranslatePairs] = useState<Array<{o: string, t: string}> | null>(null);
-  const [ocrPreviewBase64, setOcrPreviewBase64] = useState<string | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const [overlayVisible, setOverlayVisible] = useState(false);
@@ -90,9 +89,7 @@ export default function ScreenshotPage() {
     imageRef.current = null;
     translatedImgRef.current = null;
     setTranslatedResult(null);
-    setOcrResultText(null);
     setTranslatePairs(null);
-    setOcrPreviewBase64(null);
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
     setScreenshotState("initializing");
@@ -451,9 +448,7 @@ export default function ScreenshotPage() {
         setSelection(false);
         setTranslatedResult(null);
         translatedImgRef.current = null;
-        setOcrResultText(null);
-    setTranslatePairs(null);
-        setOcrPreviewBase64(null);
+        setTranslatePairs(null);
         renderNeededRef.current = true;
       } else {
         cancelScreenshot();
@@ -975,6 +970,103 @@ export default function ScreenshotPage() {
     return `OCR 服务异常：HTTP ${resp.status}`;
   };
 
+  const getOcrWindowPosition = async () => {
+    const selection = rectRef.current;
+    let screenX = 0;
+    let screenY = 0;
+    let factor = 1;
+
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      const pos = await win.outerPosition();
+      factor = await win.scaleFactor();
+      screenX = pos.x / factor;
+      screenY = pos.y / factor;
+    } catch (error) {
+      console.warn("Failed to get screenshot window position", error);
+    }
+
+    const minLeft = screenX + FLOATING_PANEL_MARGIN;
+    const minTop = screenY + FLOATING_PANEL_MARGIN;
+    const maxLeft = Math.max(minLeft, screenX + window.innerWidth - OCR_WINDOW_SIZE.width - FLOATING_PANEL_MARGIN);
+    const maxTop = Math.max(minTop, screenY + window.innerHeight - OCR_WINDOW_SIZE.height - FLOATING_PANEL_MARGIN);
+    const hasSpaceRight = selection.x + selection.w + FLOATING_PANEL_GAP + OCR_WINDOW_SIZE.width <= window.innerWidth - FLOATING_PANEL_MARGIN;
+    const leftCandidate = screenX + (hasSpaceRight ? selection.x + selection.w + FLOATING_PANEL_GAP : selection.x);
+    const topCandidate = screenY + selection.y;
+
+    return {
+      x: clamp(leftCandidate, minLeft, maxLeft),
+      y: clamp(topCandidate, minTop, maxTop),
+    };
+  };
+
+  const openOcrResultWindow = async (text: string, previewBase64: string) => {
+    const label = `ocr_${Date.now()}`;
+    const payload = JSON.stringify({ text, previewBase64 });
+    const position = await getOcrWindowPosition();
+    let isPayloadDelivered = false;
+    let resolvePayload: () => void = () => {};
+    const payloadReady = new Promise<void>((resolve) => {
+      resolvePayload = resolve;
+    });
+
+    const sendPayload = (finish = false) => {
+      if (isPayloadDelivered) return;
+      emit(`ocr-result-${label}`, payload).finally(() => {
+        if (finish) {
+          isPayloadDelivered = true;
+          resolvePayload();
+        }
+      });
+    };
+
+    const unlistenReady = await listen(`ocr-ready-${label}`, () => sendPayload(true));
+    try {
+      const win = new WebviewWindow(label, {
+        url: "index.html",
+        title: "OCR 识字结果",
+        decorations: false,
+        alwaysOnTop: true,
+        focus: true,
+        x: position.x,
+        y: position.y,
+        width: OCR_WINDOW_SIZE.width,
+        height: OCR_WINDOW_SIZE.height,
+        minWidth: 360,
+        minHeight: 260,
+        resizable: true,
+        skipTaskbar: true,
+        preventOverflow: true,
+        shadow: true,
+      });
+
+      win.once("tauri://created", () => {
+        win.setFocus().catch(() => {});
+        setTimeout(sendPayload, 500);
+      });
+      win.once("tauri://destroyed", () => {
+        if (!isPayloadDelivered) {
+          isPayloadDelivered = true;
+          resolvePayload();
+        }
+      });
+
+      const retryTimer = window.setInterval(() => sendPayload(), 300);
+      const timeoutTimer = window.setTimeout(() => {
+        if (!isPayloadDelivered) {
+          isPayloadDelivered = true;
+          resolvePayload();
+        }
+      }, 5000);
+      await payloadReady;
+      window.clearInterval(retryTimer);
+      window.clearTimeout(timeoutTimer);
+    } finally {
+      unlistenReady();
+    }
+  };
+
   const handleOCR = async () => {
     const serverUrl = configRef.current.serverUrl || "https://ocr.yousn.me";
     const token = configRef.current.clientToken || "";
@@ -1004,31 +1096,19 @@ export default function ScreenshotPage() {
       message.destroy();
       setIsOCRing(false);
       
-      if (items.length > 0) {
-        setOcrResultText(texts);
-        setOcrPreviewBase64(base64);
-        message.success({ content: `识别完成，已自动复制`, key: "ocr" });
+      if (texts) {
         try {
           await navigator.clipboard.writeText(texts);
         } catch {}
-      } else {
-        setOcrResultText("");
-        setOcrPreviewBase64(base64);
-        message.info({ content: "未识别到文字", key: "ocr" });
       }
+
+      await openOcrResultWindow(texts, base64);
+      resetScreenshotState();
+      await invoke("cancel_screenshot").catch(() => {});
     } catch (e: any) {
       const msg = e?.message || e?.toString?.() || String(e);
       message.error({ content: `OCR 失败：${msg}`, key: "ocr", duration: 3 });
       setIsOCRing(false);
-    }
-  };
-
-  const copyOCRText = async () => {
-    try {
-      await navigator.clipboard.writeText(ocrResultText || "");
-      message.success({ content: "OCR 文本已复制到剪贴板", key: "ocr-copy" });
-    } catch (e: any) {
-      message.error({ content: `复制失败：${e?.message || e}`, key: "ocr-copy" });
     }
   };
 
@@ -1040,9 +1120,7 @@ export default function ScreenshotPage() {
     setRect(EMPTY_RECT);
     setHasSelected(false);
     setTranslatedResult(null);
-    setOcrResultText(null);
     setTranslatePairs(null);
-    setOcrPreviewBase64(null);
     setIsTranslating(false);
     setIsOCRing(false);
     setScreenshotState("initializing");
@@ -1146,7 +1224,7 @@ export default function ScreenshotPage() {
         </div>
       )}
 
-            {hasSelected && !isSelecting && translatePairs !== null && ocrResultText === null && (
+            {hasSelected && !isSelecting && translatePairs !== null && (
         <div
           style={{
             position: "absolute",
@@ -1185,60 +1263,6 @@ export default function ScreenshotPage() {
         </div>
       )}
 
-      {hasSelected && !isSelecting && ocrResultText !== null && (
-        <div
-          style={{
-            position: "absolute",
-            top: Math.max(8, Math.min(rect.y, window.innerHeight - 360)),
-            left: Math.max(8, Math.min(rect.x + rect.w + 12, window.innerWidth - 420)),
-            width: 400,
-            zIndex: 120,
-            background: "#fff",
-            padding: 12,
-            borderRadius: 10,
-            boxShadow: "0 6px 24px rgba(0, 0, 0, 0.18)",
-            border: "1px solid #e8e8e8",
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.stopPropagation()}
-        >
-          <Input.TextArea
-            value={ocrResultText}
-            onChange={(e) => setOcrResultText(e.target.value)}
-            autoSize={{ minRows: 6, maxRows: 10 }}
-            placeholder="OCR 识别结果"
-            style={{ marginBottom: 10 }}
-          />
-
-          {ocrPreviewBase64 && (
-            <div
-              style={{
-                maxHeight: 140,
-                overflow: "hidden",
-                borderRadius: 6,
-                border: "1px solid #f0f0f0",
-                marginBottom: 10,
-                background: "#fafafa",
-                textAlign: "center",
-              }}
-            >
-              <img
-                src={`data:image/png;base64,${ocrPreviewBase64}`}
-                style={{ maxWidth: "100%", maxHeight: 140, objectFit: "contain" }}
-              />
-            </div>
-          )}
-
-          <Space size="small">
-            <Button size="small" type="primary" icon={<CopyOutlined />} onClick={copyOCRText}>
-              复制文本
-            </Button>
-            <Button size="small" icon={<CloseOutlined />} onClick={() => setOcrResultText(null)}>
-              关闭
-            </Button>
-          </Space>
-        </div>
-      )}
     </div>
   );
 }

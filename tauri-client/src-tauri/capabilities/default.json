@@ -5,7 +5,8 @@
   "windows": [
     "main",
     "screenshot",
-    "pin_*"
+    "pin_*",
+    "ocr_*"
   ],
   "permissions": [
     "core:default",
