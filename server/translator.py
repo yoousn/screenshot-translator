@@ -61,7 +61,7 @@ class TranslationCache:
                 if self.access_order:
                     oldest = self.access_order.pop(0)
                     self.cache.pop(oldest, None)
-            
+
             expire = time.time() + self.ttl_seconds
             self.cache[key] = (value, expire)
             if key in self.access_order:
@@ -86,15 +86,15 @@ class BaseTranslator(abc.ABC):
     def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
-            
+
         results = [None] * len(texts)
         miss_indices = []
         miss_texts = []
-        
+
         channel_name = self.cache_namespace()
         # 后续如果有版本区分可从配置读取，目前固定 "1.0"
         version = "1.0"
-        
+
         for idx, text in enumerate(texts):
             key = GLOBAL_TRANSLATE_CACHE.make_key(text, source_lang, target_lang, channel_name, version)
             cached_val = GLOBAL_TRANSLATE_CACHE.get(key)
@@ -105,18 +105,18 @@ class BaseTranslator(abc.ABC):
             else:
                 miss_indices.append(idx)
                 miss_texts.append(text)
-                
+
         if miss_texts:
             translated_misses = self._do_translate_batch(miss_texts, source_lang, target_lang, stats_ref)
             if len(translated_misses) != len(miss_texts):
                 translated_misses = miss_texts
-                
+
             for idx, text, trans_val in zip(miss_indices, miss_texts, translated_misses):
                 results[idx] = trans_val
                 # 写入缓存
                 key = GLOBAL_TRANSLATE_CACHE.make_key(text, source_lang, target_lang, channel_name, version)
                 GLOBAL_TRANSLATE_CACHE.set(key, trans_val)
-                
+
         return results
 
     def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
@@ -148,11 +148,11 @@ class GoogleTranslator(BaseTranslator):
         """
         if not texts:
             return []
-            
+
         # 1. 预处理文本，去掉行内换行防止干扰分行逻辑
         cleaned_texts = [t.replace('\n', ' ').strip() for t in texts]
         query = "\n".join(cleaned_texts)
-        
+
         url = "https://translate.googleapis.com/translate_a/single"
         data = {
             "client": "gtx",
@@ -161,7 +161,7 @@ class GoogleTranslator(BaseTranslator):
             "dt": "t",
             "q": query
         }
-        
+
         try:
             # 使用 Post 请求，避免 Get 请求由于文本过长导致超长报错
             response = self.session.post(url, data=data, timeout=8)
@@ -172,18 +172,18 @@ class GoogleTranslator(BaseTranslator):
                     translated_full = "".join([part[0] for part in res_json[0] if part[0]])
                     # 按行切割
                     translated_lines = translated_full.splitlines()
-                    
+
                     # 校验行数是否完全对应
                     if len(translated_lines) == len(texts):
                         return translated_lines
                     else:
                         logger.warning(
-                            "[Google Batch] 翻译行数不匹配: 期望 %d 行，实际返回 %d 行。正在降级为线程池并发翻译...", 
+                            "[Google Batch] 翻译行数不匹配: 期望 %d 行，实际返回 %d 行。正在降级为线程池并发翻译...",
                             len(texts), len(translated_lines)
                         )
         except Exception as e:
             logger.warning("[Google Batch] 批量翻译请求失败: %s。正在降级为线程池并发翻译...", e)
-            
+
         # 2. 降级兜底：使用基类的多线程并发请求，保证稳定性
         return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
@@ -256,7 +256,7 @@ class LLMTranslator(BaseTranslator):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": f"You are a translation assistant. Translate the following text into {target_language}. Output ONLY the translated text, do not include any commentary, explanations, or quotes."},
+                {"role": "system", "content": f"You are a translation assistant. Translate the following text into {target_language}. Translate every meaningful English word or phrase, including short UI labels and mixed Chinese-English text. Keep product names, commands, package names, file paths, and flags unchanged when they are technical identifiers. Output ONLY the translated text, do not include any commentary, explanations, or quotes."},
                 {"role": "user", "content": text}
             ],
             "temperature": 0.3
@@ -270,20 +270,20 @@ class LLMTranslator(BaseTranslator):
         if not texts:
             return []
         target_language = self._target_language_name(target_lang)
-        
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         # 1. 使用私有区标记将多行合并成一个文本块，避免与原文/译文中的 <SEG1> 等普通文本冲突
         packed_input = self._pack_segments(texts)
         prompt = (
             f"You are a translation assistant. Translate each segment marked with private-use markers like {self._segment_marker(0)} into {target_language}.\n"
+            "Translate every meaningful English word or phrase, including short UI labels and mixed Chinese-English text. Keep product names, commands, package names, file paths, and flags unchanged when they are technical identifiers.\n"
             "You MUST keep each exact marker at the start of its translated segment, preserve order, and output the same number of segments as input.\n"
             "Output ONLY the translated segments with their markers. Do not include any extra descriptions, markdown blocks, formatting or explanations."
         )
-        
         payload = {
             "model": self.model,
             "messages": [
@@ -292,7 +292,7 @@ class LLMTranslator(BaseTranslator):
             ],
             "temperature": 0.2
         }
-        
+
         parsed = {}
         try:
             res = request_public_url(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
@@ -301,20 +301,20 @@ class LLMTranslator(BaseTranslator):
                 parsed = self._parse_segment_response(content, len(texts))
         except Exception as e:
             logger.warning("LLM segment-based batch translation failed: %s", e)
-            
+
         # 2. 精准缺失补偿与兜底 (以多线程并发重试缺失索引)
         final_results = [None] * len(texts)
         missing_indices = []
-        
+
         for idx in range(len(texts)):
             if idx in parsed and parsed[idx]:
                 final_results[idx] = parsed[idx]
             else:
                 missing_indices.append(idx)
-                
+
         if missing_indices:
             logger.warning(
-                "[LLM Segment Batch] 检测到 %d 个片段翻译缺失，正在进行精准多线程并发补偿...", 
+                "[LLM Segment Batch] 检测到 %d 个片段翻译缺失，正在进行精准多线程并发补偿...",
                 len(missing_indices)
             )
             with ThreadPoolExecutor(max_workers=8) as executor:
@@ -328,7 +328,7 @@ class LLMTranslator(BaseTranslator):
                     except Exception as fe:
                         logger.error(f"[LLM Precision Fallback] 补偿翻译索引 {idx} 失败: {fe}")
                         final_results[idx] = texts[idx] # 终极兜底：直接保留原文
-                        
+
         return final_results
 
 class BaiduTranslator(BaseTranslator):
@@ -341,10 +341,10 @@ class BaiduTranslator(BaseTranslator):
         salt = str(random.randint(32768, 65536))
         sign_str = self.app_id + text + salt + self.secret_key
         sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest()
-        
+
         from_lang = "auto" if source_lang == "auto" else source_lang
         to_lang = "zh" if target_lang == "zh" else target_lang
-        
+
         url = f"https://fanyi-api.baidu.com/api/trans/vip/translate?q={urllib.parse.quote(text)}&from={from_lang}&to={to_lang}&appid={self.app_id}&salt={salt}&sign={sign}"
         res = self.session.get(url, timeout=5)
         if res.status_code == 200:
@@ -359,14 +359,14 @@ class BaiduTranslator(BaseTranslator):
             return []
         cleaned_texts = [t.replace('\n', ' ').strip() for t in texts]
         query = "\n".join(cleaned_texts)
-        
+
         salt = str(random.randint(32768, 65536))
         sign_str = self.app_id + query + salt + self.secret_key
         sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest()
-        
+
         from_lang = "auto" if source_lang == "auto" else source_lang
         to_lang = "zh" if target_lang == "zh" else target_lang
-        
+
         url = "https://fanyi-api.baidu.com/api/trans/vip/translate"
         data = {
             "q": query,

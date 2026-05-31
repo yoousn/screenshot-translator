@@ -282,11 +282,33 @@ fn default_ocr_install_dir() -> PathBuf {
     dir
 }
 
+fn is_paddleocr_json_exe(path: &std::path::Path) -> bool {
+    path.is_file()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe"))
+            .unwrap_or(false)
+}
+
+fn resolve_paddleocr_json_exe_from_path(path: &std::path::Path) -> Option<PathBuf> {
+    if is_paddleocr_json_exe(path) {
+        return Some(path.to_path_buf());
+    }
+    if path.is_dir() {
+        return find_paddleocr_json_exe(path);
+    }
+    None
+}
+
 fn resolve_local_ocr_executable(app: &tauri::AppHandle, executable_path: Option<String>) -> Result<PathBuf, String> {
     use tauri::path::BaseDirectory;
 
     if let Some(path) = executable_path.filter(|path| !path.trim().is_empty()) {
-        return Ok(PathBuf::from(path));
+        let raw_path = PathBuf::from(path.trim());
+        return resolve_paddleocr_json_exe_from_path(&raw_path).ok_or_else(|| {
+            format!("未在指定 OCR 路径找到 PaddleOCR-json.exe：{}", raw_path.to_string_lossy())
+        });
     }
 
     let install_dir = default_ocr_install_dir();
@@ -427,7 +449,7 @@ fn move_ocr_runtime(target_dir: String, executable_path: Option<String>) -> Resu
 
     let source_exe = executable_path
         .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+        .and_then(|path| resolve_paddleocr_json_exe_from_path(&PathBuf::from(path.trim())))
         .or_else(|| find_paddleocr_json_exe(&default_ocr_install_dir()))
         .ok_or_else(|| "\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe\u{ff0c}\u{8bf7}\u{5148}\u{4e0b}\u{8f7d}\u{6216}\u{9009}\u{62e9} OCR \u{76ee}\u{5f55}".to_string())?;
     let source_dir = source_exe
@@ -449,8 +471,7 @@ fn move_ocr_runtime(target_dir: String, executable_path: Option<String>) -> Resu
     let exe_path = find_paddleocr_json_exe(&target_dir)
         .ok_or_else(|| "\u{79fb}\u{52a8}\u{5b8c}\u{6210}\u{540e}\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe".to_string())?;
 
-    let default_dir = default_ocr_install_dir();
-    if source_canon == fs::canonicalize(&default_dir).unwrap_or(default_dir) {
+    if !target_canon.starts_with(&source_canon) && !source_canon.starts_with(&target_canon) {
         let _ = fs::remove_dir_all(&source_dir);
     }
 
@@ -576,14 +597,39 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
     }
 }
 
+fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
+    for (label, window) in app.webview_windows() {
+        if label == "screenshot" && include_primary {
+            let _ = window.set_always_on_top(false);
+            let _ = window.hide();
+        } else if label.starts_with("screenshot_") {
+            let _ = window.set_always_on_top(false);
+            let _ = window.hide();
+            let _ = window.close();
+        }
+    }
+}
+
 
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
+    let capture_visible_overlay = app
+        .get_webview_window("screenshot")
+        .and_then(|win| win.is_visible().ok())
+        .unwrap_or(false);
 
-    // Hide main window before capture to prevent focus-steal that requires an extra click
+    // Hide app windows before capture. If the screenshot overlay is already visible,
+    // keep it visible so a second hotkey can intentionally capture the current box/tools UI.
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.hide();
     }
+    if !capture_visible_overlay {
+        if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+            let _ = screenshot_win.set_always_on_top(false);
+            let _ = screenshot_win.hide();
+        }
+    }
+    close_screenshot_windows(&app, false);
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
@@ -622,7 +668,6 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
         let _ = fs::write(&write_path, &jpeg_for_write);
     });
 
-    // 2. 获取预置的静态截图遮罩窗口，或作为后备动态创建
     let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
         win
     } else {
@@ -654,7 +699,6 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = screenshot_win.set_always_on_top(true);
 
-    use tauri::Emitter;
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
     let _ = screenshot_win.emit("screenshot-updated", base64_data);
 
@@ -662,8 +706,12 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
 }
 
 #[tauri::command]
-async fn overlay_ready_to_show(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
+    let target_label = label.unwrap_or_else(|| "screenshot".to_string());
+    if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
+        return Ok(());
+    }
+    if let Some(screenshot_win) = app.get_webview_window(&target_label) {
         let _ = screenshot_win.show();
         let _ = screenshot_win.set_focus();
         let _ = screenshot_win.set_always_on_top(true);
@@ -683,6 +731,13 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
             Err(e)
         }
     }
+}
+
+#[tauri::command]
+async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
+    close_screenshot_windows(&app, true);
+    CAPTURING.store(false, Ordering::SeqCst);
+    Ok(())
 }
 
 
@@ -907,10 +962,17 @@ fn get_window_rects(app: tauri::AppHandle, include_controls: Option<bool>) -> Re
 }
 
 #[tauri::command]
-async fn cancel_screenshot(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let _ = screenshot_win.set_always_on_top(false);
-        let _ = screenshot_win.hide();
+async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
+    if let Some(target_label) = label {
+        if target_label == "screenshot" || target_label.starts_with("screenshot_") {
+            if let Some(screenshot_win) = app.get_webview_window(&target_label) {
+                let _ = screenshot_win.set_always_on_top(false);
+                let _ = screenshot_win.hide();
+            }
+            close_screenshot_windows(&app, false);
+        }
+    } else {
+        close_screenshot_windows(&app, true);
     }
     CAPTURING.store(false, Ordering::SeqCst);
     Ok(())
@@ -1064,6 +1126,10 @@ fn get_ocr_manager() -> Arc<Mutex<OcrManagerState>> {
 }
 
 fn start_ocr_process(exe_path: &std::path::Path, config_key: &str) -> Result<LocalOcrProcess, String> {
+    if !exe_path.is_file() {
+        return Err(format!("本地 OCR 执行文件无效：{}", exe_path.to_string_lossy()));
+    }
+
     let exe_dir = exe_path.parent().ok_or_else(|| "无法获取可执行文件所在目录".to_string())?;
     
     #[cfg(windows)]
@@ -1222,7 +1288,7 @@ fn run_local_ocr_sync(
 ) -> Result<Vec<OcrBlock>, String> {
     let resolved_exe = resolve_local_ocr_executable(&app, executable_path)?;
     
-    if !resolved_exe.exists() {
+    if !resolved_exe.is_file() {
         return Err(format!("本地 OCR 执行文件不存在于 {:?}", resolved_exe));
     }
     
@@ -1427,6 +1493,7 @@ pub fn run() {
             save_image_to_file,
             quick_fullscreen_capture,
             cancel_screenshot,
+            force_close_screenshots,
             get_window_rects,
             overlay_ready_to_show,
             run_local_ocr,
@@ -1500,10 +1567,20 @@ pub fn run() {
             let label = window.label();
             if label == "screenshot" {
                 match event {
-                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        let _ = window.set_always_on_top(false);
+                        let _ = window.hide();
+                        CAPTURING.store(false, Ordering::SeqCst);
+                        api.prevent_close();
+                    }
+                    tauri::WindowEvent::Destroyed => {
                         CAPTURING.store(false, Ordering::SeqCst);
                     }
                     _ => {}
+                }
+            } else if label.starts_with("screenshot_") {
+                if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
+                    CAPTURING.store(false, Ordering::SeqCst);
                 }
             } else if label == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {

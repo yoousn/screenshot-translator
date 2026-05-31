@@ -1,56 +1,47 @@
 import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Button,
-  Card,
-  Col,
-  Flex,
-  List,
-  message,
-  Row,
-  Space,
-  Statistic,
-  Tag,
-  Typography,
-} from "antd";
+import { message, Space } from "antd";
 import {
   CameraOutlined,
   ClockCircleOutlined,
-  CopyOutlined,
   DesktopOutlined,
   ScanOutlined,
   TranslationOutlined,
 } from "@ant-design/icons";
-
-const { Text, Title, Paragraph } = Typography;
+import DashboardActionList, { type DashboardActionItem } from "../components/dashboard/DashboardActionList";
+import DashboardHero from "../components/dashboard/DashboardHero";
+import DashboardStats from "../components/dashboard/DashboardStats";
+import DelayedCountdownOverlay from "../components/screenshot/DelayedCountdownOverlay";
 
 const T = {
-  title: "\u63a7\u5236\u9762\u677f",
-  desc: "\u7ba1\u7406\u622a\u56fe\u3001\u672c\u5730 OCR \u548c\u7ffb\u8bd1\u6d41\u7a0b\u3002\u5f53\u524d OCR \u5f3a\u5236\u5728\u5ba2\u6237\u7aef\u672c\u5730\u6267\u884c\uff0c\u4e0d\u518d\u4e0a\u4f20\u56fe\u7247\u5230 N100 \u505a\u4e91\u7aef OCR\u3002",
-  screenshot: "\u622a\u56fe",
-  screenshotDesc: "\u70b9\u51fb\u6216\u901a\u8fc7\u5feb\u6377\u952e\u5f00\u59cb\u6846\u9009\u622a\u56fe\u3002",
-  translate: "\u622a\u56fe\u7ffb\u8bd1",
-  translateDesc: "\u6846\u9009\u540e\u5148\u5728\u672c\u673a OCR\uff0c\u518d\u53ea\u628a\u6587\u672c\u53d1\u7ed9 N100 \u7ffb\u8bd1\u3002",
-  delayed: "\u5ef6\u65f6\u622a\u56fe",
-  delayedDesc: "3 \u79d2\u540e\u5f00\u59cb\u622a\u56fe\uff0c\u9002\u5408\u6355\u83b7\u83dc\u5355\u3001\u4e0b\u62c9\u6846\u6216\u60ac\u505c\u72b6\u6001\u3002",
-  ocr: "\u672c\u5730\u8bc6\u5b57 OCR",
-  ocrDesc: "\u6846\u9009\u540e\u5728\u5ba2\u6237\u7aef\u672c\u5730\u8bc6\u522b\u6587\u5b57\uff0c\u7ed3\u679c\u81ea\u52a8\u590d\u5236\u5230\u526a\u8d34\u677f\u3002",
-  fullscreen: "\u5168\u5c4f\u590d\u5236",
-  fullscreenDesc: "\u5feb\u901f\u622a\u53d6\u5f53\u524d\u5c4f\u5e55\u5e76\u590d\u5236\u5230\u526a\u8d34\u677f\u3002",
-  run: "\u5f00\u59cb",
-  server: "\u7ffb\u8bd1\u670d\u52a1",
-  online: "\u5728\u7ebf",
-  offline: "\u79bb\u7ebf",
-  checking: "\u68c0\u6d4b\u4e2d",
-  hotkey: "\u622a\u56fe\u5feb\u6377\u952e",
-  ocrMode: "OCR \u6a21\u5f0f",
-  localOnly: "\u672c\u5730\u5f3a\u5236",
-  targetLang: "\u76ee\u6807\u8bed\u8a00",
-  startScreenshot: "\u5f00\u59cb\u622a\u56fe",
-  startTranslateFailed: "\u542f\u52a8\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a",
-  delayedInfo: "3 \u79d2\u540e\u5f00\u59cb\u622a\u56fe\uff0c\u8bf7\u51c6\u5907\u597d\u8981\u622a\u53d6\u7684\u5185\u5bb9\u3002",
-  fullscreenCopied: "\u5168\u5c4f\u622a\u56fe\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f\u3002",
-  fullscreenFailed: "\u5168\u5c4f\u622a\u56fe\u5931\u8d25\uff1a",
+  title: "控制面板",
+  desc: "管理截图、本地 OCR 和翻译流程。当前 OCR 强制在客户端本地执行，不再上传图片到 N100 做云端 OCR。",
+  screenshot: "截图",
+  screenshotDesc: "点击或通过快捷键开始框选截图。",
+  translate: "截图翻译",
+  translateDesc: "框选后先在本机 OCR，再只把文本发给 N100 翻译。",
+  delayed: "延时截图",
+  delayedDesc: "3 秒后开始截图，适合捕获菜单、下拉框或悬停状态。",
+  ocr: "本地识字 OCR",
+  ocrDesc: "框选后在客户端本地识别文字，结果自动复制到剪贴板。",
+  fullscreen: "全屏复制",
+  fullscreenDesc: "快速截取当前屏幕并复制到剪贴板。",
+  run: "开始",
+  server: "翻译服务",
+  online: "在线",
+  offline: "离线",
+  checking: "检测中",
+  hotkey: "截图快捷键",
+  ocrMode: "OCR 模式",
+  localOnly: "本地强制",
+  targetLang: "目标语言",
+  startScreenshot: "开始截图",
+  startTranslateFailed: "启动截图翻译失败：",
+  delayedInfo: "3 秒后开始截图，请准备好要截取的内容。",
+  delayedCancel: "取消倒计时",
+  delayedStarting: "即将开始截图",
+  fullscreenCopied: "全屏截图已复制到剪贴板。",
+  fullscreenFailed: "全屏截图失败：",
 };
 
 interface Config {
@@ -83,7 +74,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
     if (delayedCountdown <= 0) {
       setDelayedCountdown(null);
       setDelayedActive(false);
-      onStartScreenshot();
+      window.setTimeout(onStartScreenshot, 150);
       return;
     }
     const timer = window.setTimeout(() => setDelayedCountdown((prev) => (prev !== null ? prev - 1 : null)), 1000);
@@ -108,6 +99,11 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
   };
 
   const handleDelayedScreenshot = () => {
+    if (delayedActive) {
+      setDelayedCountdown(null);
+      setDelayedActive(false);
+      return;
+    }
     setDelayedCountdown(3);
     setDelayedActive(true);
     message.info(T.delayedInfo);
@@ -125,7 +121,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
   const statusText = serverStatus === "online" ? T.online : serverStatus === "offline" ? T.offline : T.checking;
   const statusColor = serverStatus === "online" ? "green" : serverStatus === "offline" ? "red" : "orange";
 
-  const functionList = [
+  const functionList: DashboardActionItem[] = [
     {
       title: T.screenshot,
       description: T.screenshotDesc,
@@ -155,7 +151,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       title: T.ocr,
       description: T.ocrDesc,
       icon: <ScanOutlined style={{ fontSize: 18, color: "#722ed1" }} />,
-      hotkey: "\u5de5\u5177\u680f",
+      hotkey: "工具栏",
       buttonText: T.screenshot,
       onClick: onStartScreenshot,
     },
@@ -171,45 +167,28 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card bordered={false} style={{ borderRadius: 16 }}>
-        <Flex justify="space-between" align="center" wrap="wrap" gap={16}>
-          <div>
-            <Title level={4} style={{ margin: 0 }}>{T.title}</Title>
-            <Paragraph type="secondary" style={{ margin: "6px 0 0", maxWidth: 720 }}>{T.desc}</Paragraph>
-          </div>
-          <Button type="primary" icon={<CameraOutlined />} onClick={onStartScreenshot}>{T.startScreenshot}</Button>
-        </Flex>
-      </Card>
-
-      <Row gutter={[16, 16]}>
-        <Col span={6}><Card bordered={false}><Statistic title={T.hotkey} value={config.hotkey || "Alt+A"} /></Card></Col>
-        <Col span={6}><Card bordered={false}><Statistic title={T.ocrMode} value={T.localOnly} /></Card></Col>
-        <Col span={6}><Card bordered={false}><Statistic title={T.targetLang} value={(config.targetLang || "zh").toUpperCase()} /></Card></Col>
-        <Col span={6}><Card bordered={false}><Statistic title={T.server} value={responseTime ? `${responseTime}ms` : statusText} suffix={<Tag color={statusColor}>{statusText}</Tag>} /></Card></Col>
-      </Row>
-
-      <Card title={T.title} bordered={false} style={{ borderRadius: 16 }}>
-        <List
-          itemLayout="horizontal"
-          dataSource={functionList}
-          renderItem={(item) => (
-            <List.Item
-              actions={[
-                <Space key="actions">
-                  <Tag color={item.danger ? "error" : "blue"}>{item.hotkey}</Tag>
-                  <Button type="primary" onClick={item.onClick}>{item.buttonText || T.run}</Button>
-                </Space>,
-              ]}
-            >
-              <List.Item.Meta
-                avatar={item.icon}
-                title={<Text strong>{item.title}</Text>}
-                description={<Text type="secondary">{item.description}</Text>}
-              />
-            </List.Item>
-          )}
-        />
-      </Card>
+      {delayedActive && delayedCountdown !== null && (
+        <DelayedCountdownOverlay countdown={delayedCountdown} title={T.delayedStarting} onCancel={handleDelayedScreenshot} />
+      )}
+      <DashboardHero title={T.title} description={T.desc} buttonText={T.startScreenshot} onStartScreenshot={onStartScreenshot} />
+      <DashboardStats
+        hotkey={config.hotkey || "Alt+A"}
+        ocrModeLabel={T.localOnly}
+        targetLang={(config.targetLang || "zh").toUpperCase()}
+        serverTitle={T.server}
+        serverValue={responseTime ? `${responseTime}ms` : statusText}
+        serverStatusText={statusText}
+        serverStatusColor={statusColor}
+        labels={{ hotkey: T.hotkey, ocrMode: T.ocrMode, targetLang: T.targetLang }}
+      />
+      <DashboardActionList
+        title={T.title}
+        delayedTitle={T.delayed}
+        delayedActive={delayedActive}
+        delayedCancelText={T.delayedCancel}
+        defaultButtonText={T.run}
+        items={functionList}
+      />
     </Space>
   );
 }

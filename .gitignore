@@ -48,5 +48,6 @@ server/*.png
 /tauri-client/src-tauri/target/
 
 # Local OCR Client Binaries & DLLs & Models (Windows client bundle)
+/ocr/
 /tauri-client/src-tauri/resources/ocr/*
 !/tauri-client/src-tauri/resources/ocr/.gitkeep

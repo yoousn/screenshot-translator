@@ -7,12 +7,15 @@ import { CloseOutlined, CopyOutlined, PushpinOutlined } from "@ant-design/icons"
 interface OcrWindowPayload {
   text: string;
   previewBase64: string;
+  title?: string;
 }
 
 export default function OcrPage() {
   const winRef = useRef(getCurrentWindow());
   const [text, setText] = useState("");
+  const textRef = useRef("");
   const [previewBase64, setPreviewBase64] = useState("");
+  const [title, setTitle] = useState("OCR 识字结果");
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -24,8 +27,11 @@ export default function OcrPage() {
     listen<string>(`ocr-result-${label}`, (event) => {
       try {
         const payload = JSON.parse(event.payload) as OcrWindowPayload;
-        setText(payload.text || "");
+        const nextText = payload.text || "";
+        textRef.current = nextText;
+        setText(nextText);
         setPreviewBase64(payload.previewBase64 || "");
+        setTitle(payload.title || "OCR 识字结果");
       } catch (error) {
         console.error("Failed to parse OCR payload", error);
       }
@@ -40,6 +46,16 @@ export default function OcrPage() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         win.close().catch(() => {});
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+        const target = event.target as HTMLElement | null;
+        const hasSelectedText = window.getSelection()?.toString();
+        const currentText = textRef.current;
+        if (!hasSelectedText && target?.tagName !== "TEXTAREA" && currentText) {
+          event.preventDefault();
+          navigator.clipboard.writeText(currentText).catch(() => {});
+        }
       }
     };
 
@@ -89,7 +105,7 @@ export default function OcrPage() {
 
   const copyText = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(textRef.current);
       message.success("OCR 文本已复制");
       setContextMenu(null);
     } catch (error) {
@@ -144,8 +160,8 @@ export default function OcrPage() {
 
       {contextMenu && (
         <div data-no-drag="true" style={{ position: "absolute", left: contextMenu.x, top: contextMenu.y, zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(event) => event.stopPropagation()}>
-          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>??</button>
-          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>??</button>
+          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>复制</button>
+          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>关闭</button>
         </div>
       )}
 
@@ -153,7 +169,7 @@ export default function OcrPage() {
         <div data-no-drag="true" style={{ minHeight: 0, flex: 1, cursor: "auto" }}>
           <Input.TextArea
             value={text}
-            onChange={(event) => setText(event.target.value)}
+            onChange={(event) => { textRef.current = event.target.value; setText(event.target.value); }}
             placeholder="未识别到文字"
             style={{ height: "100%", resize: "none", fontSize: 13, lineHeight: 1.55 }}
           />
