@@ -18,7 +18,6 @@ import {
   SaveOutlined,
   SlidersOutlined,
   GlobalOutlined,
-  FileTextOutlined,
   AppstoreOutlined,
   SyncOutlined,
   KeyOutlined
@@ -231,7 +230,12 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
   const onFinish = async (values: any) => {
     setIsSaving(true);
     try {
-      const { autostart: autostartVal, ...configValues } = values;
+      const { autostart: autostartVal, ...rawConfigValues } = values;
+      const configValues = {
+        ...rawConfigValues,
+        useLocalOcr: true,
+        fallbackToRemoteOcr: false,
+      };
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
       try {
@@ -278,6 +282,15 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     <Form
       form={form}
       layout="vertical"
+      initialValues={{
+        enableUiControlDetection: false,
+        enableVisualDetection: false,
+        detectionBorderWidth: 2,
+        visualDetectionSensitivity: 3,
+        useLocalOcr: true,
+        fallbackToRemoteOcr: false,
+        localOcrTimeoutMs: 5000,
+      }}
       onFinish={onFinish}
       onValuesChange={handleFormChange}
       requiredMark={false}
@@ -289,7 +302,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
             系统设置
           </Title>
           <Paragraph type="secondary" style={{ fontSize: 12, margin: "4px 0 0 0" }}>
-            定制屏幕翻译系统的云端服务、翻译信道、本地 OCR 以及热键环境。
+            定制屏幕翻译系统的后端服务、翻译信道以及热键环境。
           </Paragraph>
         </div>
         <Button
@@ -304,7 +317,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       </div>
 
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <Card title={<span><SlidersOutlined style={{ marginRight: 8 }} />1. 后端服务配置 (N100 Core)</span>} bordered={false}>
+        <Card title={<span><SlidersOutlined style={{ marginRight: 8 }} />1. 后端翻译服务配置 (N100 Core)</span>} bordered={false}>
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item
@@ -315,7 +328,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
                 <Input placeholder="https://ocr.yousn.me" style={{ height: 32 }} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -10 }}>
-                部署在家庭私有云 (如 N100) 上的主服务接入端口。
+                部署在家庭私有云 (如 N100) 上的文本翻译服务接入端口。
               </Text>
             </Col>
             <Col span={12}>
@@ -424,35 +437,41 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           )}
         </Card>
 
-        <Card title={<span><FileTextOutlined style={{ marginRight: 8 }} />3. 本地 OCR (PaddleOCR-json)</span>} bordered={false}>
+        <Card title="截图识别" bordered={false}>
           <Row gutter={24} style={{ marginBottom: 16 }}>
             <Col span={12}>
-              <Form.Item label="启用本地 OCR" name="useLocalOcr" valuePropName="checked">
+              <Form.Item label="启用 UI 控件识别" name="enableUiControlDetection" valuePropName="checked">
                 <Switch />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
-                优先在客户端运行 PaddleOCR 可执行程序，避免图像上传云端识别的延迟。
+                加入轻量 Win32 子控件候选；关闭后只识别窗口，速度最快。
               </Text>
             </Col>
             <Col span={12}>
-              <Form.Item label="自动回退到云端 OCR" name="fallbackToRemoteOcr" valuePropName="checked">
+              <Form.Item label="启用视觉区域识别" name="enableVisualDetection" valuePropName="checked">
                 <Switch />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
-                当本地 OCR 出错或遇到超时响应时，自动交由 N100 云端 PaddleOCR 渲染。
+                通过图像边界补充识别不暴露窗口/控件的应用；如果误选明显，建议关闭。
               </Text>
             </Col>
           </Row>
-          <Row gutter={16}>
-            <Col span={18}>
-              <Form.Item label="PaddleOCR-json.exe 物理路径" name="localOcrExecutablePath">
-                <Input placeholder="C:/Users/.../PaddleOCR-json.exe" style={{ height: 32 }} />
+          <Row gutter={24}>
+            <Col span={12}>
+              <Form.Item label="识别边框粗细 (px)" name="detectionBorderWidth">
+                <InputNumber min={1} max={6} placeholder="2" style={{ width: "100%", height: 32 }} />
               </Form.Item>
+              <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
+                控制悬停和选区的蓝色边框，推荐 1-2px。
+              </Text>
             </Col>
-            <Col span={6}>
-              <Form.Item label="超时限制 (ms)" name="localOcrTimeoutMs">
-                <InputNumber min={500} max={30000} style={{ width: "100%", height: 32 }} />
+            <Col span={12}>
+              <Form.Item label="视觉识别灵敏度" name="visualDetectionSensitivity">
+                <InputNumber min={1} max={5} placeholder="3" style={{ width: "100%", height: 32 }} />
               </Form.Item>
+              <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
+                数值越高识别越积极，但可能更容易误选；推荐 2-3。
+              </Text>
             </Col>
           </Row>
         </Card>

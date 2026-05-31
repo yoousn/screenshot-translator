@@ -3,20 +3,14 @@ import os
 # Ensure server directory is in sys.path so imports work regardless of CWD
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import requests
-import cv2
-import numpy as np
 import time
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
-from image_processor import ImageProcessor
 from security import normalize_public_base_url, request_public_url
 import logging
-import secrets
-import threading
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +28,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
-
-# 默认不加载 heavy OCR 模型以加速服务启动，首个翻译请求来时会触发懒加载
-processor = ImageProcessor(load_ocr=False)
-
-# 🌟 后台异步加载并预热 OCR 模型以消除首次请求的冷启动卡顿
-def warm_up_ocr_async():
-    try:
-        time.sleep(1.5)
-        logger.info("[OCR Warmup] Loading PaddleOCR models...")
-        processor._ensure_ocr()
-        logger.info("[OCR Warmup] PaddleOCR models warmed up and ready.")
-    except Exception as e:
-        logger.error("[OCR Warmup] Background warmup failed: %s", e, exc_info=True)
-
-threading.Thread(target=warm_up_ocr_async, daemon=True).start()
 
 # 🔑 启动时打印当前 client_token，供运维人员在客户端配置
 _startup_cfg = load_server_config()
@@ -77,10 +56,6 @@ def verify_token(x_api_key: str):
 
 # Translator instance cache to avoid re-creating per request (fix 4.3)
 _translator_cache = {"key": None, "instance": None}
-_translate_meta_cache = {}
-_translate_meta_lock = threading.Lock()
-_TRANSLATE_META_TTL = 600.0
-
 def _translator_cache_key(cfg: dict) -> str:
     channel = cfg.get("active_channel", "google")
     if channel == "new-api":
@@ -122,23 +97,6 @@ def invalidate_config_cache():
     _translator_cache["instance"] = None
 
 
-def _store_translate_meta(stats: dict) -> str | None:
-    texts_json = stats.get("texts_json")
-    if not texts_json:
-        return None
-    meta_id = secrets.token_urlsafe(16)
-    with _translate_meta_lock:
-        now = time.time()
-        expired = [key for key, item in _translate_meta_cache.items() if item["expires_at"] <= now]
-        for key in expired:
-            _translate_meta_cache.pop(key, None)
-        _translate_meta_cache[meta_id] = {
-            "texts": texts_json,
-            "expires_at": now + _TRANSLATE_META_TTL,
-        }
-    return meta_id
-
-
 def _server_config_payload(payload: dict) -> tuple[str, dict]:
     channel = payload.get("channel")
     c = payload.get("config", {}) or {}
@@ -162,7 +120,7 @@ def _save_channel_config(channel: str, channel_config: dict):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "ocr_ready": processor.ocr_ready}
+    return {"status": "ok", "ocr": "client-local-only"}
 
 @app.get("/c_hello")
 async def c_hello(asker: str = ""):
@@ -174,106 +132,6 @@ async def c_hello(asker: str = ""):
     }
 
 import asyncio
-
-@app.post("/api/translate")
-async def translate_image(
-    image: UploadFile = File(...),
-    target_lang: str = Form("zh"),
-    x_api_key: str = Header(None)
-):
-    verify_token(x_api_key)
-    img_bytes = await image.read()
-    
-    # 动态获取当前激活的翻译引擎
-    translator = get_active_translator()
-    def translator_batch_fn(texts, stats_ref):
-        return translator.translate_batch(texts, "auto", target_lang or "zh", stats_ref)
-        
-    try:
-        out_bytes, stats = await asyncio.to_thread(
-            processor.process_and_draw, img_bytes, translator_batch_fn, config=get_config(), target_lang=(target_lang or "zh")
-        )
-        
-        # 终端漂亮的可视化耗时报告
-        if get_config().get("debug_trace", False):
-            total = max(stats["total_ms"], 0.001)
-            report_lines = [
-                "+--------------------------------------------------------+",
-                "|               [TIMER] TRANSLATION REPORT               |",
-                "+--------------------------------------------------------+",
-                f"|  Total Duration:     {stats['total_ms']:8.2f} ms                     |",
-                f"|  +- Init Step:       {stats.get('init_ms', 0.0):8.2f} ms  ({stats.get('init_ms', 0.0)/total*100:5.1f}%)        |",
-                f"|  +- OCR Step:        {stats['ocr_ms']:8.2f} ms  ({stats['ocr_ms']/total*100:5.1f}%)        |",
-                f"|  +- Translate Step:  {stats['translate_ms']:8.2f} ms  ({stats['translate_ms']/total*100:5.1f}%)        |",
-                f"|  +- Render Step:     {stats['render_ms']:8.2f} ms  ({stats['render_ms']/total*100:5.1f}%)        |",
-                f"|  +- Encode Step:     {stats.get('encode_ms', 0.0):8.2f} ms  ({stats.get('encode_ms', 0.0)/total*100:5.1f}%)        |",
-                f"|  +- Other Step:      {stats.get('other_ms', 0.0):8.2f} ms  ({stats.get('other_ms', 0.0)/total*100:5.1f}%)        |",
-                "+--------------------------------------------------------+",
-                f"|  OCR Blocks:         {stats['ocr_blocks']:8d}                          |",
-                f"|  Translate Units:    {stats['translate_units']:8d}                          |",
-                f"|  Cache Hits:         {stats['cache_hits']:8d}                          |",
-                "+--------------------------------------------------------+"
-            ]
-            for line in report_lines:
-                logger.info(line)
-
-        headers = {
-            "X-Trace-Total-Ms": f"{stats['total_ms']:.2f}",
-            "X-Trace-Init-Ms": f"{stats.get('init_ms', 0.0):.2f}",
-            "X-Trace-Ocr-Ms": f"{stats['ocr_ms']:.2f}",
-            "X-Trace-Translate-Ms": f"{stats['translate_ms']:.2f}",
-            "X-Trace-Render-Ms": f"{stats['render_ms']:.2f}",
-            "X-Trace-Encode-Ms": f"{stats.get('encode_ms', 0.0):.2f}",
-            "X-Trace-Other-Ms": f"{stats.get('other_ms', 0.0):.2f}",
-            "X-Trace-Ocr-Blocks": str(stats["ocr_blocks"]),
-            "X-Trace-Translate-Units": str(stats["translate_units"]),
-            "X-Trace-Cache-Hits": str(stats["cache_hits"]),
-            "X-Trace-Channel": str(get_config().get("active_channel", "google")),
-            "X-Ocr-Ready": "true" if stats.get("ocr_ready", False) else "false",
-            "X-Ocr-Cache-Hit": "true" if stats.get("ocr_cache_hit", False) else "false"
-        }
-        meta_id = _store_translate_meta(stats)
-        if meta_id:
-            headers["X-Translate-Meta-Id"] = meta_id
-            if len(stats.get("texts_json", "")) <= 6000:
-                headers["X-Translate-Texts"] = stats["texts_json"]
-            
-        return Response(content=out_bytes, media_type="image/png", headers=headers)
-    except Exception as e:
-        logger.exception("translate_image failed")
-        raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
-
-
-@app.post("/api/ocr")
-async def ocr_image(image: UploadFile = File(...), x_api_key: str = Header(None)):
-    try:
-        verify_token(x_api_key)
-        img_bytes = await image.read()
-
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img_cv is None:
-            return JSONResponse(status_code=400, content={"status": "failed", "error": "图片解码失败"})
-
-        ocr_result = processor.run_ocr(img_cv, cls=True)
-
-        results = []
-        if ocr_result and ocr_result[0]:
-            for line in ocr_result[0]:
-                box = line[0]
-                text = line[1][0]
-                confidence = float(line[1][1])
-                results.append({
-                    "box": box,
-                    "text": text,
-                    "confidence": confidence
-                })
-
-        return {"status": "success", "ocr": results}
-    except HTTPException:
-        raise
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "failed", "error": f"OCR 处理失败: {str(e)}"})
 
 from pydantic import BaseModel
 from typing import List, Optional
@@ -330,16 +188,6 @@ async def translate_text_endpoint(
         "channel": get_config().get("active_channel", "google")
     }
 
-
-@app.get("/api/translate/meta/{meta_id}")
-def translate_meta(meta_id: str, x_api_key: str = Header(None)):
-    verify_token(x_api_key)
-    with _translate_meta_lock:
-        item = _translate_meta_cache.get(meta_id)
-        if not item or item["expires_at"] <= time.time():
-            _translate_meta_cache.pop(meta_id, None)
-            raise HTTPException(status_code=404, detail="Translate metadata expired or not found.")
-        return {"status": "success", "texts": item["texts"]}
 
 @app.post("/api/config/test")
 def test_and_save_config(payload: dict, x_api_key: str = Header(None)):

@@ -16,6 +16,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::time::Duration;
 
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
+const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 
 static SCREENSHOT_JPEG: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
@@ -220,6 +221,136 @@ fn save_config(config_str: String) -> Result<(), String> {
     fs::write(path, config_str).map_err(|e| e.to_string())
 }
 
+fn sanitize_tag(tag: &str) -> String {
+    let safe: String = tag
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') { ch } else { '_' })
+        .collect();
+    if safe.is_empty() { "latest".to_string() } else { safe }
+}
+
+fn find_paddleocr_json_exe(dir: &std::path::Path) -> Option<PathBuf> {
+    if !dir.exists() {
+        return None;
+    }
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe"))
+                .unwrap_or(false)
+        {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_paddleocr_json_exe(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn default_ocr_install_dir() -> PathBuf {
+    let mut dir = app_data_dir();
+    dir.push("ocr");
+    dir.push("runtime");
+    dir
+}
+
+fn resolve_local_ocr_executable(app: &tauri::AppHandle, executable_path: Option<String>) -> Result<PathBuf, String> {
+    use tauri::path::BaseDirectory;
+
+    if let Some(path) = executable_path.filter(|path| !path.trim().is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+
+    let install_dir = default_ocr_install_dir();
+    if let Some(path) = find_paddleocr_json_exe(&install_dir) {
+        return Ok(path);
+    }
+
+    app.path()
+        .resolve("resources/ocr/PaddleOCR-json.exe", BaseDirectory::Resource)
+        .map_err(|e| format!("???? OCR ?????{}", e))
+}
+
+#[tauri::command]
+async fn download_paddleocr_release(url: String, tag: String) -> Result<serde_json::Value, String> {
+    let allowed = [
+        "https://github.com/hiroi-sora/PaddleOCR-json/releases/download/",
+        "https://objects.githubusercontent.com/github-production-release-asset-",
+    ];
+    if !allowed.iter().any(|prefix| url.starts_with(prefix)) || !url.to_ascii_lowercase().ends_with(".7z") {
+        return Err("????? PaddleOCR-json ?? GitHub Release ? Windows .7z ???".to_string());
+    }
+
+    let safe_tag = sanitize_tag(&tag);
+    let filename = format!("PaddleOCR-json-{}.7z", safe_tag);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .user_agent("ScreenshotTranslator/1.0")
+        .build()
+        .map_err(|e| format!("??????????{}", e))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("?? PaddleOCR-json ???{}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("?? PaddleOCR-json ???HTTP {}", resp.status()));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("?? PaddleOCR-json ???????{}", e))?;
+
+    let mut download_dir = app_data_dir();
+    download_dir.push("ocr");
+    download_dir.push("downloads");
+    fs::create_dir_all(&download_dir).map_err(|e| format!("?????????{}", e))?;
+    let archive_path = download_dir.join(filename);
+    fs::write(&archive_path, &bytes).map_err(|e| format!("?? PaddleOCR-json ??????{}", e))?;
+
+    let install_dir = default_ocr_install_dir();
+    if install_dir.exists() {
+        fs::remove_dir_all(&install_dir).map_err(|e| format!("??? OCR ?????{}", e))?;
+    }
+    fs::create_dir_all(&install_dir).map_err(|e| format!("?? OCR ???????{}", e))?;
+
+    sevenz_rust::decompress_file(&archive_path, &install_dir)
+        .map_err(|e| format!("?? PaddleOCR-json ???{}", e))?;
+    let _ = fs::remove_file(&archive_path);
+
+    let exe_path = find_paddleocr_json_exe(&install_dir)
+        .ok_or_else(|| "????????? PaddleOCR-json.exe".to_string())?;
+
+    Ok(serde_json::json!({
+        "path": exe_path.to_string_lossy().to_string(),
+        "installDir": install_dir.to_string_lossy().to_string(),
+        "bytes": bytes.len(),
+    }))
+}
+
+#[tauri::command]
+fn check_local_ocr_status(app: tauri::AppHandle, executable_path: Option<String>) -> Result<serde_json::Value, String> {
+    let exe_path = resolve_local_ocr_executable(&app, executable_path)?;
+    let exists = exe_path.exists();
+    let is_file = exe_path.is_file();
+    let parent_exists = exe_path.parent().map(|path| path.exists()).unwrap_or(false);
+    Ok(serde_json::json!({
+        "ok": exists && is_file,
+        "path": exe_path.to_string_lossy().to_string(),
+        "exists": exists,
+        "isFile": is_file,
+        "parentExists": parent_exists,
+    }))
+}
+
 #[tauri::command]
 fn is_autostart_enabled() -> bool {
     let output = Command::new("reg")
@@ -273,20 +404,25 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 mod win32 {
     #[repr(C)]
+    #[derive(Clone, Copy)]
     #[allow(clippy::upper_case_acronyms)]
     pub struct POINT { pub x: i32, pub y: i32 }
     #[repr(C)]
+    #[derive(Clone, Copy)]
     #[allow(clippy::upper_case_acronyms)]
     pub struct RECT { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+    pub type EnumWindowsProc = Option<unsafe extern "system" fn(isize, isize) -> i32>;
     extern "system" {
         pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
-        pub fn WindowFromPoint(point: POINT) -> isize;
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
-        pub fn GetForegroundWindow() -> isize;
+        pub fn EnumWindows(lpEnumFunc: EnumWindowsProc, lParam: isize) -> i32;
+        pub fn EnumChildWindows(hWndParent: isize, lpEnumFunc: EnumWindowsProc, lParam: isize) -> i32;
+        pub fn IsWindowVisible(hWnd: isize) -> i32;
     }
     #[link(name = "dwmapi")]
     extern "system" {
         pub fn DwmSetWindowAttribute(hwnd: isize, dwAttribute: u32, pvAttribute: *const std::ffi::c_void, cbAttribute: u32) -> i32;
+        pub fn DwmGetWindowAttribute(hwnd: isize, dwAttribute: u32, pvAttribute: *mut std::ffi::c_void, cbAttribute: u32) -> i32;
     }
 }
 
@@ -446,41 +582,197 @@ fn quick_fullscreen_capture() -> Result<(), String> {
 }
 
 
+#[cfg(target_os = "windows")]
+fn current_screen_origin() -> (i32, i32, i32, i32) {
+    if let Some((cx, cy)) = get_cursor_position() {
+        if let Ok(screen) = Screen::from_point(cx, cy) {
+            let info = screen.display_info;
+            return (info.x, info.y, info.width as i32, info.height as i32);
+        }
+    }
+    if let Ok(screens) = Screen::all() {
+        if let Some(screen) = screens.first() {
+            let info = screen.display_info;
+            return (info.x, info.y, info.width as i32, info.height as i32);
+        }
+    }
+    (0, 0, i32::MAX, i32::MAX)
+}
+
+#[cfg(target_os = "windows")]
+fn hwnd_rect(hwnd: isize, prefer_dwm_bounds: bool) -> Option<win32::RECT> {
+    if hwnd == 0 {
+        return None;
+    }
+    if prefer_dwm_bounds {
+        let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        // SAFETY: DwmGetWindowAttribute is called with a valid HWND and RECT buffer.
+        let hr = unsafe {
+            win32::DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut rect as *mut win32::RECT as *mut std::ffi::c_void,
+                std::mem::size_of::<win32::RECT>() as u32,
+            )
+        };
+        if hr == 0 && rect.right > rect.left && rect.bottom > rect.top {
+            return Some(rect);
+        }
+    }
+    let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    // SAFETY: GetWindowRect is called with a valid HWND and RECT buffer.
+    let ok = unsafe { win32::GetWindowRect(hwnd, &mut rect) };
+    if ok != 0 && rect.right > rect.left && rect.bottom > rect.top {
+        Some(rect)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn push_rect_candidate(
+    rects: &mut Vec<serde_json::Value>,
+    rect: win32::RECT,
+    kind: &str,
+    screen: (i32, i32, i32, i32),
+    min_size: i32,
+) {
+    let (screen_x, screen_y, screen_w, screen_h) = screen;
+    let left = rect.left.max(screen_x);
+    let top = rect.top.max(screen_y);
+    let right = rect.right.min(screen_x + screen_w);
+    let bottom = rect.bottom.min(screen_y + screen_h);
+    let w = right - left;
+    let h = bottom - top;
+    if w < min_size || h < min_size {
+        return;
+    }
+    let json_rect = serde_json::json!({
+        "x": left - screen_x,
+        "y": top - screen_y,
+        "w": w,
+        "h": h,
+        "kind": kind,
+    });
+    let duplicate = rects.iter().any(|item| {
+        item.get("x") == json_rect.get("x")
+            && item.get("y") == json_rect.get("y")
+            && item.get("w") == json_rect.get("w")
+            && item.get("h") == json_rect.get("h")
+    });
+    if !duplicate {
+        rects.push(json_rect);
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WindowSearchContext {
+    cursor_x: i32,
+    cursor_y: i32,
+    excluded_hwnds: Vec<isize>,
+    matches: Vec<isize>,
+    min_size: i32,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_windows_for_cursor(hwnd: isize, lparam: isize) -> i32 {
+    let ctx = &mut *(lparam as *mut WindowSearchContext);
+    if hwnd == 0 || ctx.excluded_hwnds.contains(&hwnd) || win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    if let Some(rect) = hwnd_rect(hwnd, true) {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        let contains_cursor = ctx.cursor_x >= rect.left
+            && ctx.cursor_x <= rect.right
+            && ctx.cursor_y >= rect.top
+            && ctx.cursor_y <= rect.bottom;
+        if contains_cursor && w >= ctx.min_size && h >= ctx.min_size {
+            ctx.matches.push(hwnd);
+        }
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_child_windows_for_cursor(hwnd: isize, lparam: isize) -> i32 {
+    let ctx = &mut *(lparam as *mut WindowSearchContext);
+    if hwnd == 0 || win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    if let Some(rect) = hwnd_rect(hwnd, false) {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        let contains_cursor = ctx.cursor_x >= rect.left
+            && ctx.cursor_x <= rect.right
+            && ctx.cursor_y >= rect.top
+            && ctx.cursor_y <= rect.bottom;
+        if contains_cursor && w >= ctx.min_size && h >= ctx.min_size {
+            ctx.matches.push(hwnd);
+        }
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+fn excluded_app_hwnds(app: &tauri::AppHandle) -> Vec<isize> {
+    let mut excluded = Vec::new();
+    for label in ["screenshot", "main"] {
+        if let Some(window) = app.get_webview_window(label) {
+            if let Ok(hwnd) = window.hwnd() {
+                excluded.push(hwnd.0 as isize);
+            }
+        }
+    }
+    excluded
+}
+
+#[cfg(target_os = "windows")]
+fn top_level_windows_at_cursor(cursor_x: i32, cursor_y: i32, excluded_hwnds: Vec<isize>) -> Vec<isize> {
+    let mut ctx = WindowSearchContext { cursor_x, cursor_y, excluded_hwnds, matches: Vec::new(), min_size: 50 };
+    // SAFETY: EnumWindows calls the callback synchronously while ctx remains valid.
+    unsafe {
+        win32::EnumWindows(Some(enum_windows_for_cursor), &mut ctx as *mut WindowSearchContext as isize);
+    }
+    ctx.matches
+}
+
+#[cfg(target_os = "windows")]
+fn child_windows_at_cursor(root: isize, cursor_x: i32, cursor_y: i32) -> Vec<isize> {
+    let mut ctx = WindowSearchContext {
+        cursor_x,
+        cursor_y,
+        excluded_hwnds: Vec::new(),
+        matches: Vec::new(),
+        min_size: 12,
+    };
+    // SAFETY: EnumChildWindows calls the callback synchronously while ctx remains valid.
+    unsafe {
+        win32::EnumChildWindows(root, Some(enum_child_windows_for_cursor), &mut ctx as *mut WindowSearchContext as isize);
+    }
+    ctx.matches
+}
+
 #[tauri::command]
-fn get_window_rects() -> Result<String, String> {
+fn get_window_rects(app: tauri::AppHandle, include_controls: Option<bool>) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let mut rects: Vec<serde_json::Value> = Vec::new();
+        let screen = current_screen_origin();
+        let include_controls = include_controls.unwrap_or(false);
         if let Some((cx, cy)) = get_cursor_position() {
-            // SAFETY: Calling Win32 WindowFromPoint and GetWindowRect with valid parameters.
-            unsafe {
-                let hwnd = win32::WindowFromPoint(win32::POINT { x: cx, y: cy });
-                if hwnd != 0 {
-                    let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                    if win32::GetWindowRect(hwnd, &mut rect) != 0 {
-                        let w = rect.right - rect.left;
-                        let h = rect.bottom - rect.top;
-                        if w > 50 && h > 50 {
-                            rects.push(serde_json::json!({ "x": rect.left, "y": rect.top, "w": w, "h": h }));
+            let excluded_hwnds = excluded_app_hwnds(&app);
+            let windows = top_level_windows_at_cursor(cx, cy, excluded_hwnds);
+            if let Some(hwnd) = windows.first().copied() {
+                if include_controls {
+                    for child in child_windows_at_cursor(hwnd, cx, cy).into_iter().rev().take(1) {
+                        if let Some(rect) = hwnd_rect(child, false) {
+                            push_rect_candidate(&mut rects, rect, "control", screen, 12);
                         }
                     }
                 }
-            }
-        }
-        // SAFETY: Calling Win32 GetForegroundWindow and GetWindowRect with valid parameters.
-        unsafe {
-            let fg = win32::GetForegroundWindow();
-            if fg != 0 {
-                let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                if win32::GetWindowRect(fg, &mut rect) != 0 {
-                    let w = rect.right - rect.left;
-                    let h = rect.bottom - rect.top;
-                    if w > 50 && h > 50 {
-                        let json_rect = serde_json::json!({ "x": rect.left, "y": rect.top, "w": w, "h": h });
-                        if !rects.contains(&json_rect) {
-                            rects.push(json_rect);
-                        }
-                    }
+                if let Some(rect) = hwnd_rect(hwnd, true) {
+                    push_rect_candidate(&mut rects, rect, "window", screen, 50);
                 }
             }
         }
@@ -582,108 +874,6 @@ async fn save_image_to_file(image_base64: String) -> Result<String, String> {
     }
 }
 
-
-#[tauri::command]
-async fn api_ocr(base64_image: String, server_url: String, client_token: String) -> Result<serde_json::Value, String> {
-    let bytes = BASE64_STANDARD.decode(&base64_image).map_err(|e| format!("Base64解码失败：{}", e))?;
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name("region.png")
-        .mime_str("image/png")
-        .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new().part("image", part);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("创建HTTP客户端失败：{}", e))?;
-    let resp = client
-        .post(format!("{}/api/ocr", server_url.trim_end_matches('/')))
-        .header("x-api-key", &client_token)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("网络请求失败：{} (请检查服务器地址是否正确、网络是否连通)", e))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("服务器返回错误 {}：{}", status, body));
-    }
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析OCR响应失败：{}", e))?;
-    Ok(data)
-}
-
-#[tauri::command]
-async fn api_translate(base64_image: String, server_url: String, client_token: String, target_lang: Option<String>) -> Result<serde_json::Value, String> {
-    let bytes = BASE64_STANDARD.decode(&base64_image).map_err(|e| format!("Base64解码失败：{}", e))?;
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name("region.png")
-        .mime_str("image/png")
-        .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new()
-        .part("image", part)
-        .text("target_lang", target_lang.unwrap_or_else(|| "zh".to_string()));
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("创建HTTP客户端失败：{}", e))?;
-    let resp = client
-        .post(format!("{}/api/translate", server_url.trim_end_matches('/')))
-        .header("x-api-key", &client_token)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("网络请求失败：{} (请检查服务器地址是否正确、网络是否连通)", e))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("服务器返回错误 {}：{}", status, body));
-    }
-    
-    let texts_json_header = resp.headers().get("X-Translate-Texts")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let meta_id = resp.headers().get("X-Translate-Meta-Id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-        
-    let blocks_count = resp.headers().get("X-Trace-Translate-Units")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-        
-    let channel = resp.headers().get("X-Trace-Channel")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-        
-    let result_bytes = resp.bytes().await.map_err(|e| format!("读取翻译结果失败：{}", e))?;
-    let image_base64 = BASE64_STANDARD.encode(&result_bytes);
-    let mut texts_json = texts_json_header;
-    if texts_json.is_empty() && !meta_id.is_empty() {
-        let meta_resp = client
-            .get(format!("{}/api/translate/meta/{}", server_url.trim_end_matches('/'), meta_id))
-            .header("x-api-key", &client_token)
-            .send()
-            .await
-            .map_err(|e| format!("读取翻译文本元数据失败：{}", e))?;
-        if meta_resp.status().is_success() {
-            let meta_json: serde_json::Value = meta_resp.json().await
-                .map_err(|e| format!("解析翻译文本元数据失败：{}", e))?;
-            texts_json = meta_json.get("texts").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        }
-    }
-    
-    let result = serde_json::json!({
-        "image": image_base64,
-        "texts": texts_json,
-        "blocks": blocks_count,
-        "channel": channel
-    });
-    Ok(result)
-}
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -816,17 +1006,7 @@ fn run_local_ocr_sync(
     image_base64: String,
     executable_path: Option<String>
 ) -> Result<Vec<OcrBlock>, String> {
-    use tauri::path::BaseDirectory;
-    use tauri::Manager;
-    
-    // 1. 解析可执行文件路径（支持自定义或内置资源包）
-    let resolved_exe = if let Some(path) = executable_path {
-        std::path::PathBuf::from(path)
-    } else {
-        app.path()
-            .resolve("resources/ocr/PaddleOCR-json.exe", BaseDirectory::Resource)
-            .map_err(|e| format!("解析内置资源路径失败: {}", e))?
-    };
+    let resolved_exe = resolve_local_ocr_executable(&app, executable_path)?;
     
     if !resolved_exe.exists() {
         return Err(format!("本地 OCR 执行文件不存在于 {:?}", resolved_exe));
@@ -990,6 +1170,8 @@ pub fn run() {
             get_shortcut_status,
             get_config, get_history, add_history, clear_history,
             save_config,
+            download_paddleocr_release,
+            check_local_ocr_status,
             is_autostart_enabled,
             set_autostart_enabled,
             start_screenshot,
@@ -1000,8 +1182,6 @@ pub fn run() {
             quick_fullscreen_capture,
             cancel_screenshot,
             get_window_rects,
-            api_ocr,
-            api_translate,
             overlay_ready_to_show,
             run_local_ocr,
             re_register_shortcut

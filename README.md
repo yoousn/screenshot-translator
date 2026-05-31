@@ -25,7 +25,8 @@ d:\Desktop\自制截图\
 ├── server/                   # N100 FastAPI 服务端
 │   ├── app.py                # 服务入口
 │   ├── translator.py         # 翻译引擎
-│   ├── image_processor.py    # OCR 与图像处理
+* N100 ??????????????????? PaddleOCR?
+* ????`fastapi`, `uvicorn`, `requests`, `pyyaml`
 │   └── tests/                # 单元测试
 └── docs/                     # 文档说明
 ```
@@ -39,8 +40,10 @@ d:\Desktop\自制截图\
 #### 环境
 
 * Python 3.10+
-* 依赖包：`fastapi`, `uvicorn`, `requests`, `pyyaml`, `numpy`, `pillow`, `paddleocr`, `opencv-contrib-python`
-> **⚠️ 依赖提醒：** `paddleocr` 请固定安装 2.x 版本系列，以防未来 3.x 版本升级带来的模型接口与结构变更导致无法加载默认的 PP-OCRv4。
+* N100 ??????????????????? PaddleOCR?
+* ????`fastapi`, `uvicorn`, `requests`, `pyyaml`
+* N100 ??????????????????? PaddleOCR?
+* ????`fastapi`, `uvicorn`, `requests`, `pyyaml`
 
 #### 启动
 

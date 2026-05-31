@@ -1,47 +1,63 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { 
-  Tabs, 
-  Card, 
-  Button, 
-  Tag, 
-  Space, 
-  Flex, 
-  Row, 
-  Col, 
-  List, 
-  Tooltip, 
-  Upload, 
-  message, 
+import {
+  Button,
+  Card,
+  Col,
+  Flex,
+  List,
+  message,
+  Row,
+  Space,
+  Statistic,
+  Tag,
   Typography,
-  Empty
 } from "antd";
 import {
   CameraOutlined,
   ClockCircleOutlined,
-  ScanOutlined,
-  TranslationOutlined,
   CopyOutlined,
   DesktopOutlined,
-  BorderInnerOutlined,
-  InboxOutlined,
-  SaveOutlined,
-  WifiOutlined,
-  GlobalOutlined,
-  DashboardOutlined,
-  RightOutlined,
-  SyncOutlined
+  ScanOutlined,
+  TranslationOutlined,
 } from "@ant-design/icons";
 
 const { Text, Title, Paragraph } = Typography;
+
+const T = {
+  title: "\u63a7\u5236\u9762\u677f",
+  desc: "\u7ba1\u7406\u622a\u56fe\u3001\u672c\u5730 OCR \u548c\u7ffb\u8bd1\u6d41\u7a0b\u3002\u5f53\u524d OCR \u5f3a\u5236\u5728\u5ba2\u6237\u7aef\u672c\u5730\u6267\u884c\uff0c\u4e0d\u518d\u4e0a\u4f20\u56fe\u7247\u5230 N100 \u505a\u4e91\u7aef OCR\u3002",
+  screenshot: "\u622a\u56fe",
+  screenshotDesc: "\u70b9\u51fb\u6216\u901a\u8fc7\u5feb\u6377\u952e\u5f00\u59cb\u6846\u9009\u622a\u56fe\u3002",
+  translate: "\u622a\u56fe\u7ffb\u8bd1",
+  translateDesc: "\u6846\u9009\u540e\u5148\u5728\u672c\u673a OCR\uff0c\u518d\u53ea\u628a\u6587\u672c\u53d1\u7ed9 N100 \u7ffb\u8bd1\u3002",
+  delayed: "\u5ef6\u65f6\u622a\u56fe",
+  delayedDesc: "3 \u79d2\u540e\u5f00\u59cb\u622a\u56fe\uff0c\u9002\u5408\u6355\u83b7\u83dc\u5355\u3001\u4e0b\u62c9\u6846\u6216\u60ac\u505c\u72b6\u6001\u3002",
+  ocr: "\u672c\u5730\u8bc6\u5b57 OCR",
+  ocrDesc: "\u6846\u9009\u540e\u5728\u5ba2\u6237\u7aef\u672c\u5730\u8bc6\u522b\u6587\u5b57\uff0c\u7ed3\u679c\u81ea\u52a8\u590d\u5236\u5230\u526a\u8d34\u677f\u3002",
+  fullscreen: "\u5168\u5c4f\u590d\u5236",
+  fullscreenDesc: "\u5feb\u901f\u622a\u53d6\u5f53\u524d\u5c4f\u5e55\u5e76\u590d\u5236\u5230\u526a\u8d34\u677f\u3002",
+  run: "\u5f00\u59cb",
+  server: "\u7ffb\u8bd1\u670d\u52a1",
+  online: "\u5728\u7ebf",
+  offline: "\u79bb\u7ebf",
+  checking: "\u68c0\u6d4b\u4e2d",
+  hotkey: "\u622a\u56fe\u5feb\u6377\u952e",
+  ocrMode: "OCR \u6a21\u5f0f",
+  localOnly: "\u672c\u5730\u5f3a\u5236",
+  targetLang: "\u76ee\u6807\u8bed\u8a00",
+  startScreenshot: "\u5f00\u59cb\u622a\u56fe",
+  startTranslateFailed: "\u542f\u52a8\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a",
+  delayedInfo: "3 \u79d2\u540e\u5f00\u59cb\u622a\u56fe\uff0c\u8bf7\u51c6\u5907\u597d\u8981\u622a\u53d6\u7684\u5185\u5bb9\u3002",
+  fullscreenCopied: "\u5168\u5c4f\u622a\u56fe\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f\u3002",
+  fullscreenFailed: "\u5168\u5c4f\u622a\u56fe\u5931\u8d25\uff1a",
+};
 
 interface Config {
   serverUrl?: string;
   clientToken?: string;
   channel?: string;
   targetLang?: string;
-  useLocalOcr?: boolean;
   hotkey?: string;
 }
 
@@ -53,50 +69,15 @@ interface DashboardProps {
   onRefreshStatus: () => void;
 }
 
-export default function Dashboard({ onStartScreenshot, shortcutError, serverStatus, responseTime, onRefreshStatus }: DashboardProps) {
+export default function Dashboard({ onStartScreenshot, shortcutError, serverStatus, responseTime }: DashboardProps) {
   const [config, setConfig] = useState<Config>({});
-  
-  // Translation tester states
-  const [isTranslating, setIsTranslating] = useState(false);
-  const [translatedImage, setTranslatedImage] = useState<string | null>(null);
-  const [dragActive, setDragActive] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-
-  // Delayed screenshot state
   const [delayedCountdown, setDelayedCountdown] = useState<number | null>(null);
   const [delayedActive, setDelayedActive] = useState(false);
 
   useEffect(() => {
     loadConfig();
-
-    const unlistenPromise = listen<string>("screenshot-captured", (event) => {
-      try {
-        const base64Data = event.payload;
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: "image/png" });
-        const file = new File([blob], "screenshot.png", { type: "image/png" });
-        
-        setSelectedFile(file);
-        setPreviewUrl(URL.createObjectURL(file));
-        setTranslatedImage(null);
-        message.success("获取原生选区截图成功！可在下方进行连通性测试。");
-      } catch (err) {
-        console.error("处理截图事件失败", err);
-      }
-    });
-
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
   }, []);
 
-  // Delayed screenshot countdown effect
   useEffect(() => {
     if (!delayedActive || delayedCountdown === null) return;
     if (delayedCountdown <= 0) {
@@ -105,481 +86,130 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       onStartScreenshot();
       return;
     }
-    const timer = setTimeout(() => {
-      setDelayedCountdown(prev => (prev !== null ? prev - 1 : null));
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [delayedCountdown, delayedActive]);
-
-  const handleDelayedScreenshot = () => {
-    setDelayedCountdown(3);
-    setDelayedActive(true);
-    message.info("3 秒倒计时开始，请准备好要截取的内容...");
-  };
-
-  const handleFullscreenCapture = async () => {
-    try {
-      await invoke("quick_fullscreen_capture");
-      message.success("全屏截图已复制到剪贴板");
-    } catch (e: any) {
-      message.error("全屏截图失败: " + e.toString());
-    }
-  };
+    const timer = window.setTimeout(() => setDelayedCountdown((prev) => (prev !== null ? prev - 1 : null)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [delayedActive, delayedCountdown, onStartScreenshot]);
 
   const loadConfig = async () => {
     try {
       const configStr = await invoke<string>("get_config");
-      const parsedConfig = JSON.parse(configStr);
-      setConfig(parsedConfig);
+      setConfig(JSON.parse(configStr || "{}"));
     } catch (error) {
       console.error("Failed to load config:", error);
     }
   };
 
-  const handleCustomUpload = (options: any) => {
-    const file = options.file as File;
-    if (file.type.startsWith("image/")) {
-      setSelectedFile(file);
-      setPreviewUrl(URL.createObjectURL(file));
-      setTranslatedImage(null);
-      options.onSuccess();
-    } else {
-      message.error("只能上传图片文件");
-      options.onError();
+  const startTranslateScreenshot = async () => {
+    try {
+      await invoke("start_screenshot", { mode: "translate" });
+    } catch (error: any) {
+      message.error(`${T.startTranslateFailed}${error?.message || error}`);
     }
   };
 
-  const startTranslation = async () => {
-    if (!selectedFile) return;
-    setIsTranslating(true);
-    
-    const targetUrl = config.serverUrl || "https://ocr.yousn.me";
-    const token = config.clientToken || "";
-    const targetLang = config.targetLang || "zh";
-    const startTime = performance.now();
-    
-    const formData = new FormData();
-    formData.append("image", selectedFile);
-    formData.append("target_lang", targetLang);
-    
+  const handleDelayedScreenshot = () => {
+    setDelayedCountdown(3);
+    setDelayedActive(true);
+    message.info(T.delayedInfo);
+  };
+
+  const handleFullscreenCapture = async () => {
     try {
-      const response = await fetch(`${targetUrl.replace(/\/$/, "")}/api/translate`, {
-        method: "POST",
-        headers: {
-          "x-api-key": token
-        },
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || `HTTP 错误 ${response.status}`);
-      }
-      
-      const blob = await response.blob();
-      const imageUrl = URL.createObjectURL(blob);
-      setTranslatedImage(imageUrl);
-      const blocks = Number(response.headers.get("X-Trace-Translate-Units") || "0");
-      const channel = response.headers.get("X-Trace-Channel") || config.channel || "auto";
-      const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
-      await invoke("add_history", {
-        record: JSON.stringify({
-          id: "rec-" + Date.now(),
-          time: new Date().toLocaleString(),
-          filename: selectedFile.name || "Dashboard_Test_" + Date.now() + ".png",
-          blocks,
-          channel,
-          duration: durationSec + "s",
-          status: "success"
-        })
-      }).catch((err) => console.error("Failed to save dashboard history:", err));
-      message.success("翻译重绘成功！");
-    } catch (e: any) {
-      console.error(e);
-      message.error(`翻译失败: ${e.message || "无法连接到服务器或认证令牌无效"}`);
-    } finally {
-      setIsTranslating(false);
+      await invoke("quick_fullscreen_capture");
+      message.success(T.fullscreenCopied);
+    } catch (error: any) {
+      message.error(`${T.fullscreenFailed}${error?.message || error}`);
     }
   };
+
+  const statusText = serverStatus === "online" ? T.online : serverStatus === "offline" ? T.offline : T.checking;
+  const statusColor = serverStatus === "online" ? "green" : serverStatus === "offline" ? "red" : "orange";
 
   const functionList = [
     {
-      title: "截图",
-      description: "双击系统托盘图标，或通过快捷键开始划定截图框选区域。",
+      title: T.screenshot,
+      description: T.screenshotDesc,
       icon: <CameraOutlined style={{ fontSize: 18, color: "#1677ff" }} />,
       hotkey: config.hotkey || "Alt+A",
-      disabled: false,
-      buttonText: "立即截图",
+      buttonText: T.startScreenshot,
+      danger: Boolean(shortcutError),
       onClick: onStartScreenshot,
     },
     {
-      title: "截图翻译",
-      description: "按 Alt+T 直接进入翻译模式，框选后自动调用翻译接口并原位重绘译文。",
+      title: T.translate,
+      description: T.translateDesc,
       icon: <TranslationOutlined style={{ fontSize: 18, color: "#1677ff" }} />,
       hotkey: "Alt+T",
-      disabled: false,
-      buttonText: "截图翻译",
-      onClick: async () => {
-        try {
-          await invoke("start_screenshot", { mode: "translate" });
-        } catch (e: any) {
-          message.error("启动截图翻译失败: " + e.toString());
-        }
-      },
+      buttonText: T.translate,
+      onClick: startTranslateScreenshot,
     },
     {
-      title: "延迟截图",
-      description: delayedActive ? `倒计时 ${delayedCountdown} 秒后自动调出截图选区…` : "倒计时 3 秒后自动调出截图选区，用于捕获悬浮菜单或下拉状态。",
+      title: T.delayed,
+      description: T.delayedDesc,
       icon: <ClockCircleOutlined style={{ fontSize: 18, color: delayedActive ? "#1677ff" : "#fa8c16" }} />,
-      hotkey: "未设置",
-      disabled: false,
-      buttonText: delayedActive ? `⏱ ${delayedCountdown}s` : "延迟截图",
+      hotkey: delayedActive ? `${delayedCountdown}s` : "Timer",
+      buttonText: delayedActive ? `${delayedCountdown}s` : T.delayed,
       onClick: handleDelayedScreenshot,
     },
     {
-      title: "文本识别 (OCR)",
-      description: "在截图框选后，点击悬浮工具栏中的「识字」按钮，识别文字并自动复制到剪贴板。",
+      title: T.ocr,
+      description: T.ocrDesc,
       icon: <ScanOutlined style={{ fontSize: 18, color: "#722ed1" }} />,
-      hotkey: "悬浮工具栏",
-      disabled: false,
-      buttonText: "需要先截图",
+      hotkey: "\u5de5\u5177\u680f",
+      buttonText: T.screenshot,
       onClick: onStartScreenshot,
     },
     {
-      title: "文本识别翻译",
-      description: "框选屏幕物理像素后，在原地重绘渲染替换为对应的译文。",
-      icon: <TranslationOutlined style={{ fontSize: 18, color: "#eb2f96" }} />,
-      hotkey: "Ctrl+Q",
-      disabled: false,
-      buttonText: "需要先截图",
-      onClick: onStartScreenshot,
-    },
-    {
-      title: "复制到剪贴板",
-      description: "截图后自动将截图或翻译后的像素流以图片数据写入剪贴板。",
-      icon: <CopyOutlined style={{ fontSize: 18, color: "#13c2c2" }} />,
-      hotkey: "Enter",
-      disabled: false,
-      buttonText: "需要先截图",
-      onClick: onStartScreenshot,
-    },
-    {
-      title: "截取全屏",
-      description: "快速截取主显示器的当前完整物理画面，直接复制到剪贴板。",
+      title: T.fullscreen,
+      description: T.fullscreenDesc,
       icon: <DesktopOutlined style={{ fontSize: 18, color: "#2f54eb" }} />,
-      hotkey: "未设置",
-      disabled: false,
-      buttonText: "截取全屏",
+      hotkey: "Instant",
+      buttonText: T.fullscreen,
       onClick: handleFullscreenCapture,
-    },
-    {
-      title: "当前活动窗口截图",
-      description: "打开截图模式后，通过框选捕捉焦点窗口的内容（目前使用框选方式）。",
-      icon: <BorderInnerOutlined style={{ fontSize: 18, color: "#a0d911" }} />,
-      hotkey: "Alt+A → 框选",
-      disabled: false,
-      buttonText: "框选窗口",
-      onClick: onStartScreenshot,
     },
   ];
 
-  const tabItems = [
-    {
-      key: "screenshot",
-      label: "截图功能",
-      children: (
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Card bordered={false} style={{ borderRadius: 16 }}>
+        <Flex justify="space-between" align="center" wrap="wrap" gap={16}>
+          <div>
+            <Title level={4} style={{ margin: 0 }}>{T.title}</Title>
+            <Paragraph type="secondary" style={{ margin: "6px 0 0", maxWidth: 720 }}>{T.desc}</Paragraph>
+          </div>
+          <Button type="primary" icon={<CameraOutlined />} onClick={onStartScreenshot}>{T.startScreenshot}</Button>
+        </Flex>
+      </Card>
+
+      <Row gutter={[16, 16]}>
+        <Col span={6}><Card bordered={false}><Statistic title={T.hotkey} value={config.hotkey || "Alt+A"} /></Card></Col>
+        <Col span={6}><Card bordered={false}><Statistic title={T.ocrMode} value={T.localOnly} /></Card></Col>
+        <Col span={6}><Card bordered={false}><Statistic title={T.targetLang} value={(config.targetLang || "zh").toUpperCase()} /></Card></Col>
+        <Col span={6}><Card bordered={false}><Statistic title={T.server} value={responseTime ? `${responseTime}ms` : statusText} suffix={<Tag color={statusColor}>{statusText}</Tag>} /></Card></Col>
+      </Row>
+
+      <Card title={T.title} bordered={false} style={{ borderRadius: 16 }}>
         <List
           itemLayout="horizontal"
           dataSource={functionList}
           renderItem={(item) => (
             <List.Item
-              style={{
-                background: "#ffffff",
-                border: "1px solid #f0f0f0",
-                borderRadius: 12,
-                padding: "12px 20px",
-                marginBottom: 10,
-                height: 56,
-              }}
               actions={[
-                <Space size="middle" align="center" key="actions">
-                  {item.title === "截图" && shortcutError ? (
-                    <Tooltip title={`快捷键 ${item.hotkey} 注册失败: ${shortcutError}。可能是热键冲突，请到设置中更换后保存。`}>
-                      <Tag
-                        color="error"
-                        style={{
-                          margin: 0, border: "1px dashed #ffa39e",
-                          backgroundColor: "#fff2f0", color: "#ff4d4f",
-                          fontWeight: "600", height: 22,
-                          display: "inline-flex", alignItems: "center"
-                        }}
-                      >
-                        {item.hotkey} (冲突)
-                      </Tag>
-                    </Tooltip>
-                  ) : item.hotkey === "未设置" ? (
-                    <Tag style={{ margin: 0, border: "1px solid #d9d9d9", color: "#bfbfbf", height: 22, display: "inline-flex", alignItems: "center" }}>
-                      未设置
-                    </Tag>
-                  ) : (
-                    <Tag
-                      style={{
-                        margin: 0, border: "1px solid #91d5ff",
-                        backgroundColor: "#e6f7ff", color: "#1677ff",
-                        fontWeight: "600", height: 22,
-                        display: "inline-flex", alignItems: "center",
-                        fontFamily: "Consolas, Monaco, monospace"
-                      }}
-                    >
-                      {item.hotkey}
-                    </Tag>
-                  )}
-                  {item.disabled ? (
-                    <Tooltip title="开发中">
-                      <span style={{ display: "inline-block", cursor: "not-allowed" }}>
-                        <Button
-                          type="default"
-                          size="small"
-                          disabled
-                          style={{ height: 32, fontSize: 12, pointerEvents: "none" }}
-                        >
-                          {item.buttonText}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  ) : (
-                    <Button
-                      type="primary"
-                      size="small"
-                      onClick={item.onClick}
-                      style={{ height: 32, fontSize: 12 }}
-                    >
-                      {item.buttonText}
-                    </Button>
-                  )}
+                <Space key="actions">
+                  <Tag color={item.danger ? "error" : "blue"}>{item.hotkey}</Tag>
+                  <Button type="primary" onClick={item.onClick}>{item.buttonText || T.run}</Button>
                 </Space>,
               ]}
             >
               <List.Item.Meta
                 avatar={item.icon}
-                title={
-                  <Text strong style={{ color: item.disabled ? "#8c8c8c" : "#1f1f1f", fontSize: 13 }}>
-                    {item.title}
-                  </Text>
-                }
-                description={
-                  <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: -2 }}>
-                    {item.description}
-                  </Text>
-                }
+                title={<Text strong>{item.title}</Text>}
+                description={<Text type="secondary">{item.description}</Text>}
               />
             </List.Item>
           )}
         />
-      ),
-    },
-    {
-      key: "translate",
-      label: "接口测试",
-      children: (
-        <Space direction="vertical" size="large" style={{ width: "100%" }}>
-          {/* Telemetry connection status details */}
-          <Row gutter={16}>
-            <Col span={8}>
-              <Card bordered={false} style={{ boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
-                <Flex justify="space-between" align="start" style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 11, fontWeight: "600" }}>
-                    服务器连接
-                  </Text>
-                  <WifiOutlined style={{ color: "#bfbfbf" }} />
-                </Flex>
-                {serverStatus === "online" && <Tag color="success">在线</Tag>}
-                {serverStatus === "offline" && <Tag color="error">离线</Tag>}
-                {serverStatus === "checking" && <Tag color="warning">检测中...</Tag>}
-                <div style={{ marginTop: 8, fontSize: 10, color: "#8c8c8c" }}>
-                  配置地址: {config.serverUrl || "未配置"}
-                </div>
-              </Card>
-            </Col>
-
-            <Col span={8}>
-              <Card bordered={false} style={{ boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
-                <Flex justify="space-between" align="start" style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 11, fontWeight: "600" }}>
-                    翻译通道
-                  </Text>
-                  <GlobalOutlined style={{ color: "#bfbfbf" }} />
-                </Flex>
-                <Text strong style={{ fontSize: 14 }}>
-                  {config.channel === "baidu" ? "百度翻译" : config.channel === "new-api" ? "大模型翻译" : "谷歌翻译 (默认)"}
-                </Text>
-                <div style={{ marginTop: 8, fontSize: 10, color: "#8c8c8c" }}>
-                  本地 OCR: {config.useLocalOcr ? "启用" : "禁用"}
-                </div>
-              </Card>
-            </Col>
-
-            <Col span={8}>
-              <Card bordered={false} style={{ boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
-                <Flex justify="space-between" align="start" style={{ marginBottom: 12 }}>
-                  <Text type="secondary" style={{ fontSize: 11, fontWeight: "600" }}>
-                    延迟响应
-                  </Text>
-                  <DashboardOutlined style={{ color: "#bfbfbf" }} />
-                </Flex>
-                <Text strong style={{ fontSize: 18 }}>
-                  {serverStatus === "online" && responseTime ? `${responseTime} ms` : "—"}
-                </Text>
-                <div style={{ marginTop: 8, fontSize: 10, color: "#8c8c8c" }}>
-                  平均响应阈值: ~350ms
-                </div>
-              </Card>
-            </Col>
-          </Row>
-
-          {/* Tester module */}
-          <Card bordered={false} style={{ boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
-            <div style={{ marginBottom: 16 }}>
-              <Text strong style={{ fontSize: 14 }}>
-                连通性测试 (Drag-and-Drop Image Tester)
-              </Text>
-              <Paragraph type="secondary" style={{ fontSize: 12, margin: "4px 0 0 0" }}>
-                拖拽一张包含英文文本的截图到下方，即可在网页内直观预览 OCR 识别及重绘嵌入后的中文图像。
-              </Paragraph>
-            </div>
-
-            <Row gutter={24}>
-              <Col span={12}>
-                <Upload.Dragger
-                  accept="image/*"
-                  showUploadList={false}
-                  customRequest={handleCustomUpload}
-                  style={{
-                    borderRadius: 12,
-                    background: "#fafafa",
-                    border: "2px dashed #d9d9d9",
-                    padding: "24px 0",
-                    height: 280,
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "center",
-                  }}
-                >
-                  {previewUrl ? (
-                    <Flex vertical align="center" justify="center" style={{ height: "100%" }}>
-                      <img
-                        src={previewUrl}
-                        alt="Preview"
-                        style={{ maxHeight: 150, maxWidth: "90%", objectFit: "contain", borderRadius: 8, marginBottom: 16 }}
-                      />
-                      <Space>
-                        <Upload accept="image/*" showUploadList={false} customRequest={handleCustomUpload}>
-                          <Button size="small">重新选择</Button>
-                        </Upload>
-                        <Button
-                          type="primary"
-                          size="small"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startTranslation();
-                          }}
-                          loading={isTranslating}
-                          disabled={serverStatus !== "online"}
-                        >
-                          开始翻译
-                        </Button>
-                      </Space>
-                    </Flex>
-                  ) : (
-                    <Flex vertical align="center" justify="center">
-                      <p className="ant-upload-drag-icon" style={{ margin: 0, color: "#1677ff" }}>
-                        <InboxOutlined style={{ fontSize: 40 }} />
-                      </p>
-                      <Text strong style={{ fontSize: 13, display: "block", marginTop: 12 }}>
-                        拖拽图片文件到此处
-                      </Text>
-                      <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 4 }}>
-                        或者点击浏览本地文件
-                      </Text>
-                    </Flex>
-                  )}
-                </Upload.Dragger>
-              </Col>
-
-              <Col span={12}>
-                <div
-                  style={{
-                    border: "1px solid #f0f0f0",
-                    borderRadius: 12,
-                    padding: 16,
-                    background: "#fafafa",
-                    height: 280,
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <Flex justify="space-between" align="center" style={{ borderBottom: "1px solid #f0f0f0", paddingBottom: 10 }}>
-                    <Text strong style={{ fontSize: 12 }}>
-                      翻译结果预览
-                    </Text>
-                    {translatedImage && (
-                      <Button
-                        type="link"
-                        size="small"
-                        icon={<SaveOutlined />}
-                        href={translatedImage}
-                        download="translated.png"
-                        style={{ fontSize: 11, padding: 0 }}
-                      >
-                        保存图片
-                      </Button>
-                    )}
-                  </Flex>
-
-                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyItems: "center", justifyContent: "center", padding: 12 }}>
-                    {translatedImage ? (
-                      <img
-                        src={translatedImage}
-                        alt="Result"
-                        style={{ maxHeight: 150, maxWidth: "100%", objectFit: "contain", borderRadius: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}
-                      />
-                    ) : isTranslating ? (
-                      <Flex vertical align="center" gap="small">
-                        <SyncOutlined spin style={{ fontSize: 24, color: "#1677ff" }} />
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          深度学习重绘排版中，约耗时 1s ...
-                        </Text>
-                      </Flex>
-                    ) : (
-                      <Empty description="暂无测试数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                    )}
-                  </div>
-
-                  <Flex justify="space-between" style={{ borderTop: "1px solid #f0f0f0", paddingTop: 8, fontSize: 10, color: "#8c8c8c" }}>
-                    <span>状态: {isTranslating ? "翻译中" : translatedImage ? "就绪" : "空闲"}</span>
-                    <span>分辨率: —</span>
-                  </Flex>
-                </div>
-              </Col>
-            </Row>
-          </Card>
-        </Space>
-      ),
-    },
-  ];
-
-  return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
-      <div style={{ marginBottom: 20 }}>
-        <Title level={4} style={{ margin: 0 }}>
-          控制面板
-        </Title>
-        <Paragraph type="secondary" style={{ fontSize: 12, margin: "4px 0 0 0" }}>
-          管理快捷截图任务或对 N100 边缘节点的服务接口进行连通性测试。
-        </Paragraph>
-      </div>
-      <Tabs defaultActiveKey="screenshot" items={tabItems} />
-    </Card>
+      </Card>
+    </Space>
   );
 }

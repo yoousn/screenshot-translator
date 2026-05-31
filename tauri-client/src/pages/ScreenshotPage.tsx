@@ -22,9 +22,16 @@ interface Config {
   localOcrTimeoutMs?: number;
   targetLang?: string;
   channel?: string;
+  enableUiControlDetection?: boolean;
+  enableVisualDetection?: boolean;
+  detectionBorderWidth?: number;
+  visualDetectionSensitivity?: number;
 }
 
-type Rect = { x: number; y: number; w: number; h: number };
+type Rect = { x: number; y: number; w: number; h: number; kind?: "window" | "control" | "visual" };
+type AnnotationTool = "rect" | "mosaic" | "arrow" | "text" | "brush";
+type Point = { x: number; y: number };
+type Annotation = { type: AnnotationTool; rect: Rect; points?: Point[]; text?: string };
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
 const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 520, height: 44 };
@@ -56,17 +63,38 @@ export default function ScreenshotPage() {
   const [actionToolbarSize, setActionToolbarSize] = useState(ACTION_TOOLBAR_FALLBACK_SIZE);
   const [hasSelected, setHasSelected] = useState(false);
   const [windowRects, setWindowRects] = useState<Rect[]>([]);
+  const [hoverRect, setHoverRect] = useState<Rect | null>(null);
+  const [hoverCandidates, setHoverCandidates] = useState<Rect[]>([]);
   const [screenshotMode, setScreenshotMode] = useState("normal");
   const [isTranslating, setIsTranslating] = useState(false);
   const [isOCRing, setIsOCRing] = useState(false);
   const [config, setConfig] = useState<Config>({});
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [translatePairs, setTranslatePairs] = useState<Array<{o: string, t: string}> | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [annotationTool, setAnnotationTool] = useState<AnnotationTool>("rect");
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [draftAnnotation, setDraftAnnotation] = useState<Annotation | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const [overlayVisible, setOverlayVisible] = useState(false);
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
+  const lastRectQueryRef = useRef(0);
+  const rectQueryPendingRef = useRef(false);
+  const hoverRectRef = useRef<Rect | null>(null);
+  const hoverCandidatesRef = useRef<Rect[]>([]);
+  const hoverCandidateIndexRef = useRef(0);
+  const hoverCandidatesSignatureRef = useRef("");
+  const lastMouseRef = useRef({ x: 0, y: 0 });
+  const pendingDetectionRef = useRef<Rect | null>(null);
+  const analysisImageDataRef = useRef<ImageData | null>(null);
+  const annotationsRef = useRef<Annotation[]>([]);
+  const draftAnnotationRef = useRef<Annotation | null>(null);
+  const isEditingRef = useRef(false);
+  const annotationToolRef = useRef<AnnotationTool>("rect");
+  const isDrawingAnnotationRef = useRef(false);
+  const annotationStartRef = useRef({ x: 0, y: 0 });
 
   const decodeTextPairs = (encoded: string) => {
     const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
@@ -88,8 +116,20 @@ export default function ScreenshotPage() {
 
     imageRef.current = null;
     translatedImgRef.current = null;
+    analysisImageDataRef.current = null;
     setTranslatedResult(null);
     setTranslatePairs(null);
+    setIsEditing(false);
+    setAnnotations([]);
+    setDraftAnnotation(null);
+    windowRectsRef.current = [];
+    setWindowRects([]);
+    setHoverCandidate(null);
+    setHoverCandidates([]);
+    hoverCandidatesRef.current = [];
+    hoverCandidateIndexRef.current = 0;
+    hoverCandidatesSignatureRef.current = "";
+    pendingDetectionRef.current = null;
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
     setScreenshotState("initializing");
@@ -104,10 +144,12 @@ export default function ScreenshotPage() {
   const hasSelectedRef = useRef(false);
   const rectRef = useRef<Rect>(EMPTY_RECT);
   const configRef = useRef<Config>({});
+  const windowRectsRef = useRef<Rect[]>([]);
   const screenshotModeRef = useRef("normal");
   const isSelectingRef = useRef(false);
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef<string | null>(null);
+  const mouseDownRef = useRef({ x: 0, y: 0 });
   const startPosRef = useRef({ x: 0, y: 0 });
   const dragStartRef = useRef({ x: 0, y: 0 });
   const resizeStartRectRef = useRef<Rect>(EMPTY_RECT);
@@ -119,6 +161,13 @@ export default function ScreenshotPage() {
   hasSelectedRef.current = hasSelected;
   rectRef.current = rect;
   configRef.current = config;
+  windowRectsRef.current = windowRects;
+  hoverRectRef.current = hoverRect;
+  hoverCandidatesRef.current = hoverCandidates;
+  annotationsRef.current = annotations;
+  draftAnnotationRef.current = draftAnnotation;
+  isEditingRef.current = isEditing;
+  annotationToolRef.current = annotationTool;
   screenshotModeRef.current = screenshotMode;
   drawRef.current = draw;
 
@@ -130,6 +179,35 @@ export default function ScreenshotPage() {
   const setSelection = (selected: boolean) => {
     hasSelectedRef.current = selected;
     setHasSelected(selected);
+  };
+
+  const setHoverCandidate = (candidate: Rect | null) => {
+    hoverRectRef.current = candidate;
+    setHoverRect(candidate);
+  };
+
+  const setHoverCandidateList = (candidates: Rect[]) => {
+    const signature = candidates.map(rectSignature).join("|");
+    if (signature !== hoverCandidatesSignatureRef.current) {
+      hoverCandidateIndexRef.current = 0;
+      hoverCandidatesSignatureRef.current = signature;
+    }
+    hoverCandidatesRef.current = candidates;
+    setHoverCandidates(candidates);
+    const nextIndex = candidates.length === 0 ? 0 : hoverCandidateIndexRef.current % candidates.length;
+    hoverCandidateIndexRef.current = nextIndex;
+    setHoverCandidate(candidates[nextIndex] || null);
+  };
+
+  const setAnnotationDraft = (annotation: Annotation | null) => {
+    draftAnnotationRef.current = annotation;
+    setDraftAnnotation(annotation);
+  };
+
+  const commitAnnotation = (annotation: Annotation) => {
+    const next = [...annotationsRef.current, annotation];
+    annotationsRef.current = next;
+    setAnnotations(next);
   };
 
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -187,6 +265,18 @@ export default function ScreenshotPage() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         cancelScreenshot();
+        return;
+      }
+      if (e.key === "Tab" && hoverCandidatesRef.current.length > 1) {
+        e.preventDefault();
+        hoverCandidateIndexRef.current = (hoverCandidateIndexRef.current + (e.shiftKey ? -1 : 1) + hoverCandidatesRef.current.length) % hoverCandidatesRef.current.length;
+        setHoverCandidate(hoverCandidatesRef.current[hoverCandidateIndexRef.current] || null);
+        renderNeededRef.current = true;
+        return;
+      }
+      if (!hasSelectedRef.current && (e.key === "Enter" || e.key === " ") && hoverRectRef.current) {
+        e.preventDefault();
+        selectDetectedRect(hoverRectRef.current);
         return;
       }
       if (!hasSelectedRef.current) return;
@@ -253,18 +343,31 @@ export default function ScreenshotPage() {
     }
   };
 
-  const loadWindowRects = async () => {
+  const loadWindowRects = async (force = false) => {
+    const now = performance.now();
+    if (!force && (rectQueryPendingRef.current || now - lastRectQueryRef.current < 50)) return;
+    lastRectQueryRef.current = now;
+    rectQueryPendingRef.current = true;
     try {
-      setWindowRects(JSON.parse(await invoke<string>("get_window_rects")));
+      const includeControls = Boolean(configRef.current.enableUiControlDetection);
+      const nextRects = JSON.parse(await invoke<string>("get_window_rects", { includeControls }));
+      windowRectsRef.current = nextRects;
+      setWindowRects(nextRects);
+      if (!hasSelectedRef.current && !isSelectingRef.current && !isDraggingRef.current && !isResizingRef.current) {
+        setHoverCandidateList(getDetectionCandidatesAt(lastMouseRef.current.x, lastMouseRef.current.y));
+      }
+      renderNeededRef.current = true;
     } catch {
       setWindowRects([]);
+    } finally {
+      rectQueryPendingRef.current = false;
     }
   };
 
   const loadFullscreen = async () => {
     const sessionId = startNewCaptureSession();
     try {
-      loadWindowRects();
+      loadWindowRects(true);
       const base64 = await invoke<string>("get_fullscreen_image");
       if (sessionId !== captureIdRef.current) return;
 
@@ -291,7 +394,7 @@ export default function ScreenshotPage() {
         return;
       }
 
-      loadWindowRects();
+      loadWindowRects(true);
       console.log("[ScreenshotPage] screenshot payload received", base64.length);
       loadImageFromBase64(base64, sessionId);
     } catch (err: any) {
@@ -389,6 +492,11 @@ export default function ScreenshotPage() {
     const oCtx = offscreen.getContext("2d");
     if (oCtx) {
       oCtx.drawImage(img, 0, 0, width, height);
+      try {
+        analysisImageDataRef.current = oCtx.getImageData(0, 0, width, height);
+      } catch {
+        analysisImageDataRef.current = null;
+      }
       oCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
       oCtx.fillRect(0, 0, width, height);
     }
@@ -439,6 +547,196 @@ export default function ScreenshotPage() {
     return null;
   };
 
+  const getDetectionRectAt = (mx: number, my: number) => {
+    const candidates = getDetectionCandidatesAt(mx, my);
+    return candidates[hoverCandidateIndexRef.current % Math.max(1, candidates.length)] || null;
+  };
+
+  const rectSignature = (rect: Rect) => `${Math.round(rect.x / 3)}:${Math.round(rect.y / 3)}:${Math.round(rect.w / 3)}:${Math.round(rect.h / 3)}`;
+
+  const sortDetectionCandidates = (candidates: Rect[], mx: number, my: number) => {
+    const seen = new Set<string>();
+    const unique = candidates.filter((candidate) => {
+      const key = rectSignature(candidate);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return candidate.w >= 12 && candidate.h >= 12;
+    });
+    return unique.sort((a, b) => {
+      const priority = (rect: Rect) => rect.kind === "control" ? 0 : rect.kind === "window" ? 1 : 2;
+      const areaA = a.w * a.h;
+      const areaB = b.w * b.h;
+      const centerA = Math.hypot(mx - (a.x + a.w / 2), my - (a.y + a.h / 2));
+      const centerB = Math.hypot(mx - (b.x + b.w / 2), my - (b.y + b.h / 2));
+      return priority(a) - priority(b) || areaA - areaB || centerA - centerB;
+    });
+  };
+
+  const getDetectionCandidatesAt = (mx: number, my: number) => {
+    const sensitivity = clamp(configRef.current.visualDetectionSensitivity || 3, 1, 5);
+    const visualEnabled = configRef.current.enableVisualDetection === true;
+    const candidates: Rect[] = [];
+    for (const candidate of windowRectsRef.current) {
+      if (mx >= candidate.x && mx <= candidate.x + candidate.w && my >= candidate.y && my <= candidate.y + candidate.h) {
+        candidates.push(candidate);
+      }
+    }
+    if (visualEnabled && (candidates.length === 0 || sensitivity >= 4)) candidates.push(...getVisualRectsAt(mx, my));
+    return sortDetectionCandidates(candidates, mx, my);
+  };
+
+  const getPixel = (imageData: ImageData, x: number, y: number) => {
+    const px = clamp(Math.round(x), 0, imageData.width - 1);
+    const py = clamp(Math.round(y), 0, imageData.height - 1);
+    const idx = (py * imageData.width + px) * 4;
+    const data = imageData.data;
+    return [data[idx], data[idx + 1], data[idx + 2]];
+  };
+
+  const pixelDiff = (a: number[], b: number[]) => (
+    Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])
+  ) / 3;
+
+  const verticalEdgeScore = (imageData: ImageData, x: number, y: number, span: number) => {
+    let score = 0;
+    let count = 0;
+    for (let yy = y - span; yy <= y + span; yy += 8) {
+      if (yy <= 1 || yy >= imageData.height - 2) continue;
+      score += pixelDiff(getPixel(imageData, x, yy), getPixel(imageData, x - 1, yy));
+      count += 1;
+    }
+    return count ? score / count : 0;
+  };
+
+  const horizontalEdgeScore = (imageData: ImageData, x: number, y: number, span: number) => {
+    let score = 0;
+    let count = 0;
+    for (let xx = x - span; xx <= x + span; xx += 8) {
+      if (xx <= 1 || xx >= imageData.width - 2) continue;
+      score += pixelDiff(getPixel(imageData, xx, y), getPixel(imageData, xx, y - 1));
+      count += 1;
+    }
+    return count ? score / count : 0;
+  };
+
+  const findVisualBoundary = (
+    imageData: ImageData,
+    mx: number,
+    my: number,
+    direction: "left" | "right" | "top" | "bottom",
+    span: number,
+    threshold: number,
+  ) => {
+    const step = direction === "left" || direction === "top" ? -2 : 2;
+    const horizontal = direction === "top" || direction === "bottom";
+    const max = horizontal ? imageData.height - 2 : imageData.width - 2;
+    let pos = horizontal ? my : mx;
+    for (pos += step; pos > 2 && pos < max; pos += step) {
+      const score = horizontal
+        ? horizontalEdgeScore(imageData, mx, pos, span)
+        : verticalEdgeScore(imageData, pos, my, span);
+      if (score >= threshold) return pos;
+    }
+    return null;
+  };
+
+  const getVisualRectAt = (mx: number, my: number): Rect | null => {
+    return getVisualRectsAt(mx, my)[0] || null;
+  };
+
+  const getVisualRectsAt = (mx: number, my: number): Rect[] => {
+    const imageData = analysisImageDataRef.current;
+    if (!imageData) return [];
+    const width = imageData.width;
+    const height = imageData.height;
+    if (mx < 0 || my < 0 || mx >= width || my >= height) return [];
+
+    const sensitivity = clamp(configRef.current.visualDetectionSensitivity || 3, 1, 5);
+    const thresholdOffset = (3 - sensitivity) * 4;
+    const attempts = [
+      { span: 128, threshold: 18 + thresholdOffset },
+      { span: 96, threshold: 16 + thresholdOffset },
+      { span: 64, threshold: 20 + thresholdOffset },
+      { span: 36, threshold: 26 + thresholdOffset },
+    ];
+
+    const matches: Rect[] = [];
+    for (const attempt of attempts) {
+      const left = findVisualBoundary(imageData, mx, my, "left", attempt.span, attempt.threshold);
+      const right = findVisualBoundary(imageData, mx, my, "right", attempt.span, attempt.threshold);
+      const top = findVisualBoundary(imageData, mx, my, "top", attempt.span, attempt.threshold);
+      const bottom = findVisualBoundary(imageData, mx, my, "bottom", attempt.span, attempt.threshold);
+      if (left === null || right === null || top === null || bottom === null) continue;
+      const rect = {
+        x: clamp(Math.min(left, right), 0, width - 1),
+        y: clamp(Math.min(top, bottom), 0, height - 1),
+        w: Math.max(1, Math.abs(right - left)),
+        h: Math.max(1, Math.abs(bottom - top)),
+        kind: "visual" as const,
+      };
+      const area = rect.w * rect.h;
+      const screenArea = width * height;
+      const minW = sensitivity >= 4 ? 56 : 80;
+      const minH = sensitivity >= 4 ? 28 : 40;
+      if (rect.w >= minW && rect.h >= minH && area < screenArea * 0.9) {
+        const cursorMarginX = Math.min(mx - rect.x, rect.x + rect.w - mx);
+        const cursorMarginY = Math.min(my - rect.y, rect.y + rect.h - my);
+        const cursorTooCloseToEdge = cursorMarginX < 3 || cursorMarginY < 3;
+        if (!cursorTooCloseToEdge || sensitivity >= 5) matches.push(rect);
+      }
+    }
+    return sortDetectionCandidates(matches, mx, my);
+  };
+
+  const selectDetectedRect = (candidate: Rect) => {
+    const canvas = canvasRef.current;
+    const maxW = canvas?.width || window.innerWidth;
+    const maxH = canvas?.height || window.innerHeight;
+    const next = {
+      x: clamp(Math.round(candidate.x), 0, maxW - 1),
+      y: clamp(Math.round(candidate.y), 0, maxH - 1),
+      w: Math.max(1, Math.min(Math.round(candidate.w), maxW - Math.round(candidate.x))),
+      h: Math.max(1, Math.min(Math.round(candidate.h), maxH - Math.round(candidate.y))),
+      kind: candidate.kind,
+    };
+    setCurrentRect(next, true);
+    setSelection(true);
+    setHoverCandidate(null);
+    setTranslatedResult(null);
+    translatedImgRef.current = null;
+    setTranslatePairs(null);
+    renderNeededRef.current = true;
+  };
+
+  const pointInSelection = (x: number, y: number) => {
+    const r = rectRef.current;
+    return hasSelectedRef.current && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  };
+
+  const normalizedRectFromPoints = (start: { x: number; y: number }, end: { x: number; y: number }): Rect => {
+    const selection = rectRef.current;
+    const x1 = clamp(start.x, selection.x, selection.x + selection.w);
+    const y1 = clamp(start.y, selection.y, selection.y + selection.h);
+    const x2 = clamp(end.x, selection.x, selection.x + selection.w);
+    const y2 = clamp(end.y, selection.y, selection.y + selection.h);
+    return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+  };
+
+  const makeLineAnnotation = (tool: AnnotationTool, start: Point, end: Point): Annotation => ({
+    type: tool,
+    rect: normalizedRectFromPoints(start, end),
+    points: [
+      { x: clamp(start.x, rectRef.current.x, rectRef.current.x + rectRef.current.w), y: clamp(start.y, rectRef.current.y, rectRef.current.y + rectRef.current.h) },
+      { x: clamp(end.x, rectRef.current.x, rectRef.current.x + rectRef.current.w), y: clamp(end.y, rectRef.current.y, rectRef.current.y + rectRef.current.h) },
+    ],
+  });
+
+  const makeTextAnnotation = (point: Point, text: string): Annotation => ({
+    type: "text",
+    rect: { x: point.x, y: point.y, w: Math.max(80, text.length * 14), h: 28 },
+    text,
+  });
+
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!overlayVisible) return;
     if (e.button === 2) {
@@ -458,6 +756,25 @@ export default function ScreenshotPage() {
 
     const cx = e.clientX;
     const cy = e.clientY;
+    mouseDownRef.current = { x: cx, y: cy };
+    if (isEditingRef.current && pointInSelection(cx, cy)) {
+      if (annotationToolRef.current === "text") {
+        const input = window.prompt("输入标注文字", "");
+        if (input && input.trim()) {
+          commitAnnotation(makeTextAnnotation({ x: cx, y: cy }, input.trim()));
+          renderNeededRef.current = true;
+        }
+        return;
+      }
+      isDrawingAnnotationRef.current = true;
+      annotationStartRef.current = { x: cx, y: cy };
+      setAnnotationDraft(
+        annotationToolRef.current === "brush"
+          ? { type: "brush", rect: { x: cx, y: cy, w: 0, h: 0 }, points: [{ x: cx, y: cy }] }
+          : { type: annotationToolRef.current, rect: { x: cx, y: cy, w: 0, h: 0 } }
+      );
+      return;
+    }
     const handleInfo = getHandleAt(cx, cy, true);
     if (handleInfo) {
       if (handleInfo.handle === "move") {
@@ -471,8 +788,16 @@ export default function ScreenshotPage() {
       return;
     }
 
+    const detected = getDetectionRectAt(cx, cy);
+    if (detected) {
+      pendingDetectionRef.current = detected;
+      startPosRef.current = { x: cx, y: cy };
+      return;
+    }
+
     isSelectingRef.current = true;
     setIsSelecting(true);
+    setHoverCandidate(null);
     startPosRef.current = { x: cx, y: cy };
     setCurrentRect({ x: cx, y: cy, w: 0, h: 0 }, true);
     setSelection(false);
@@ -482,10 +807,45 @@ export default function ScreenshotPage() {
     if (!overlayVisible) return;
     const cx = e.clientX;
     const cy = e.clientY;
+    lastMouseRef.current = { x: cx, y: cy };
     if (mouseTrackerRef.current) {
       mouseTrackerRef.current.style.left = `${cx + 16}px`;
       mouseTrackerRef.current.style.top = `${cy + 20}px`;
       mouseTrackerRef.current.textContent = `${cx}, ${cy}${hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""}`;
+    }
+
+    if (isDrawingAnnotationRef.current) {
+      if (annotationToolRef.current === "brush") {
+        const current = draftAnnotationRef.current;
+        const nextPoints = [...(current?.points || []), { x: clamp(cx, rectRef.current.x, rectRef.current.x + rectRef.current.w), y: clamp(cy, rectRef.current.y, rectRef.current.y + rectRef.current.h) }];
+        const xs = nextPoints.map((p) => p.x);
+        const ys = nextPoints.map((p) => p.y);
+        setAnnotationDraft({ type: "brush", rect: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }, points: nextPoints });
+      } else if (annotationToolRef.current === "arrow") {
+        setAnnotationDraft(makeLineAnnotation("arrow", annotationStartRef.current, { x: cx, y: cy }));
+      } else {
+        setAnnotationDraft({
+          type: annotationToolRef.current,
+          rect: normalizedRectFromPoints(annotationStartRef.current, { x: cx, y: cy }),
+        });
+      }
+      renderNeededRef.current = true;
+      return;
+    }
+
+    if (pendingDetectionRef.current) {
+      const moved = Math.hypot(cx - mouseDownRef.current.x, cy - mouseDownRef.current.y);
+      if (moved > 4) {
+        pendingDetectionRef.current = null;
+        setHoverCandidate(null);
+        isSelectingRef.current = true;
+        setIsSelecting(true);
+        setSelection(false);
+        const next = { x: Math.min(startPosRef.current.x, cx), y: Math.min(startPosRef.current.y, cy), w: Math.abs(startPosRef.current.x - cx), h: Math.abs(startPosRef.current.y - cy) };
+        setCurrentRect(next, true);
+        renderNeededRef.current = true;
+      }
+      return;
     }
 
     if (isDraggingRef.current) {
@@ -528,7 +888,7 @@ export default function ScreenshotPage() {
     if (isSelectingRef.current) {
       const snapX: number[] = [];
       const snapY: number[] = [];
-      for (const wr of windowRects) {
+      for (const wr of windowRectsRef.current) {
         snapX.push(wr.x, wr.x + wr.w);
         snapY.push(wr.y, wr.y + wr.h);
       }
@@ -540,18 +900,42 @@ export default function ScreenshotPage() {
       return;
     }
 
+    loadWindowRects();
+
     const handleInfo = getHandleAt(cx, cy);
-    e.currentTarget.style.cursor = handleInfo ? handleInfo.cursor : "crosshair";
+    if (handleInfo) {
+      e.currentTarget.style.cursor = handleInfo.cursor;
+      return;
+    }
+    const candidates = getDetectionCandidatesAt(cx, cy);
+    setHoverCandidateList(candidates);
+    const detected = hoverRectRef.current;
+    e.currentTarget.style.cursor = detected ? "pointer" : "crosshair";
   };
 
   const handleMouseUp = () => {
     if (!overlayVisible) return;
     const wasSelecting = isSelectingRef.current;
+    const pendingDetection = pendingDetectionRef.current;
+    pendingDetectionRef.current = null;
+    if (isDrawingAnnotationRef.current) {
+      isDrawingAnnotationRef.current = false;
+      const draft = draftAnnotationRef.current;
+      if (draft && (draft.type === "brush" ? (draft.points?.length || 0) > 2 : draft.rect.w > 4 && draft.rect.h > 4)) commitAnnotation(draft);
+      setAnnotationDraft(null);
+      renderNeededRef.current = true;
+      return;
+    }
     isSelectingRef.current = false;
     setIsSelecting(false);
     isDraggingRef.current = false;
     isResizingRef.current = null;
     setCurrentRect({ ...rectRef.current }, true);
+    if (pendingDetection && !wasSelecting && !isDraggingRef.current && !isResizingRef.current) {
+      selectDetectedRect(pendingDetection);
+      return;
+    }
+
     const valid = rectRef.current.w > 5 && rectRef.current.h > 5;
     setSelection(valid);
     renderNeededRef.current = true;
@@ -563,6 +947,80 @@ export default function ScreenshotPage() {
   const handleDoubleClick = () => {
     if (!overlayVisible) return;
     if (hasSelectedRef.current) confirmScreenshot("copy");
+  };
+
+  const drawAnnotation = (ctx: CanvasRenderingContext2D, annotation: Annotation) => {
+    const { x, y, w, h } = annotation.rect;
+    if (annotation.type === "brush") {
+      const points = annotation.points || [];
+      if (points.length < 2) return;
+      ctx.strokeStyle = "#ff4d4f";
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+      ctx.lineCap = "butt";
+      return;
+    }
+    if (annotation.type === "arrow") {
+      const points = annotation.points || [];
+      if (points.length < 2) return;
+      const [start, end] = points;
+      const angle = Math.atan2(end.y - start.y, end.x - start.x);
+      const head = 12;
+      ctx.strokeStyle = "#ff4d4f";
+      ctx.fillStyle = "#ff4d4f";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(end.x, end.y);
+      ctx.lineTo(end.x - head * Math.cos(angle - Math.PI / 6), end.y - head * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(end.x - head * Math.cos(angle + Math.PI / 6), end.y - head * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+      return;
+    }
+    if (annotation.type === "text") {
+      if (!annotation.text) return;
+      ctx.font = "18px Microsoft YaHei, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      const width = ctx.measureText(annotation.text).width + 14;
+      ctx.fillRect(x, y, width, 28);
+      ctx.strokeStyle = "#ff4d4f";
+      ctx.strokeRect(x, y, width, 28);
+      ctx.fillStyle = "#ff4d4f";
+      ctx.fillText(annotation.text, x + 7, y + 20);
+      return;
+    }
+    if (w <= 0 || h <= 0) return;
+    if (annotation.type === "mosaic") {
+      const block = 10;
+      const temp = document.createElement("canvas");
+      temp.width = Math.max(1, Math.ceil(w / block));
+      temp.height = Math.max(1, Math.ceil(h / block));
+      const tempCtx = temp.getContext("2d");
+      if (tempCtx) {
+        tempCtx.imageSmoothingEnabled = false;
+        tempCtx.drawImage(ctx.canvas, x, y, w, h, 0, 0, temp.width, temp.height);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(temp, 0, 0, temp.width, temp.height, x, y, w, h);
+        ctx.imageSmoothingEnabled = true;
+      }
+      ctx.strokeStyle = "rgba(250, 84, 28, 0.85)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, w, h);
+      return;
+    }
+    ctx.strokeStyle = "#ff4d4f";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.strokeRect(x, y, w, h);
   };
 
   function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement) {
@@ -577,12 +1035,61 @@ export default function ScreenshotPage() {
       ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-    if (windowRects.length > 0) {
-      ctx.strokeStyle = "rgba(82, 196, 26, 0.35)";
+    if (windowRectsRef.current.length > 0) {
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
-      for (const wr of windowRects) ctx.strokeRect(wr.x, wr.y, wr.w, wr.h);
+      for (const wr of windowRectsRef.current) {
+        ctx.strokeStyle = wr.kind === "control" ? "rgba(250, 140, 22, 0.75)" : "rgba(82, 196, 26, 0.55)";
+        ctx.strokeRect(wr.x, wr.y, wr.w, wr.h);
+      }
       ctx.setLineDash([]);
+    }
+    const preview = hoverRectRef.current;
+    if (!hasSelectedRef.current && preview && preview.w > 0 && preview.h > 0) {
+      const scaleX = imageRef.current.naturalWidth / canvas.width;
+      const scaleY = imageRef.current.naturalHeight / canvas.height;
+      ctx.clearRect(preview.x, preview.y, preview.w, preview.h);
+      ctx.drawImage(
+        imageRef.current,
+        preview.x * scaleX,
+        preview.y * scaleY,
+        preview.w * scaleX,
+        preview.h * scaleY,
+        preview.x,
+        preview.y,
+        preview.w,
+        preview.h
+      );
+      ctx.strokeStyle = "#1677ff";
+      ctx.lineWidth = clamp(configRef.current.detectionBorderWidth || 2, 1, 6);
+      ctx.setLineDash([]);
+      ctx.strokeRect(preview.x, preview.y, preview.w, preview.h);
+      ctx.fillStyle = "#1677ff";
+      const hs = 7;
+      const halfHs = hs / 2;
+      const points = [
+        { x: preview.x, y: preview.y },
+        { x: preview.x + preview.w, y: preview.y },
+        { x: preview.x, y: preview.y + preview.h },
+        { x: preview.x + preview.w, y: preview.y + preview.h },
+        { x: preview.x + preview.w / 2, y: preview.y },
+        { x: preview.x + preview.w / 2, y: preview.y + preview.h },
+        { x: preview.x, y: preview.y + preview.h / 2 },
+        { x: preview.x + preview.w, y: preview.y + preview.h / 2 },
+      ];
+      for (const p of points) ctx.fillRect(p.x - halfHs, p.y - halfHs, hs, hs);
+      const totalCandidates = hoverCandidatesRef.current.length;
+      const layerText = totalCandidates > 1 ? ` / ${hoverCandidateIndexRef.current + 1}/${totalCandidates} / Tab切换` : "";
+      const kindLabel = preview.kind === "control" ? "控件" : preview.kind === "visual" ? "视觉" : preview.kind === "window" ? "窗口" : "";
+      const kindText = kindLabel ? ` / ${kindLabel}` : "";
+      const sizeText = `${Math.round(preview.w)} x ${Math.round(preview.h)}${kindText}${layerText} / Enter确认`;
+      ctx.font = "12px sans-serif";
+      const sizeWidth = ctx.measureText(sizeText).width;
+      const labelY = preview.y - 24 >= 0 ? preview.y - 24 : preview.y + 4;
+      ctx.fillStyle = "#1677ff";
+      ctx.fillRect(preview.x, labelY, sizeWidth + 12, 20);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(sizeText, preview.x + 6, labelY + 14);
     }
     if (rw > 0 && rh > 0) {
       ctx.clearRect(rx, ry, rw, rh);
@@ -593,8 +1100,9 @@ export default function ScreenshotPage() {
         const scaleY = imageRef.current.naturalHeight / canvas.height;
         ctx.drawImage(imageRef.current, rx * scaleX, ry * scaleY, rw * scaleX, rh * scaleY, rx, ry, rw, rh);
       }
+      [...annotationsRef.current, ...(draftAnnotationRef.current ? [draftAnnotationRef.current] : [])].forEach((annotation) => drawAnnotation(ctx, annotation));
       ctx.strokeStyle = "#1677ff";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = clamp(configRef.current.detectionBorderWidth || 2, 1, 6);
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.fillStyle = "#ffffff";
       ctx.strokeStyle = "#1677ff";
@@ -650,6 +1158,105 @@ export default function ScreenshotPage() {
     const { x, y, w, h } = getPhysicalSelection();
     return await invoke<string>("capture_region", { x, y, w, h });
   };
+
+  const loadPngImage = (base64: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = "data:image/png;base64," + base64;
+  });
+
+  const renderEditedSelectionBase64 = async () => {
+    const image = imageRef.current;
+    if (!image) throw new Error("截图图片未加载");
+    const physical = getPhysicalSelection();
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = physical.w;
+    cropCanvas.height = physical.h;
+    const ctx = cropCanvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 不可用");
+
+    if (translatedResult) {
+      const translatedImage = await loadPngImage(translatedResult);
+      ctx.drawImage(translatedImage, 0, 0, physical.w, physical.h);
+    } else {
+      ctx.drawImage(image, physical.x, physical.y, physical.w, physical.h, 0, 0, physical.w, physical.h);
+    }
+
+    const scaleX = image.naturalWidth / (canvasRef.current?.width || window.innerWidth);
+    const scaleY = image.naturalHeight / (canvasRef.current?.height || window.innerHeight);
+    const mapPoint = (point: Point) => ({ x: Math.round((point.x - rectRef.current.x) * scaleX), y: Math.round((point.y - rectRef.current.y) * scaleY) });
+    for (const annotation of annotationsRef.current) {
+      const ax = Math.max(0, Math.round((annotation.rect.x - rectRef.current.x) * scaleX));
+      const ay = Math.max(0, Math.round((annotation.rect.y - rectRef.current.y) * scaleY));
+      const aw = Math.max(1, Math.round(annotation.rect.w * scaleX));
+      const ah = Math.max(1, Math.round(annotation.rect.h * scaleY));
+      if (annotation.type === "brush") {
+        const points = (annotation.points || []).map(mapPoint);
+        if (points.length < 2) continue;
+        ctx.strokeStyle = "#ff4d4f";
+        ctx.lineWidth = 4;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+        ctx.lineCap = "butt";
+      } else if (annotation.type === "arrow") {
+        const points = (annotation.points || []).map(mapPoint);
+        if (points.length < 2) continue;
+        const [start, end] = points;
+        const angle = Math.atan2(end.y - start.y, end.x - start.x);
+        const head = 14;
+        ctx.strokeStyle = "#ff4d4f";
+        ctx.fillStyle = "#ff4d4f";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(end.x, end.y);
+        ctx.lineTo(end.x - head * Math.cos(angle - Math.PI / 6), end.y - head * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(end.x - head * Math.cos(angle + Math.PI / 6), end.y - head * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+      } else if (annotation.type === "text") {
+        if (!annotation.text) continue;
+        ctx.font = `${Math.max(18, Math.round(18 * scaleY))}px Microsoft YaHei, sans-serif`;
+        const width = ctx.measureText(annotation.text).width + 14;
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.fillRect(ax, ay, width, 30);
+        ctx.strokeStyle = "#ff4d4f";
+        ctx.strokeRect(ax, ay, width, 30);
+        ctx.fillStyle = "#ff4d4f";
+        ctx.fillText(annotation.text, ax + 7, ay + 22);
+      } else if (annotation.type === "mosaic") {
+        const block = 10;
+        const temp = document.createElement("canvas");
+        temp.width = Math.max(1, Math.ceil(aw / block));
+        temp.height = Math.max(1, Math.ceil(ah / block));
+        const tempCtx = temp.getContext("2d");
+        if (tempCtx) {
+          tempCtx.imageSmoothingEnabled = false;
+          tempCtx.drawImage(cropCanvas, ax, ay, aw, ah, 0, 0, temp.width, temp.height);
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(temp, 0, 0, temp.width, temp.height, ax, ay, aw, ah);
+          ctx.imageSmoothingEnabled = true;
+        }
+      } else {
+        ctx.strokeStyle = "#ff4d4f";
+        ctx.lineWidth = Math.max(2, Math.round((configRef.current.detectionBorderWidth || 2) * scaleX));
+        ctx.strokeRect(ax, ay, aw, ah);
+      }
+    }
+    return cropCanvas.toDataURL("image/png").split(",")[1] || "";
+  };
+
+  const getOutputBase64 = async () => (
+    annotationsRef.current.length > 0 ? await renderEditedSelectionBase64() : (translatedResult || await captureRegionBase64())
+  );
 
   interface OcrBlock {
     text: string;
@@ -773,7 +1380,7 @@ export default function ScreenshotPage() {
     
     const pinId = Date.now().toString();
     const label = `pin_${pinId}`;
-    const imgData = translatedResult || base64;
+    const imgData = await getOutputBase64();
     
     let finalX = px;
     let finalY = py;
@@ -827,6 +1434,41 @@ export default function ScreenshotPage() {
       message.error("钉图失败");
     }
   };
+
+  const handlePreview = async () => {
+    if (!hasSelected || rect.w <= 0 || rect.h <= 0) return;
+    try {
+      const imgData = await getOutputBase64();
+      const label = `pin_preview_${Date.now()}`;
+      const maxW = 720;
+      const maxH = 520;
+      const scale = Math.min(1, maxW / rect.w, maxH / rect.h);
+      let sent = false;
+      const unlistenReady = await listen(`pin-ready-${label}`, () => {
+        sent = true;
+        emit(`pin-image-${label}`, imgData).catch(() => {});
+      });
+      const win = new WebviewWindow(label, {
+        url: "index.html",
+        title: "截图预览",
+        transparent: false,
+        decorations: true,
+        alwaysOnTop: true,
+        width: Math.max(240, Math.round(rect.w * scale)),
+        height: Math.max(180, Math.round(rect.h * scale)),
+        resizable: true,
+        skipTaskbar: false,
+      });
+      win.once("tauri://created", () => {
+        setTimeout(() => {
+          if (!sent) emit(`pin-image-${label}`, imgData).catch(() => {});
+        }, 500);
+      });
+      win.once("tauri://destroyed", () => unlistenReady());
+    } catch (e: any) {
+      message.error("预览失败: " + (e?.message || e?.toString?.() || String(e)));
+    }
+  };
   
   const handleTranslate = async () => {
     const startTime = performance.now();
@@ -842,73 +1484,54 @@ export default function ScreenshotPage() {
       let blocksCount = 1;
       
       let resultBase64 = "";
-      if (configRef.current.useLocalOcr) {
-        try {
-          console.log("[Local OCR Flow] 触发本地识别...");
-          const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
-            imageBase64: base64,
-            executablePath: configRef.current.localOcrExecutablePath || null,
-            timeoutMs: configRef.current.localOcrTimeoutMs || 15000
-          });
-          
-          if (!ocrBlocks || ocrBlocks.length === 0) {
-            throw new Error("本地未识别到任何文本内容");
-          }
-          
-          console.log("[Local OCR Flow] 本地识别成功，向云端发送文本翻译...", ocrBlocks.length);
-          const sUrl = serverUrl.replace(/\/$/, "");
-          const response = await fetch(`${sUrl}/api/translate_text`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": token
-            },
-            body: JSON.stringify({
-              blocks: ocrBlocks.map(b => ({
-                text: b.text,
-                confidence: b.confidence,
-                box: b.box_coords
-              })),
-              source_lang: "auto",
-              target_lang: targetLang
-            })
-          });
-          
-          if (!response.ok) {
-            throw new Error(`文本翻译请求失败，状态码: ${response.status}`);
-          }
-          
-          const transData = await response.json();
-          if (transData.status !== "success") {
-            throw new Error(transData.error || "翻译引擎未成功返回结果");
-          }
-          
-          usedChannel = transData.channel || usedChannel;
-          blocksCount = ocrBlocks.length;
-          
-          console.log("[Local OCR Flow] 翻译获取成功，开始本地重绘渲染...");
-          resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, transData.translations);
-          setTranslatePairs(ocrBlocks.map((b, i) => ({ o: b.text, t: transData.translations[i] || b.text })));
-        } catch (localErr: any) {
-          console.warn("[Local OCR Flow] 本地识别与重绘链条出错，尝试云端后备...", localErr);
-          if (configRef.current.fallbackToRemoteOcr) {
-            const res = await invoke<{image: string, texts: string, channel?: string, blocks?: number}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
-            resultBase64 = res.image;
-            if (res.texts) setTranslatePairs(decodeTextPairs(res.texts));
-            usedChannel = res.channel || usedChannel;
-            blocksCount = res.blocks || blocksCount;
-          } else {
-            throw localErr;
-          }
+      try {
+        console.log("[Local OCR Flow] \u6b63\u5728\u8c03\u7528\u672c\u5730 OCR...");
+        const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
+          imageBase64: base64,
+          executablePath: configRef.current.localOcrExecutablePath || null,
+          timeoutMs: configRef.current.localOcrTimeoutMs || 15000
+        });
+
+        if (!ocrBlocks || ocrBlocks.length === 0) {
+          throw new Error("\u672c\u5730 OCR \u672a\u8bc6\u522b\u5230\u6587\u5b57");
         }
-      } else {
-        const res = await invoke<{image: string, texts: string, channel?: string, blocks?: number}>("api_translate", { base64Image: base64, serverUrl, clientToken: token, targetLang });
-        resultBase64 = res.image;
-        if (res.texts) setTranslatePairs(decodeTextPairs(res.texts));
-        usedChannel = res.channel || usedChannel;
-        blocksCount = res.blocks || blocksCount;
+
+        console.log("[Local OCR Flow] \u672c\u5730 OCR \u5b8c\u6210\uff0c\u6b63\u5728\u8bf7\u6c42\u6587\u672c\u7ffb\u8bd1...", ocrBlocks.length);
+        const response = await fetch(`${serverUrl.replace(/\/$/, "")}/api/translate_text`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": token
+          },
+          body: JSON.stringify({
+            blocks: ocrBlocks.map(b => ({
+              text: b.text,
+              confidence: b.confidence,
+              box: b.box_coords
+            })),
+            source_lang: "auto",
+            target_lang: targetLang
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`\u6587\u672c\u7ffb\u8bd1\u63a5\u53e3\u5f02\u5e38\uff1a${response.status}`);
+        }
+
+        const transData = await response.json();
+        if (transData.status !== "success") {
+          throw new Error(transData.error || "\u6587\u672c\u7ffb\u8bd1\u5931\u8d25");
+        }
+
+        usedChannel = transData.channel || usedChannel;
+        blocksCount = ocrBlocks.length;
+        resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, transData.translations || []);
+        setTranslatePairs(ocrBlocks.map((b, i) => ({ o: b.text, t: (transData.translations || [])[i] || b.text })));
+      } catch (localErr: any) {
+        console.warn("[Local OCR Flow] \u672c\u5730 OCR \u6216\u6587\u672c\u7ffb\u8bd1\u5931\u8d25", localErr);
+        throw localErr;
       }
-      
+
       const dataUrl = "data:image/png;base64," + resultBase64;
       const overlayImg = await new Promise<HTMLImageElement>((resolve, reject) => {
         const img = new Image();
@@ -943,31 +1566,6 @@ export default function ScreenshotPage() {
       message.error({ content: `翻译失败: ${e.message || e}`, key: "translate" });
       setIsTranslating(false);
     }
-  };
-
-  const parseOCRHttpError = async (resp: Response) => {
-    const contentType = resp.headers.get("content-type") || "";
-    const raw = await resp.text().catch(() => "");
-
-    if (contentType.includes("application/json")) {
-      try {
-        const json = JSON.parse(raw);
-        return json.detail || json.error || json.message || `服务器返回 HTTP ${resp.status}`;
-      } catch {
-        return `服务器返回 HTTP ${resp.status}`;
-      }
-    }
-
-    const text = raw
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (resp.status === 502) return text ? `OCR 服务网关异常：${text}` : "OCR 服务网关异常：502 Bad Gateway";
-    if (text) return `OCR 服务异常：${text}`;
-    return `OCR 服务异常：HTTP ${resp.status}`;
   };
 
   const getOcrWindowPosition = async () => {
@@ -1068,34 +1666,21 @@ export default function ScreenshotPage() {
   };
 
   const handleOCR = async () => {
-    const serverUrl = configRef.current.serverUrl || "https://ocr.yousn.me";
-    const token = configRef.current.clientToken || "";
-
     try {
       setIsOCRing(true);
-      message.loading({ content: "正在识别文字...", key: "ocr", duration: 0 });
+      message.loading({ content: "正在使用本地 OCR 识别文字...", key: "ocr", duration: 0 });
 
       const base64 = await captureRegionBase64();
-      const resp = await fetch(`${serverUrl.replace(/\/$/, "")}/api/ocr`, {
-        method: "POST",
-        headers: { "x-api-key": token },
-        body: makeImageFormData(base64),
+      const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
+        imageBase64: base64,
+        executablePath: configRef.current.localOcrExecutablePath || null,
+        timeoutMs: configRef.current.localOcrTimeoutMs || 15000
       });
-
-      if (!resp.ok) {
-        throw new Error(await parseOCRHttpError(resp));
-      }
-
-      const data = await resp.json().catch(() => null);
-      if (!data) throw new Error("OCR 服务返回内容不是有效 JSON");
-      if (data.status !== "success") throw new Error(data.error || data.detail || "OCR 服务返回失败状态");
-
-      const items = Array.isArray(data.ocr) ? data.ocr : [];
-      const texts = items.map((item: any) => item.text).filter(Boolean).join("\n");
+      const texts = (ocrBlocks || []).map((item) => item.text).filter(Boolean).join("\n");
 
       message.destroy();
       setIsOCRing(false);
-      
+
       if (texts) {
         try {
           await navigator.clipboard.writeText(texts);
@@ -1107,7 +1692,7 @@ export default function ScreenshotPage() {
       await invoke("cancel_screenshot").catch(() => {});
     } catch (e: any) {
       const msg = e?.message || e?.toString?.() || String(e);
-      message.error({ content: `OCR 失败：${msg}`, key: "ocr", duration: 3 });
+      message.error({ content: `\u672c\u5730 OCR \u5931\u8d25\uff1a${msg}`, key: "ocr", duration: 3 });
       setIsOCRing(false);
     }
   };
@@ -1121,6 +1706,13 @@ export default function ScreenshotPage() {
     setHasSelected(false);
     setTranslatedResult(null);
     setTranslatePairs(null);
+    setIsEditing(false);
+    setAnnotations([]);
+    setAnnotationDraft(null);
+    windowRectsRef.current = [];
+    setWindowRects([]);
+    setHoverCandidate(null);
+    pendingDetectionRef.current = null;
     setIsTranslating(false);
     setIsOCRing(false);
     setScreenshotState("initializing");
@@ -1128,6 +1720,7 @@ export default function ScreenshotPage() {
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
     imageRef.current = null;
     translatedImgRef.current = null;
+    analysisImageDataRef.current = null;
   };
 
   const cancelScreenshot = async () => {
@@ -1137,7 +1730,7 @@ export default function ScreenshotPage() {
 
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
     try {
-      const base64 = translatedResult || await captureRegionBase64();
+      const base64 = await getOutputBase64();
       await emit("screenshot-captured", base64);
       if (action === "copy" || action === "both") {
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
@@ -1216,11 +1809,28 @@ export default function ScreenshotPage() {
             <Button size="small" icon={<TranslationOutlined />} type="primary" ghost onClick={handleTranslate} loading={isTranslating}>翻译 (Ctrl+Q)</Button>
             <Button size="small" icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing}>识字</Button>
             <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图 (P)</Button>
+            <Button size="small" type={isEditing ? "primary" : "default"} onClick={() => { setIsEditing((value) => !value); renderNeededRef.current = true; }}>编辑</Button>
+            {isEditing && (
+              <>
+                <Button size="small" type={annotationTool === "rect" ? "primary" : "default"} ghost={annotationTool === "rect"} onClick={() => setAnnotationTool("rect")}>矩形</Button>
+                <Button size="small" type={annotationTool === "arrow" ? "primary" : "default"} ghost={annotationTool === "arrow"} onClick={() => setAnnotationTool("arrow")}>箭头</Button>
+                <Button size="small" type={annotationTool === "text" ? "primary" : "default"} ghost={annotationTool === "text"} onClick={() => setAnnotationTool("text")}>文字</Button>
+                <Button size="small" type={annotationTool === "brush" ? "primary" : "default"} ghost={annotationTool === "brush"} onClick={() => setAnnotationTool("brush")}>画笔</Button>
+                <Button size="small" type={annotationTool === "mosaic" ? "primary" : "default"} ghost={annotationTool === "mosaic"} onClick={() => setAnnotationTool("mosaic")}>马赛克</Button>
+                <Button size="small" disabled={annotations.length === 0} onClick={() => { const next = annotations.slice(0, -1); annotationsRef.current = next; setAnnotations(next); renderNeededRef.current = true; }}>撤销</Button>
+              </>
+            )}
+            <Button size="small" onClick={handlePreview}>预览</Button>
             <Button size="small" icon={<CopyOutlined />} onClick={() => confirmScreenshot("copy")}>复制</Button>
             <Button size="small" icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")}>保存</Button>
             <Button size="small" icon={<CloseOutlined />} onClick={cancelScreenshot} danger />
             <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => confirmScreenshot("both")}>完成</Button>
           </Space>
+          {isEditing && (
+            <div style={{ marginTop: 6, color: "#ffffff", fontSize: 12, textShadow: "0 1px 2px rgba(0,0,0,0.45)" }}>
+              当前工具：{annotationTool === "rect" ? "矩形" : annotationTool === "arrow" ? "箭头" : annotationTool === "text" ? "文字" : annotationTool === "brush" ? "画笔" : "马赛克"}，在截图区域内按住左键拖拽即可标注
+            </div>
+          )}
         </div>
       )}
 

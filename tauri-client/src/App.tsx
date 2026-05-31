@@ -18,12 +18,14 @@ import {
   InfoCircleOutlined,
   WifiOutlined,
   SyncOutlined,
-  DashboardOutlined
+  DashboardOutlined,
+  FileTextOutlined
 } from "@ant-design/icons";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import History from "./pages/History";
 import About from "./pages/About";
+import OcrConfig from "./pages/OcrConfig";
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -133,6 +135,11 @@ function AppContent() {
       label: "系统设置",
     },
     {
+      key: "ocr-config",
+      icon: <FileTextOutlined />,
+      label: "OCR\u914d\u7f6e",
+    },
+    {
       key: "history",
       icon: <HistoryOutlined />,
       label: "历史记录",
@@ -150,6 +157,8 @@ function AppContent() {
         return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onRefreshStatus={() => checkStatus(serverUrl)} />;
       case "settings":
         return <Settings onConfigSaved={fetchServerUrl} />;
+      case "ocr-config":
+        return <OcrConfig />;
       case "history":
         return <History />;
       case "about":

@@ -19,6 +19,9 @@ def _default_config():
         "debug_trace": False,
         "ocr_max_side": 1280,
         "ocr_cache_enabled": True,
+        "ocr_warmup_enabled": False,
+        "ocr_idle_unload_seconds": 900,
+        "ocr_cpu_threads": 2,
         "channels": {
             "new-api": {
                 "base_url": "api.yousn.me",
@@ -31,6 +34,15 @@ def _default_config():
             }
         }
     }
+
+def _merge_defaults(default: dict, cfg: dict) -> dict:
+    merged = dict(default)
+    for key, value in cfg.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_defaults(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 def load_server_config():
     if not os.path.exists(CONFIG_PATH):
@@ -46,6 +58,7 @@ def load_server_config():
             cfg = yaml.safe_load(f)
             if not cfg or not isinstance(cfg, dict):
                 raise ValueError("Empty or invalid config structure")
+            cfg = _merge_defaults(_default_config(), cfg)
             return _apply_env_overrides(cfg)
     except Exception as e:
         logger.warning("Config parsing failed: %s. Backing up old config and regenerating default.", e)
