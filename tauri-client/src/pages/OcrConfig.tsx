@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -10,6 +11,7 @@ import {
   Input,
   InputNumber,
   message,
+  Progress,
   Row,
   Space,
   Tag,
@@ -65,7 +67,10 @@ const T = {
   notChecked: "未检查",
   hasUpdate: "有更新",
   fullLog: "完整日志",
-  openInstallDir: "打开安装目录",
+  openInstallDir: "打开 OCR 所在目录",
+  moveInstallDir: "移动 OCR 目录",
+  moving: "正在移动 OCR 目录...",
+  moved: "OCR 目录已移动",
   checkFirst: "请先检查更新",
   noWindowsAsset: "最新 Release 未找到 Windows x64 .7z 运行包。",
   officialNoLog: "官方 Release 未提供更新说明。",
@@ -110,6 +115,13 @@ interface DownloadResult {
   bytes: number;
 }
 
+interface ProgressPayload {
+  phase: string;
+  downloaded: number;
+  total?: number;
+  percent: number;
+}
+
 interface StatusResult {
   ok: boolean;
   path: string;
@@ -151,9 +163,16 @@ export default function OcrConfig() {
   const [downloading, setDownloading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [downloadSize, setDownloadSize] = useState<number | undefined>();
+  const [downloadProgress, setDownloadProgress] = useState<ProgressPayload | null>(null);
+  const [movingDir, setMovingDir] = useState(false);
 
   useEffect(() => {
     loadConfig();
+    let unlisten: (() => void) | undefined;
+    listen<ProgressPayload>("ocr-download-progress", (event) => setDownloadProgress(event.payload))
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { if (unlisten) unlisten(); };
   }, []);
 
   const loadConfig = async () => {
@@ -228,9 +247,11 @@ export default function OcrConfig() {
     }
     setDownloading(true);
     try {
+      setDownloadProgress({ phase: "准备下载", downloaded: 0, total: latestAsset.size, percent: 1 });
       const result = await invoke<DownloadResult>("download_paddleocr_release", {
         url: latestAsset.browser_download_url,
         tag: latest.tag_name,
+        installDir: config.paddleOcrInstallDir || null,
       });
       setDownloadSize(result.bytes);
       await saveConfig({
@@ -242,12 +263,54 @@ export default function OcrConfig() {
         paddleOcrReleaseCheckedAt: new Date().toLocaleString(),
       }, false);
       await checkOcrStatus(result.path, false);
+      setDownloadProgress({ phase: "完成", downloaded: result.bytes, total: result.bytes, percent: 100 });
       message.success(T.downloaded + latest.tag_name);
     } catch (error: any) {
       message.error(T.downloadFailed + (error?.message || error));
     } finally {
       setDownloading(false);
     }
+  };
+
+  const moveOcrDir = async () => {
+    setMovingDir(true);
+    try {
+      const targetDir = await invoke<string | null>("choose_ocr_install_dir");
+      if (!targetDir) return;
+      message.loading({ content: T.moving, key: "move-ocr", duration: 0 });
+      const result = await invoke<DownloadResult>("move_ocr_runtime", {
+        targetDir,
+        executablePath: config.localOcrExecutablePath || null,
+      });
+      await saveConfig({
+        localOcrExecutablePath: result.path,
+        paddleOcrInstallDir: result.installDir,
+      }, false);
+      await checkOcrStatus(result.path, false);
+      message.success({ content: T.moved, key: "move-ocr" });
+    } catch (error: any) {
+      message.error({ content: (error?.message || error), key: "move-ocr" });
+    } finally {
+      setMovingDir(false);
+    }
+  };
+
+  const openOcrDir = async () => {
+    const exePath = config.localOcrExecutablePath || status?.path;
+    const installDir = config.paddleOcrInstallDir;
+    try {
+      if (exePath && exePath !== "-") {
+        await revealItemInDir(exePath);
+        return;
+      }
+    } catch (error) {
+      if (!installDir) throw error;
+    }
+    if (installDir) {
+      await openPath(installDir);
+      return;
+    }
+    message.info("\u8bf7\u5148\u4e0b\u8f7d\u6216\u9009\u62e9 PaddleOCR-json.exe");
   };
 
   const hasUpdate = Boolean(latest && latest.tag_name !== config.paddleOcrReleaseTag);
@@ -277,7 +340,8 @@ export default function OcrConfig() {
               <Space wrap>
                 <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => saveConfig()}>{T.save}</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={checkingStatus} onClick={() => checkOcrStatus()}>{T.checkStatus}</Button>
-                {config.localOcrExecutablePath && <Button icon={<FolderOpenOutlined />} onClick={() => revealItemInDir(config.localOcrExecutablePath!)}>{T.openDir}</Button>}
+                <Button icon={<FolderOpenOutlined />} onClick={openOcrDir} disabled={!config.localOcrExecutablePath && !status?.path && !config.paddleOcrInstallDir}>{T.openDir}</Button>
+                <Button loading={movingDir} onClick={moveOcrDir}>{T.moveInstallDir}</Button>
               </Space>
               <Descriptions size="small" column={1} bordered>
                 <Descriptions.Item label={T.mode}><Tag color="green">{T.localOnly}</Tag></Descriptions.Item>
@@ -312,7 +376,10 @@ export default function OcrConfig() {
                 </Card>
               )}
 
-              {config.paddleOcrInstallDir && <Button onClick={() => openPath(config.paddleOcrInstallDir!)}>{T.openInstallDir}</Button>}
+              {downloadProgress && (
+                <Progress percent={downloadProgress.percent} status={downloadProgress.percent >= 100 ? "success" : "active"} format={() => `${downloadProgress.phase} ${downloadProgress.percent}%`} />
+              )}
+              {(config.localOcrExecutablePath || config.paddleOcrInstallDir) && <Button onClick={openOcrDir}>{T.openInstallDir}</Button>}
             </Space>
           </Card>
         </Col>

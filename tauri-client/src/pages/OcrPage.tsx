@@ -14,6 +14,7 @@ export default function OcrPage() {
   const [text, setText] = useState("");
   const [previewBase64, setPreviewBase64] = useState("");
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const win = winRef.current;
@@ -44,13 +45,23 @@ export default function OcrPage() {
 
     window.addEventListener("mouseenter", focusWindow);
     window.addEventListener("mousemove", focusWindow);
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      setContextMenu({ x: event.clientX, y: event.clientY });
+    };
+    const handleClick = () => setContextMenu(null);
+
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("click", handleClick);
 
     return () => {
       if (unlistenFn) unlistenFn();
       window.removeEventListener("mouseenter", focusWindow);
       window.removeEventListener("mousemove", focusWindow);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("click", handleClick);
     };
   }, []);
 
@@ -80,6 +91,7 @@ export default function OcrPage() {
     try {
       await navigator.clipboard.writeText(text);
       message.success("OCR 文本已复制");
+      setContextMenu(null);
     } catch (error) {
       message.error("复制失败");
     }
@@ -129,6 +141,13 @@ export default function OcrPage() {
           </Tooltip>
         </div>
       </div>
+
+      {contextMenu && (
+        <div data-no-drag="true" style={{ position: "absolute", left: contextMenu.x, top: contextMenu.y, zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(event) => event.stopPropagation()}>
+          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>??</button>
+          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>??</button>
+        </div>
+      )}
 
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, minHeight: 0, flex: 1 }}>
         <div data-no-drag="true" style={{ minHeight: 0, flex: 1, cursor: "auto" }}>

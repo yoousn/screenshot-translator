@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { 
   List, 
   Button, 
@@ -7,7 +8,10 @@ import {
   Space, 
   Typography, 
   Card,
-  message 
+  message,
+  InputNumber,
+  Descriptions,
+  Input
 } from "antd";
 import { 
   HistoryOutlined, 
@@ -15,7 +19,8 @@ import {
   PictureOutlined, 
   CheckCircleOutlined,
   ClockCircleOutlined,
-  GlobalOutlined
+  GlobalOutlined,
+  FolderOpenOutlined
 } from "@ant-design/icons";
 
 const { Text, Title, Paragraph } = Typography;
@@ -35,6 +40,10 @@ interface HistoryRecord {
 export default function History() {
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [loading, setLoading] = useState(false);
+  const [historyInfo, setHistoryInfo] = useState<any>(null);
+  const [historyMaxRecords, setHistoryMaxRecords] = useState<number>(100);
+  const [historyMaxBytesMb, setHistoryMaxBytesMb] = useState<number>(2);
+  const [historyDir, setHistoryDir] = useState("");
 
   useEffect(() => {
     loadHistory();
@@ -43,13 +52,41 @@ export default function History() {
   const loadHistory = async () => {
     setLoading(true);
     try {
-      const historyStr = await invoke<string>("get_history");
+      const [historyStr, info] = await Promise.all([
+        invoke<string>("get_history"),
+        invoke<any>("get_history_info"),
+      ]);
       setHistory(JSON.parse(historyStr));
+      setHistoryInfo(info);
+      setHistoryMaxRecords(Number(info?.maxRecords || 100));
+      setHistoryMaxBytesMb(Number(((info?.maxBytes || 2 * 1024 * 1024) / 1024 / 1024).toFixed(1)));
+      setHistoryDir(info?.dir || "");
     } catch (err) {
       console.error("Failed to load history:", err);
-      message.error("加载历史记录失败");
+      message.error("\u52a0\u8f7d\u5386\u53f2\u8bb0\u5f55\u5931\u8d25");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const formatBytes = (bytes?: number) => {
+    if (!bytes) return "0 KB";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1024 / 1024).toFixed(2) + " MB";
+  };
+
+  const saveHistoryLimits = async () => {
+    try {
+      const configStr = await invoke<string>("get_config");
+      const config = configStr ? JSON.parse(configStr) : {};
+      config.historyMaxRecords = historyMaxRecords;
+      config.historyMaxBytes = Math.max(1, historyMaxBytesMb) * 1024 * 1024;
+      config.historyDir = historyDir.trim();
+      await invoke("save_config", { configStr: JSON.stringify(config) });
+      message.success("历史记录配置已保存");
+      loadHistory();
+    } catch (error: any) {
+      message.error("保存历史记录限制失败：" + (error?.message || error));
     }
   };
 
@@ -57,9 +94,27 @@ export default function History() {
     try {
       await invoke("clear_history");
       setHistory([]);
+      loadHistory();
       message.success("已清空历史记录");
     } catch (err) {
       message.error("清空历史记录失败");
+    }
+  };
+
+  const chooseHistoryDir = async () => {
+    try {
+      const dir = await invoke<string | null>("choose_history_dir", { currentDir: historyDir });
+      if (dir) setHistoryDir(dir);
+    } catch (error: any) {
+      message.error("\u9009\u62e9\u5386\u53f2\u76ee\u5f55\u5931\u8d25\uff1a" + (error?.message || error));
+    }
+  };
+
+  const openHistoryDir = async () => {
+    try {
+      if (historyDir) await openPath(historyDir);
+    } catch (error: any) {
+      message.error("\u6253\u5f00\u5386\u53f2\u76ee\u5f55\u5931\u8d25\uff1a" + (error?.message || error));
     }
   };
 
@@ -83,6 +138,31 @@ export default function History() {
           清理历史记录
         </Button>
       </div>
+
+
+      {historyInfo && (
+        <Card size="small" style={{ marginBottom: 16, background: "#fafafa" }}>
+          <Descriptions size="small" column={1} bordered>
+            <Descriptions.Item label="历史文件路径">{historyInfo.path}</Descriptions.Item>
+            <Descriptions.Item label="当前数量">{historyInfo.count} 条</Descriptions.Item>
+            <Descriptions.Item label="当前占用">{formatBytes(historyInfo.bytes)}</Descriptions.Item>
+          </Descriptions>
+          <Space style={{ marginTop: 12 }} wrap>
+            <span>历史目录</span>
+            <Input value={historyDir} onChange={(event) => setHistoryDir(event.target.value)} style={{ width: 360 }} placeholder="默认目录" />
+            <Button icon={<FolderOpenOutlined />} onClick={chooseHistoryDir}>选择目录</Button>
+            <Button onClick={openHistoryDir}>打开目录</Button>
+            <Button onClick={() => setHistoryDir("")}>恢复默认目录</Button>
+          </Space>
+          <Space style={{ marginTop: 12 }} wrap>
+            <span>最大数量</span>
+            <InputNumber min={10} max={5000} value={historyMaxRecords} onChange={(value) => setHistoryMaxRecords(Number(value || 100))} />
+            <span>最大大小(MB)</span>
+            <InputNumber min={1} max={100} value={historyMaxBytesMb} onChange={(value) => setHistoryMaxBytesMb(Number(value || 2))} />
+            <Button type="primary" onClick={saveHistoryLimits}>保存配置</Button>
+          </Space>
+        </Card>
+      )}
 
       <div style={{ marginBottom: 12 }}>
         <Text strong style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, color: "#1f1f1f" }}>

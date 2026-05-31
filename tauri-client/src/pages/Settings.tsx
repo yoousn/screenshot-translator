@@ -239,7 +239,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
       try {
-        await invoke("re_register_shortcut", { hotkey: configValues.hotkey || "Alt+A" });
+        await invoke("re_register_shortcut", { hotkey: configValues.hotkey || "", translateHotkey: configValues.translateHotkey || "" });
       } catch (shortcutErr: any) {
         message.warning(`本地配置已保存，但快捷键注册失败: ${shortcutErr.message || shortcutErr}`);
       }
@@ -260,6 +260,12 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
     } finally {
       setIsSaving(false);
     }
+  };
+
+
+  const restoreDefaultHotkeys = () => {
+    form.setFieldsValue({ hotkey: "Alt+A", translateHotkey: "Alt+T" });
+    message.success("已还原默认快捷键");
   };
 
   const channelOptions = [
@@ -290,6 +296,8 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         useLocalOcr: true,
         fallbackToRemoteOcr: false,
         localOcrTimeoutMs: 5000,
+        hotkey: "Alt+A",
+        translateHotkey: "Alt+T",
       }}
       onFinish={onFinish}
       onValuesChange={handleFormChange}
@@ -490,12 +498,24 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
               <Form.Item
                 label="全局截图快捷键"
                 name="hotkey"
-                rules={[{ pattern: /^(Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows)(\s*\+\s*(Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows))*\s*\+\s*.+$/i, message: "格式示例：Alt+A、Ctrl+Shift+S" }]}
+                rules={[{ pattern: /^(|((Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows)(\s*\+\s*(Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows))*\s*\+\s*.+))$/i, message: "格式示例：Alt+A，留空表示取消" }]}
               >
-                <Input placeholder="Alt+A" style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
+                <Input placeholder="Alt+A；留空取消" style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
               </Form.Item>
-              <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
-                保存后立即生效；示例：Alt+A、Ctrl+Shift+S。翻译快捷键 Alt+T 保持固定。
+              <Form.Item
+                label="翻译截图快捷键"
+                name="translateHotkey"
+                rules={[{ pattern: /^(|((Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows)(\s*\+\s*(Alt|Ctrl|Control|Shift|Cmd|Command|Meta|Win|Windows))*\s*\+\s*.+))$/i, message: "格式示例：Alt+T，留空表示取消" }]}
+              >
+                <Input placeholder="Alt+T；留空取消" style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
+              </Form.Item>
+              <Space>
+                <Button onClick={() => form.setFieldsValue({ hotkey: "" })}>取消截图键</Button>
+                <Button onClick={() => form.setFieldsValue({ translateHotkey: "" })}>取消翻译键</Button>
+                <Button onClick={restoreDefaultHotkeys}>还原默认</Button>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: 8 }}>
+                保存后立即生效；留空表示取消对应全局快捷键。
               </Text>
             </Col>
           </Row>

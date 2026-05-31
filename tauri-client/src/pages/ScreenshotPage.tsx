@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { Button, Space, message } from "antd";
+import { Button, Input, InputNumber, Space, Tooltip, message } from "antd";
 import {
   CopyOutlined,
   SaveOutlined,
@@ -29,12 +29,13 @@ interface Config {
 }
 
 type Rect = { x: number; y: number; w: number; h: number; kind?: "window" | "control" | "visual" };
-type AnnotationTool = "rect" | "mosaic" | "arrow" | "text" | "brush";
+type AnnotationTool = "rect" | "circle" | "mosaic" | "arrow" | "text" | "brush";
 type Point = { x: number; y: number };
-type Annotation = { type: AnnotationTool; rect: Rect; points?: Point[]; text?: string };
+type Annotation = { type: AnnotationTool; rect: Rect; points?: Point[]; text?: string; color?: string; size?: number };
+type EditingTextDraft = { x: number; y: number; value: string; targetIndex: number | null } | null;
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
-const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 520, height: 44 };
+const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 620, height: 86 };
 const OCR_WINDOW_SIZE = { width: 460, height: 360 };
 const FLOATING_PANEL_MARGIN = 8;
 const FLOATING_PANEL_GAP = 8;
@@ -73,7 +74,12 @@ export default function ScreenshotPage() {
   const [translatePairs, setTranslatePairs] = useState<Array<{o: string, t: string}> | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [annotationTool, setAnnotationTool] = useState<AnnotationTool>("rect");
+  const [annotationColor, setAnnotationColor] = useState("#ff4d4f");
+  const [annotationSize, setAnnotationSize] = useState(4);
+  const [selectedAnnotationIndex, setSelectedAnnotationIndex] = useState<number | null>(null);
+  const [editingTextDraft, setEditingTextDraft] = useState<EditingTextDraft>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [redoAnnotations, setRedoAnnotations] = useState<Annotation[]>([]);
   const [draftAnnotation, setDraftAnnotation] = useState<Annotation | null>(null);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
@@ -90,11 +96,18 @@ export default function ScreenshotPage() {
   const pendingDetectionRef = useRef<Rect | null>(null);
   const analysisImageDataRef = useRef<ImageData | null>(null);
   const annotationsRef = useRef<Annotation[]>([]);
+  const redoAnnotationsRef = useRef<Annotation[]>([]);
   const draftAnnotationRef = useRef<Annotation | null>(null);
   const isEditingRef = useRef(false);
   const annotationToolRef = useRef<AnnotationTool>("rect");
+  const annotationColorRef = useRef("#ff4d4f");
+  const annotationSizeRef = useRef(4);
+  const selectedAnnotationIndexRef = useRef<number | null>(null);
+  const editingTextDraftRef = useRef<EditingTextDraft>(null);
   const isDrawingAnnotationRef = useRef(false);
+  const isDraggingAnnotationRef = useRef(false);
   const annotationStartRef = useRef({ x: 0, y: 0 });
+  const annotationDragStartRef = useRef({ x: 0, y: 0 });
 
   const decodeTextPairs = (encoded: string) => {
     const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
@@ -121,6 +134,9 @@ export default function ScreenshotPage() {
     setTranslatePairs(null);
     setIsEditing(false);
     setAnnotations([]);
+    setRedoAnnotations([]);
+    setSelectedAnnotationIndex(null);
+    setEditingTextDraft(null);
     setDraftAnnotation(null);
     windowRectsRef.current = [];
     setWindowRects([]);
@@ -165,9 +181,14 @@ export default function ScreenshotPage() {
   hoverRectRef.current = hoverRect;
   hoverCandidatesRef.current = hoverCandidates;
   annotationsRef.current = annotations;
+  redoAnnotationsRef.current = redoAnnotations;
   draftAnnotationRef.current = draftAnnotation;
   isEditingRef.current = isEditing;
   annotationToolRef.current = annotationTool;
+  annotationColorRef.current = annotationColor;
+  annotationSizeRef.current = annotationSize;
+  selectedAnnotationIndexRef.current = selectedAnnotationIndex;
+  editingTextDraftRef.current = editingTextDraft;
   screenshotModeRef.current = screenshotMode;
   drawRef.current = draw;
 
@@ -207,7 +228,36 @@ export default function ScreenshotPage() {
   const commitAnnotation = (annotation: Annotation) => {
     const next = [...annotationsRef.current, annotation];
     annotationsRef.current = next;
+    redoAnnotationsRef.current = [];
     setAnnotations(next);
+    setRedoAnnotations([]);
+  };
+
+  const undoAnnotation = () => {
+    const current = annotationsRef.current;
+    if (current.length === 0) return;
+    const removed = current[current.length - 1];
+    const next = current.slice(0, -1);
+    const redoNext = [...redoAnnotationsRef.current, removed];
+    annotationsRef.current = next;
+    redoAnnotationsRef.current = redoNext;
+    setAnnotations(next);
+    setRedoAnnotations(redoNext);
+    setSelectedAnnotationIndex(null);
+    renderNeededRef.current = true;
+  };
+
+  const redoAnnotation = () => {
+    const redo = redoAnnotationsRef.current;
+    if (redo.length === 0) return;
+    const restored = redo[redo.length - 1];
+    const next = [...annotationsRef.current, restored];
+    const redoNext = redo.slice(0, -1);
+    annotationsRef.current = next;
+    redoAnnotationsRef.current = redoNext;
+    setAnnotations(next);
+    setRedoAnnotations(redoNext);
+    renderNeededRef.current = true;
   };
 
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -725,17 +775,77 @@ export default function ScreenshotPage() {
   const makeLineAnnotation = (tool: AnnotationTool, start: Point, end: Point): Annotation => ({
     type: tool,
     rect: normalizedRectFromPoints(start, end),
+    color: annotationColorRef.current,
+    size: annotationSizeRef.current,
     points: [
       { x: clamp(start.x, rectRef.current.x, rectRef.current.x + rectRef.current.w), y: clamp(start.y, rectRef.current.y, rectRef.current.y + rectRef.current.h) },
       { x: clamp(end.x, rectRef.current.x, rectRef.current.x + rectRef.current.w), y: clamp(end.y, rectRef.current.y, rectRef.current.y + rectRef.current.h) },
     ],
   });
 
-  const makeTextAnnotation = (point: Point, text: string): Annotation => ({
-    type: "text",
-    rect: { x: point.x, y: point.y, w: Math.max(80, text.length * 14), h: 28 },
-    text,
+  const makeTextAnnotation = (point: Point, text: string): Annotation => {
+    const fontSize = Math.max(14, annotationSizeRef.current + 14);
+    return {
+      type: "text",
+      rect: { x: point.x, y: point.y, w: Math.max(48, text.length * fontSize * 0.72 + 12), h: fontSize + 8 },
+      text,
+      color: annotationColorRef.current,
+      size: fontSize,
+    };
+  };
+
+  const isDraggableAnnotation = (annotation: Annotation) => annotation.type === "rect" || annotation.type === "circle" || annotation.type === "text";
+
+  const hitAnnotation = (x: number, y: number) => {
+    for (let i = annotationsRef.current.length - 1; i >= 0; i--) {
+      const annotation = annotationsRef.current[i];
+      const r = annotation.rect;
+      const tolerance = Math.max(8, annotation.size || annotationSizeRef.current);
+      if (x >= r.x - tolerance && x <= r.x + r.w + tolerance && y >= r.y - tolerance && y <= r.y + r.h + tolerance) return i;
+    }
+    return null;
+  };
+
+  const moveAnnotation = (annotation: Annotation, dx: number, dy: number): Annotation => ({
+    ...annotation,
+    rect: { ...annotation.rect, x: annotation.rect.x + dx, y: annotation.rect.y + dy },
+    points: annotation.points?.map((point) => ({ x: point.x + dx, y: point.y + dy })),
   });
+
+  const openTextEditor = (point: Point, targetIndex: number | null, value = "") => {
+    const selection = rectRef.current;
+    const width = 180;
+    const height = 34;
+    const x = clamp(point.x - width / 2, selection.x + 8, selection.x + selection.w - width - 8);
+    const y = clamp(point.y - height / 2, selection.y + 8, selection.y + selection.h - height - 8);
+    setEditingTextDraft({ x, y, value, targetIndex });
+  };
+
+  const commitTextDraft = () => {
+    const draft = editingTextDraftRef.current;
+    if (!draft) return;
+    const value = draft.value.trim();
+    if (!value) {
+      setEditingTextDraft(null);
+      return;
+    }
+    if (draft.targetIndex !== null) {
+      const current = annotationsRef.current[draft.targetIndex];
+      if (current) {
+        const next = [...annotationsRef.current];
+        const fontSize = current.size || Math.max(14, annotationSizeRef.current + 14);
+        next[draft.targetIndex] = { ...current, text: value, rect: { ...current.rect, w: Math.max(48, value.length * fontSize * 0.72 + 12), h: fontSize + 8 } };
+        annotationsRef.current = next;
+        setAnnotations(next);
+      }
+    } else {
+      commitAnnotation(makeTextAnnotation({ x: draft.x + 90, y: draft.y + 17 }, value));
+    }
+    setEditingTextDraft(null);
+    renderNeededRef.current = true;
+  };
+
+  const cancelTextDraft = () => setEditingTextDraft(null);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!overlayVisible) return;
@@ -814,19 +924,35 @@ export default function ScreenshotPage() {
       mouseTrackerRef.current.textContent = `${cx}, ${cy}${hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""}`;
     }
 
+    if (isDraggingAnnotationRef.current && selectedAnnotationIndexRef.current !== null) {
+      const current = annotationsRef.current[selectedAnnotationIndexRef.current];
+      if (current && isDraggableAnnotation(current)) {
+        const dx = cx - annotationDragStartRef.current.x;
+        const dy = cy - annotationDragStartRef.current.y;
+        annotationDragStartRef.current = { x: cx, y: cy };
+        const next = annotationsRef.current.map((annotation, index) => index === selectedAnnotationIndexRef.current ? moveAnnotation(annotation, dx, dy) : annotation);
+        annotationsRef.current = next;
+        setAnnotations(next);
+        renderNeededRef.current = true;
+      }
+      return;
+    }
+
     if (isDrawingAnnotationRef.current) {
-      if (annotationToolRef.current === "brush") {
+      if (annotationToolRef.current === "brush" || annotationToolRef.current === "mosaic") {
         const current = draftAnnotationRef.current;
         const nextPoints = [...(current?.points || []), { x: clamp(cx, rectRef.current.x, rectRef.current.x + rectRef.current.w), y: clamp(cy, rectRef.current.y, rectRef.current.y + rectRef.current.h) }];
         const xs = nextPoints.map((p) => p.x);
         const ys = nextPoints.map((p) => p.y);
-        setAnnotationDraft({ type: "brush", rect: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }, points: nextPoints });
+        setAnnotationDraft({ type: annotationToolRef.current, rect: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }, points: nextPoints, color: annotationColorRef.current, size: annotationSizeRef.current });
       } else if (annotationToolRef.current === "arrow") {
         setAnnotationDraft(makeLineAnnotation("arrow", annotationStartRef.current, { x: cx, y: cy }));
       } else {
         setAnnotationDraft({
           type: annotationToolRef.current,
           rect: normalizedRectFromPoints(annotationStartRef.current, { x: cx, y: cy }),
+          color: annotationColorRef.current,
+          size: annotationSizeRef.current,
         });
       }
       renderNeededRef.current = true;
@@ -921,13 +1047,14 @@ export default function ScreenshotPage() {
     if (isDrawingAnnotationRef.current) {
       isDrawingAnnotationRef.current = false;
       const draft = draftAnnotationRef.current;
-      if (draft && (draft.type === "brush" ? (draft.points?.length || 0) > 2 : draft.rect.w > 4 && draft.rect.h > 4)) commitAnnotation(draft);
+      if (draft && ((draft.type === "brush" || draft.type === "mosaic") ? (draft.points?.length || 0) > 2 : draft.rect.w > 4 && draft.rect.h > 4)) commitAnnotation(draft);
       setAnnotationDraft(null);
       renderNeededRef.current = true;
       return;
     }
     isSelectingRef.current = false;
     setIsSelecting(false);
+    isDraggingAnnotationRef.current = false;
     isDraggingRef.current = false;
     isResizingRef.current = null;
     setCurrentRect({ ...rectRef.current }, true);
@@ -949,13 +1076,15 @@ export default function ScreenshotPage() {
     if (hasSelectedRef.current) confirmScreenshot("copy");
   };
 
-  const drawAnnotation = (ctx: CanvasRenderingContext2D, annotation: Annotation) => {
+  const drawAnnotation = (ctx: CanvasRenderingContext2D, annotation: Annotation, index?: number) => {
     const { x, y, w, h } = annotation.rect;
+    const color = annotation.color || "#ff4d4f";
+    const size = annotation.size || 4;
     if (annotation.type === "brush") {
       const points = annotation.points || [];
       if (points.length < 2) return;
-      ctx.strokeStyle = "#ff4d4f";
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = size;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.beginPath();
@@ -970,10 +1099,10 @@ export default function ScreenshotPage() {
       if (points.length < 2) return;
       const [start, end] = points;
       const angle = Math.atan2(end.y - start.y, end.x - start.x);
-      const head = 12;
-      ctx.strokeStyle = "#ff4d4f";
-      ctx.fillStyle = "#ff4d4f";
-      ctx.lineWidth = 2;
+      const head = Math.max(12, size * 3);
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = size;
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
       ctx.lineTo(end.x, end.y);
@@ -988,14 +1117,19 @@ export default function ScreenshotPage() {
     }
     if (annotation.type === "text") {
       if (!annotation.text) return;
-      ctx.font = "18px Microsoft YaHei, sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      const fontSize = annotation.size || 18;
+      ctx.font = fontSize + "px Microsoft YaHei, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.72)";
       const width = ctx.measureText(annotation.text).width + 14;
-      ctx.fillRect(x, y, width, 28);
-      ctx.strokeStyle = "#ff4d4f";
-      ctx.strokeRect(x, y, width, 28);
-      ctx.fillStyle = "#ff4d4f";
-      ctx.fillText(annotation.text, x + 7, y + 20);
+      const height = fontSize + 10;
+      ctx.fillRect(x, y, width, height);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, width, height);
+      ctx.fillStyle = color;
+      ctx.fillText(annotation.text, x + 7, y + fontSize + 2);
+      annotation.rect.w = width;
+      annotation.rect.h = height;
       return;
     }
     if (w <= 0 || h <= 0) return;
@@ -1017,10 +1151,24 @@ export default function ScreenshotPage() {
       ctx.strokeRect(x, y, w, h);
       return;
     }
-    ctx.strokeStyle = "#ff4d4f";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = size;
     ctx.setLineDash([]);
-    ctx.strokeRect(x, y, w, h);
+    if (annotation.type === "circle") {
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, y + h / 2, Math.max(1, w / 2), Math.max(1, h / 2), 0, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.strokeRect(x, y, w, h);
+    }
+    if (index !== undefined && selectedAnnotationIndexRef.current === index && isDraggableAnnotation(annotation)) {
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "#1677ff";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(annotation.rect.x - 4, annotation.rect.y - 4, annotation.rect.w + 8, annotation.rect.h + 8);
+      ctx.restore();
+    }
   };
 
   function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement) {
@@ -1034,15 +1182,6 @@ export default function ScreenshotPage() {
       ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    if (windowRectsRef.current.length > 0) {
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      for (const wr of windowRectsRef.current) {
-        ctx.strokeStyle = wr.kind === "control" ? "rgba(250, 140, 22, 0.75)" : "rgba(82, 196, 26, 0.55)";
-        ctx.strokeRect(wr.x, wr.y, wr.w, wr.h);
-      }
-      ctx.setLineDash([]);
     }
     const preview = hoverRectRef.current;
     if (!hasSelectedRef.current && preview && preview.w > 0 && preview.h > 0) {
@@ -1100,7 +1239,7 @@ export default function ScreenshotPage() {
         const scaleY = imageRef.current.naturalHeight / canvas.height;
         ctx.drawImage(imageRef.current, rx * scaleX, ry * scaleY, rw * scaleX, rh * scaleY, rx, ry, rw, rh);
       }
-      [...annotationsRef.current, ...(draftAnnotationRef.current ? [draftAnnotationRef.current] : [])].forEach((annotation) => drawAnnotation(ctx, annotation));
+      [...annotationsRef.current, ...(draftAnnotationRef.current ? [draftAnnotationRef.current] : [])].forEach((annotation, index) => drawAnnotation(ctx, annotation, index));
       ctx.strokeStyle = "#1677ff";
       ctx.lineWidth = clamp(configRef.current.detectionBorderWidth || 2, 1, 6);
       ctx.strokeRect(rx, ry, rw, rh);
@@ -1786,18 +1925,21 @@ export default function ScreenshotPage() {
 
   return (
     <div
-      className={`screenshot-root ${overlayVisible ? "ready" : "initializing"}`}
-      style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", userSelect: "none" }}
-      onContextMenu={(e) => { e.preventDefault(); cancelScreenshot(); }}
-    >
-      {overlayVisible && (
-        <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px" }}>0, 0</div>
+      {overlayVisible && !hasSelected && (
+        <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px", display: "none" }}>0, 0</div>
       )}
 
       {isTranslating && rect.w > 0 && rect.h > 0 && (
         <div style={{ position: "absolute", top: rect.y, left: rect.x, width: rect.w, height: rect.h, zIndex: 200, background: "rgba(240, 240, 245, 0.75)", border: "2px dashed #1677ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxSizing: "border-box", overflow: "hidden" }}>
-          <div style={{ width: Math.min(32, Math.max(16, rect.w * 0.2)), height: Math.min(32, Math.max(16, rect.w * 0.2)), borderRadius: "50%", border: "3px solid #e0e0e0", borderTopColor: "#1677ff", animation: "spin 0.8s linear infinite" }} />
-          {rect.h > 40 && rect.w > 80 && <div style={{ marginTop: 8, color: "#1677ff", fontSize: 12, fontFamily: "'Inter', sans-serif", fontWeight: 500, whiteSpace: "nowrap", textShadow: "0 1px 2px rgba(255,255,255,0.8)" }}>翻译中…</div>}
+          <div style={{ width: 32, height: 32, minWidth: 32, minHeight: 32, flex: "0 0 32px", borderRadius: "50%", border: "3px solid #e0e0e0", borderTopColor: "#1677ff", animation: "spin 0.8s linear infinite" }} />
+          {rect.h > 40 && rect.w > 80 && <div style={{ marginTop: 8, color: "#1677ff", fontSize: 12, fontFamily: "'Inter', sans-serif", fontWeight: 500, whiteSpace: "nowrap", textShadow: "0 1px 2px rgba(255,255,255,0.8)" }}>???...</div>}
+        </div>
+      )}
+
+      {editingTextDraft && (
+        <div style={{ position: "absolute", left: editingTextDraft.x, top: editingTextDraft.y, zIndex: 80, display: "flex", gap: 6, alignItems: "center", padding: 6, borderRadius: 8, background: "rgba(255,255,255,0.96)", boxShadow: "0 8px 24px rgba(0,0,0,0.16)" }} onMouseDown={(event) => event.stopPropagation()}>
+          <Input autoFocus size="small" value={editingTextDraft.value} placeholder="????" style={{ width: 170 }} onChange={(event) => setEditingTextDraft((draft) => draft ? { ...draft, value: event.target.value } : draft)} onPressEnter={commitTextDraft} onKeyDown={(event) => { if (event.key === "Escape") cancelTextDraft(); }} />
+          <Button size="small" type="primary" onClick={commitTextDraft}>??</Button>
         </div>
       )}
 
@@ -1805,68 +1947,70 @@ export default function ScreenshotPage() {
 
       {overlayVisible && hasSelected && !isSelecting && (
         <div ref={actionToolbarRef} style={getActionToolbarStyle()} onContextMenu={(e) => e.stopPropagation()}>
-          <Space size="small" style={{ display: "inline-flex", flexWrap: "nowrap", whiteSpace: "nowrap" }}>
-            <Button size="small" icon={<TranslationOutlined />} type="primary" ghost onClick={handleTranslate} loading={isTranslating}>翻译 (Ctrl+Q)</Button>
-            <Button size="small" icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing}>识字</Button>
-            <Button size="small" icon={<PushpinOutlined />} onClick={handlePin}>钉图 (P)</Button>
-            <Button size="small" type={isEditing ? "primary" : "default"} onClick={() => { setIsEditing((value) => !value); renderNeededRef.current = true; }}>编辑</Button>
-            {isEditing && (
-              <>
-                <Button size="small" type={annotationTool === "rect" ? "primary" : "default"} ghost={annotationTool === "rect"} onClick={() => setAnnotationTool("rect")}>矩形</Button>
-                <Button size="small" type={annotationTool === "arrow" ? "primary" : "default"} ghost={annotationTool === "arrow"} onClick={() => setAnnotationTool("arrow")}>箭头</Button>
-                <Button size="small" type={annotationTool === "text" ? "primary" : "default"} ghost={annotationTool === "text"} onClick={() => setAnnotationTool("text")}>文字</Button>
-                <Button size="small" type={annotationTool === "brush" ? "primary" : "default"} ghost={annotationTool === "brush"} onClick={() => setAnnotationTool("brush")}>画笔</Button>
-                <Button size="small" type={annotationTool === "mosaic" ? "primary" : "default"} ghost={annotationTool === "mosaic"} onClick={() => setAnnotationTool("mosaic")}>马赛克</Button>
-                <Button size="small" disabled={annotations.length === 0} onClick={() => { const next = annotations.slice(0, -1); annotationsRef.current = next; setAnnotations(next); renderNeededRef.current = true; }}>撤销</Button>
-              </>
-            )}
-            <Button size="small" onClick={handlePreview}>预览</Button>
-            <Button size="small" icon={<CopyOutlined />} onClick={() => confirmScreenshot("copy")}>复制</Button>
-            <Button size="small" icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")}>保存</Button>
-            <Button size="small" icon={<CloseOutlined />} onClick={cancelScreenshot} danger />
-            <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => confirmScreenshot("both")}>完成</Button>
+          <Space size={6} style={{ display: "inline-flex", flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "center" }}>
+            {[
+              { key: "rect", tip: "??", icon: <BorderOutlined /> },
+              { key: "circle", tip: "??", icon: <span style={{ fontSize: 22, lineHeight: 1 }}>?</span> },
+              { key: "arrow", tip: "??", icon: <span style={{ fontSize: 21, lineHeight: 1 }}>?</span> },
+              { key: "brush", tip: "??", icon: <HighlightOutlined /> },
+              { key: "mosaic", tip: "???", icon: <span style={{ fontSize: 20, lineHeight: 1 }}>?</span> },
+              { key: "text", tip: "??", icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
+            ].map((item) => (
+              <Tooltip key={item.key} title={item.tip}>
+                <Button size="middle" style={{ width: 36, height: 36, padding: 0, fontSize: 18 }} type={annotationTool === item.key ? "primary" : "default"} icon={item.icon} onClick={() => { setIsEditing(true); setAnnotationTool(item.key as AnnotationTool); }} />
+              </Tooltip>
+            ))}
+            <Tooltip title="??"><Button size="middle" style={{ width: 42, height: 36, padding: 0 }} type="primary" ghost onClick={handleTranslate} loading={isTranslating} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>A/?</span>} /></Tooltip>
+            <Tooltip title="????"><Button size="middle" style={{ width: 36, height: 36, padding: 0, fontSize: 18 }} icon={<ScanOutlined />} onClick={handleOCR} loading={isOCRing} /></Tooltip>
+            <Tooltip title="??"><Button size="middle" style={{ width: 36, height: 36, padding: 0, fontSize: 18 }} icon={<PushpinOutlined />} onClick={handlePin} /></Tooltip>
+            <Tooltip title="?? Ctrl+Z"><Button size="middle" style={{ width: 36, height: 36, padding: 0, fontSize: 18 }} disabled={annotations.length === 0} icon={<UndoOutlined />} onClick={undoAnnotation} /></Tooltip>
+            <Tooltip title="?? Ctrl+Y / Ctrl+Shift+Z"><Button size="middle" style={{ width: 36, height: 36, padding: 0, fontSize: 18 }} disabled={redoAnnotations.length === 0} icon={<RedoOutlined />} onClick={redoAnnotation} /></Tooltip>
+            <Tooltip title="??"><Button size="middle" style={{ width: 36, height: 36, padding: 0 }} onClick={handlePreview} icon={<span style={{ fontSize: 18 }}>??</span>} /></Tooltip>
+            <Tooltip title="??"><Button size="middle" style={{ width: 36, height: 36, padding: 0, fontSize: 18 }} icon={<SaveOutlined />} onClick={() => confirmScreenshot("save")} /></Tooltip>
+            <Tooltip title="??"><Button size="middle" style={{ width: 42, height: 36, padding: 0, color: "#ef4444", borderColor: "#fca5a5", background: "#fff1f2", fontSize: 20, borderRadius: 10 }} icon={<CloseOutlined />} onClick={cancelScreenshot} /></Tooltip>
+            <Tooltip title="?????"><Button size="middle" style={{ width: 42, height: 36, padding: 0, color: "#fff", background: "#16a34a", borderColor: "#16a34a", fontSize: 20, borderRadius: 10, boxShadow: "0 4px 12px rgba(22,163,74,0.28)" }} icon={<CheckOutlined />} onClick={() => confirmScreenshot("copy")} /></Tooltip>
           </Space>
           {isEditing && (
-            <div style={{ marginTop: 6, color: "#ffffff", fontSize: 12, textShadow: "0 1px 2px rgba(0,0,0,0.45)" }}>
-              当前工具：{annotationTool === "rect" ? "矩形" : annotationTool === "arrow" ? "箭头" : annotationTool === "text" ? "文字" : annotationTool === "brush" ? "画笔" : "马赛克"}，在截图区域内按住左键拖拽即可标注
+            <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, color: "#ffffff", fontSize: 12, textShadow: "0 1px 2px rgba(0,0,0,0.45)" }}>
+              <span>??</span>
+              <InputNumber size="small" min={1} max={48} value={annotationSize} onChange={(value) => setAnnotationSize(Number(value || 1))} style={{ width: 74 }} />
+              {annotationTool !== "mosaic" && (<><span>??</span><input type="color" value={annotationColor} onChange={(event) => setAnnotationColor(event.target.value)} style={{ width: 30, height: 26, padding: 0, border: "1px solid #d9d9d9", borderRadius: 5, background: "#fff" }} /></>)}
+              <span>{annotationTool === "text" ? "???????????????????" : (annotationTool === "rect" || annotationTool === "circle") ? "??/??????" : "????????"}</span>
             </div>
           )}
         </div>
       )}
 
-            {hasSelected && !isSelecting && translatePairs !== null && (
+      {hasSelected && !isSelecting && translatePairs !== null && (
         <div
-          style={{
-            position: "absolute",
-            top: Math.max(8, Math.min(rect.y, window.innerHeight - 360)),
-            left: Math.max(8, Math.min(rect.x + rect.w + 12, window.innerWidth - 420)),
-            width: 350,
-            maxHeight: "80vh",
-            overflowY: "auto",
-            zIndex: 120,
-            background: "#fff",
-            padding: 12,
-            borderRadius: 10,
-            boxShadow: "0 6px 24px rgba(0, 0, 0, 0.18)",
-            border: "1px solid #e8e8e8",
-          }}
+          style={(() => {
+            const panelWidth = 350;
+            const panelGap = 12;
+            const rightLeft = rect.x + rect.w + panelGap;
+            const leftLeft = rect.x - panelWidth - panelGap;
+            const hasRightSpace = rightLeft + panelWidth <= window.innerWidth - 8;
+            const hasLeftSpace = leftLeft >= 8;
+            const left = hasRightSpace ? rightLeft : hasLeftSpace ? leftLeft : clamp(rightLeft, 8, window.innerWidth - panelWidth - 8);
+            return { position: "absolute", top: Math.max(8, Math.min(rect.y, window.innerHeight - 360)), left, width: panelWidth, maxHeight: "80vh", overflowY: "auto", zIndex: 120, background: "#fff", padding: 12, borderRadius: 10, boxShadow: "0 6px 24px rgba(0, 0, 0, 0.18)", border: "1px solid #e8e8e8" } as React.CSSProperties;
+          })()}
           onMouseDown={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.stopPropagation()}
         >
-          <div style={{ marginBottom: 12, fontWeight: "bold", fontSize: 14 }}>翻译原文对照</div>
+          <div style={{ marginBottom: 12, fontWeight: "bold", fontSize: 14 }}>??????</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
             {translatePairs.map((p, i) => (
               <div key={i} style={{ padding: 8, background: "#f5f5f5", borderRadius: 6, fontSize: 12 }}>
-                <div style={{ color: "#8c8c8c", marginBottom: 4 }}>{p.o}</div>
-                <div style={{ color: "#1f1f1f", fontWeight: "bold" }}>{p.t}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, marginBottom: 6 }}><div style={{ color: "#8c8c8c", lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{p.o}</div><Button size="small" onClick={() => navigator.clipboard.writeText(p.o)}>????</Button></div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}><div style={{ color: "#1f1f1f", fontWeight: "bold", lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{p.t}</div><Button size="small" type="primary" ghost onClick={() => navigator.clipboard.writeText(p.t)}>????</Button></div>
               </div>
             ))}
           </div>
           <Space size="small">
-            <Button size="small" type="primary" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText(translatePairs.map(p => p.t).join("\n"))}>
-              复制全部译文
-            </Button>
-            <Button size="small" icon={<CloseOutlined />} onClick={() => setTranslatePairs(null)}>
+            <Button size="small" type="primary" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText(translatePairs.map(p => p.t).join("\n"))}>??????</Button>
+            <Button size="small" icon={<CloseOutlined />} onClick={() => setTranslatePairs(null)}>??</Button>
+          </Space>
+        </div>
+      )}
               关闭
             </Button>
           </Space>

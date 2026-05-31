@@ -14,6 +14,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, Modifiers, Code,
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tokio::time::Duration;
+use futures_util::StreamExt;
+use tauri::Emitter;
 
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
@@ -99,63 +101,82 @@ fn parse_hotkey(hotkey: &str) -> Result<Shortcut, String> {
     Ok(Shortcut::new(Some(modifiers), code))
 }
 
-fn read_configured_hotkey() -> String {
+fn read_configured_hotkeys() -> (String, String) {
     let mut path = app_data_dir();
     path.push("config.json");
     let Ok(config_str) = fs::read_to_string(path) else {
-        return DEFAULT_SCREENSHOT_HOTKEY.to_string();
+        return (DEFAULT_SCREENSHOT_HOTKEY.to_string(), TRANSLATE_HOTKEY_LABEL.to_string());
     };
     let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) else {
-        return DEFAULT_SCREENSHOT_HOTKEY.to_string();
+        return (DEFAULT_SCREENSHOT_HOTKEY.to_string(), TRANSLATE_HOTKEY_LABEL.to_string());
     };
-    config
+    let screenshot = config
         .get("hotkey")
         .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
         .unwrap_or(DEFAULT_SCREENSHOT_HOTKEY)
-        .to_string()
+        .trim()
+        .to_string();
+    let translate = config
+        .get("translateHotkey")
+        .and_then(|value| value.as_str())
+        .unwrap_or(TRANSLATE_HOTKEY_LABEL)
+        .trim()
+        .to_string();
+    (screenshot, translate)
 }
 
-fn register_global_shortcuts(app: &tauri::AppHandle, screenshot_hotkey: &str) -> Result<(), String> {
-    let screenshot_shortcut = parse_hotkey(screenshot_hotkey)?;
-    let translate_shortcut = parse_hotkey(TRANSLATE_HOTKEY_LABEL)?;
-
+fn register_global_shortcuts(app: &tauri::AppHandle, screenshot_hotkey: &str, translate_hotkey: &str) -> Result<(), String> {
     app.global_shortcut().unregister_all().map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
 
-    let reg_res = app.global_shortcut().on_shortcut(screenshot_shortcut, move |app, _shortcut, event| {
-        if event.state() == ShortcutState::Pressed {
-            let app_h = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = start_screenshot(app_h, None).await {
-                    eprintln!("Failed to start screenshot: {}", e);
+    if !screenshot_hotkey.trim().is_empty() {
+        match parse_hotkey(screenshot_hotkey.trim()) {
+            Ok(shortcut) => {
+                if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        let app_h = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = start_screenshot(app_h, None).await {
+                                eprintln!("Failed to start screenshot: {}", e);
+                            }
+                        });
+                    }
+                }) {
+                    errors.push(format!("{}: {}", screenshot_hotkey, e));
                 }
-            });
+            }
+            Err(e) => errors.push(format!("{}: {}", screenshot_hotkey, e)),
         }
-    });
-
-    let reg_res_t = app.global_shortcut().on_shortcut(translate_shortcut, move |app, _shortcut, event| {
-        if event.state() == ShortcutState::Pressed {
-            let app_h = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = start_screenshot(app_h, Some("translate".to_string())).await {
-                    eprintln!("Failed to start translate screenshot: {}", e);
-                }
-            });
-        }
-    });
-
-    match (reg_res, reg_res_t) {
-        (Ok(_), Ok(_)) => Ok(()),
-        (Err(e1), Err(e2)) => Err(format!("{}: {}; {}: {}", screenshot_hotkey, e1, TRANSLATE_HOTKEY_LABEL, e2)),
-        (Err(e), Ok(_)) => Err(format!("{}: {}", screenshot_hotkey, e)),
-        (Ok(_), Err(e)) => Err(format!("{}: {}", TRANSLATE_HOTKEY_LABEL, e)),
     }
+
+    if !translate_hotkey.trim().is_empty() {
+        match parse_hotkey(translate_hotkey.trim()) {
+            Ok(shortcut) => {
+                if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        let app_h = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = start_screenshot(app_h, Some("translate".to_string())).await {
+                                eprintln!("Failed to start translate screenshot: {}", e);
+                            }
+                        });
+                    }
+                }) {
+                    errors.push(format!("{}: {}", translate_hotkey, e));
+                }
+            }
+            Err(e) => errors.push(format!("{}: {}", translate_hotkey, e)),
+        }
+    }
+
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
 
 #[tauri::command]
-fn re_register_shortcut(app: tauri::AppHandle, state: tauri::State<'_, AppShortcutStatus>, hotkey: String) -> Result<(), String> {
-    let status = register_global_shortcuts(&app, hotkey.trim());
+fn re_register_shortcut(app: tauri::AppHandle, state: tauri::State<'_, AppShortcutStatus>, hotkey: String, translate_hotkey: Option<String>) -> Result<(), String> {
+    let translate = translate_hotkey.unwrap_or_else(|| TRANSLATE_HOTKEY_LABEL.to_string());
+    let status = register_global_shortcuts(&app, hotkey.trim(), translate.trim());
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = status.clone();
     status
@@ -275,64 +296,167 @@ fn resolve_local_ocr_executable(app: &tauri::AppHandle, executable_path: Option<
 
     app.path()
         .resolve("resources/ocr/PaddleOCR-json.exe", BaseDirectory::Resource)
-        .map_err(|e| format!("???? OCR ?????{}", e))
+        .map_err(|e| format!("\u{89e3}\u{6790} OCR \u{8d44}\u{6e90}\u{8def}\u{5f84}\u{5931}\u{8d25}\u{ff1a}{}", e))
+}
+
+fn emit_ocr_progress(app: &tauri::AppHandle, phase: &str, downloaded: u64, total: Option<u64>, percent: u8) {
+    let _ = app.emit("ocr-download-progress", serde_json::json!({
+        "phase": phase,
+        "downloaded": downloaded,
+        "total": total,
+        "percent": percent,
+    }));
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("\u{521b}\u{5efa}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("\u{8bfb}\u{53d6}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))? {
+        let entry = entry.map_err(|e| format!("\u{8bfb}\u{53d6}\u{76ee}\u{5f55}\u{9879}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|e| format!("\u{590d}\u{5236}\u{6587}\u{4ef6}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+        }
+    }
+    Ok(())
+}
+
+fn stop_ocr_process() {
+    let manager = get_ocr_manager();
+    if let Ok(mut guard) = manager.lock() {
+        if let Some(mut proc) = guard.process.take() {
+            let _ = proc.child.kill();
+        }
+    };
 }
 
 #[tauri::command]
-async fn download_paddleocr_release(url: String, tag: String) -> Result<serde_json::Value, String> {
+async fn download_paddleocr_release(app: tauri::AppHandle, url: String, tag: String, install_dir: Option<String>) -> Result<serde_json::Value, String> {
     let allowed = [
         "https://github.com/hiroi-sora/PaddleOCR-json/releases/download/",
         "https://objects.githubusercontent.com/github-production-release-asset-",
     ];
     if !allowed.iter().any(|prefix| url.starts_with(prefix)) || !url.to_ascii_lowercase().ends_with(".7z") {
-        return Err("????? PaddleOCR-json ?? GitHub Release ? Windows .7z ???".to_string());
+        return Err("\u{8bf7}\u{9009}\u{62e9} PaddleOCR-json \u{5b98}\u{65b9} GitHub Release \u{7684} Windows .7z \u{6587}\u{4ef6}".to_string());
     }
+
+    stop_ocr_process();
+    emit_ocr_progress(&app, "准备下载", 0, None, 1);
 
     let safe_tag = sanitize_tag(&tag);
     let filename = format!("PaddleOCR-json-{}.7z", safe_tag);
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .user_agent("ScreenshotTranslator/1.0")
         .build()
-        .map_err(|e| format!("??????????{}", e))?;
+        .map_err(|e| format!("\u{521b}\u{5efa}\u{4e0b}\u{8f7d}\u{5ba2}\u{6237}\u{7aef}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
     let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("?? PaddleOCR-json ???{}", e))?;
+        .map_err(|e| format!("\u{4e0b}\u{8f7d} PaddleOCR-json \u{5931}\u{8d25}\u{ff1a}{}", e))?;
     if !resp.status().is_success() {
-        return Err(format!("?? PaddleOCR-json ???HTTP {}", resp.status()));
+        return Err(format!("\u{4e0b}\u{8f7d} PaddleOCR-json \u{5931}\u{8d25}\u{ff1a}HTTP {}", resp.status()));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("?? PaddleOCR-json ???????{}", e))?;
+
+    let total = resp.content_length();
+    let mut stream = resp.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut downloaded: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("\u{8bfb}\u{53d6} PaddleOCR-json \u{4e0b}\u{8f7d}\u{6570}\u{636e}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+        downloaded += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+        let percent = total
+            .map(|value| ((downloaded as f64 / value.max(1) as f64) * 70.0).round() as u8)
+            .unwrap_or(10)
+            .clamp(1, 70);
+        emit_ocr_progress(&app, "下载中", downloaded, total, percent);
+    }
 
     let mut download_dir = app_data_dir();
     download_dir.push("ocr");
     download_dir.push("downloads");
-    fs::create_dir_all(&download_dir).map_err(|e| format!("?????????{}", e))?;
+    fs::create_dir_all(&download_dir).map_err(|e| format!("\u{521b}\u{5efa}\u{4e0b}\u{8f7d}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
     let archive_path = download_dir.join(filename);
-    fs::write(&archive_path, &bytes).map_err(|e| format!("?? PaddleOCR-json ??????{}", e))?;
+    fs::write(&archive_path, &bytes).map_err(|e| format!("\u{4fdd}\u{5b58} PaddleOCR-json \u{538b}\u{7f29}\u{5305}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
 
-    let install_dir = default_ocr_install_dir();
+    emit_ocr_progress(&app, "解压中", downloaded, total, 75);
+    let install_dir = install_dir
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_ocr_install_dir);
     if install_dir.exists() {
-        fs::remove_dir_all(&install_dir).map_err(|e| format!("??? OCR ?????{}", e))?;
+        fs::remove_dir_all(&install_dir).map_err(|e| format!("\u{6e05}\u{7406} OCR \u{5b89}\u{88c5}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
     }
-    fs::create_dir_all(&install_dir).map_err(|e| format!("?? OCR ???????{}", e))?;
+    fs::create_dir_all(&install_dir).map_err(|e| format!("\u{521b}\u{5efa} OCR \u{5b89}\u{88c5}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
 
     sevenz_rust::decompress_file(&archive_path, &install_dir)
-        .map_err(|e| format!("?? PaddleOCR-json ???{}", e))?;
+        .map_err(|e| format!("\u{89e3}\u{538b} PaddleOCR-json \u{5931}\u{8d25}\u{ff1a}{}", e))?;
     let _ = fs::remove_file(&archive_path);
+    emit_ocr_progress(&app, "检查可执行文件", downloaded, total, 95);
 
     let exe_path = find_paddleocr_json_exe(&install_dir)
-        .ok_or_else(|| "????????? PaddleOCR-json.exe".to_string())?;
+        .ok_or_else(|| "\u{89e3}\u{538b}\u{540e}\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe".to_string())?;
+    emit_ocr_progress(&app, "完成", downloaded, total, 100);
 
     Ok(serde_json::json!({
         "path": exe_path.to_string_lossy().to_string(),
         "installDir": install_dir.to_string_lossy().to_string(),
         "bytes": bytes.len(),
+    }))
+}
+
+#[tauri::command]
+fn choose_ocr_install_dir() -> Result<Option<String>, String> {
+    Ok(rfd::FileDialog::new()
+        .set_title("\u{9009}\u{62e9} OCR \u{5b89}\u{88c5}\u{76ee}\u{5f55}")
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn move_ocr_runtime(target_dir: String, executable_path: Option<String>) -> Result<serde_json::Value, String> {
+    let target_dir = PathBuf::from(target_dir);
+    if target_dir.as_os_str().is_empty() {
+        return Err("\u{8bf7}\u{9009}\u{62e9}\u{76ee}\u{6807}\u{76ee}\u{5f55}".to_string());
+    }
+    stop_ocr_process();
+
+    let source_exe = executable_path
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| find_paddleocr_json_exe(&default_ocr_install_dir()))
+        .ok_or_else(|| "\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe\u{ff0c}\u{8bf7}\u{5148}\u{4e0b}\u{8f7d}\u{6216}\u{9009}\u{62e9} OCR \u{76ee}\u{5f55}".to_string())?;
+    let source_dir = source_exe
+        .parent()
+        .ok_or_else(|| "\u{65e0}\u{6cd5}\u{89e3}\u{6790} OCR \u{76ee}\u{5f55}".to_string())?
+        .to_path_buf();
+
+    let source_canon = fs::canonicalize(&source_dir).map_err(|e| format!("\u{8bfb}\u{53d6} OCR \u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+    fs::create_dir_all(&target_dir).map_err(|e| format!("\u{521b}\u{5efa}\u{76ee}\u{6807}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+    let target_canon = fs::canonicalize(&target_dir).map_err(|e| format!("\u{89e3}\u{6790}\u{76ee}\u{6807}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+    if source_canon == target_canon {
+        return Ok(serde_json::json!({
+            "path": source_exe.to_string_lossy().to_string(),
+            "installDir": source_dir.to_string_lossy().to_string(),
+        }));
+    }
+
+    copy_dir_recursive(&source_dir, &target_dir)?;
+    let exe_path = find_paddleocr_json_exe(&target_dir)
+        .ok_or_else(|| "\u{79fb}\u{52a8}\u{5b8c}\u{6210}\u{540e}\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe".to_string())?;
+
+    let default_dir = default_ocr_install_dir();
+    if source_canon == fs::canonicalize(&default_dir).unwrap_or(default_dir) {
+        let _ = fs::remove_dir_all(&source_dir);
+    }
+
+    Ok(serde_json::json!({
+        "path": exe_path.to_string_lossy().to_string(),
+        "installDir": target_dir.to_string_lossy().to_string(),
     }))
 }
 
@@ -899,6 +1023,7 @@ struct LocalOcrProcess {
     child: Child,
     stdin: ChildStdin,
     reader: BufReader<std::process::ChildStdout>,
+    config_key: String,
 }
 
 struct OcrManagerState {
@@ -938,7 +1063,7 @@ fn get_ocr_manager() -> Arc<Mutex<OcrManagerState>> {
     }).clone()
 }
 
-fn start_ocr_process(exe_path: &std::path::Path) -> Result<LocalOcrProcess, String> {
+fn start_ocr_process(exe_path: &std::path::Path, config_key: &str) -> Result<LocalOcrProcess, String> {
     let exe_dir = exe_path.parent().ok_or_else(|| "无法获取可执行文件所在目录".to_string())?;
     
     #[cfg(windows)]
@@ -949,6 +1074,12 @@ fn start_ocr_process(exe_path: &std::path::Path) -> Result<LocalOcrProcess, Stri
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if !config_key.is_empty() {
+        let config_path = format!("models/config_{}.txt", config_key);
+        if exe_dir.join(&config_path).exists() {
+            cmd.arg(format!("--config_path={}", config_path));
+        }
+    }
 
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -975,7 +1106,90 @@ fn start_ocr_process(exe_path: &std::path::Path) -> Result<LocalOcrProcess, Stri
         }
     }
     
-    Ok(LocalOcrProcess { child, stdin, reader })
+    Ok(LocalOcrProcess { child, stdin, reader, config_key: config_key.to_string() })
+}
+
+fn request_ocr_with_config(
+    guard: &mut OcrManagerState,
+    exe_path: &std::path::Path,
+    image_path: &str,
+    config_key: &str,
+) -> Result<String, String> {
+    let needs_restart = guard
+        .process
+        .as_ref()
+        .map(|process| process.config_key.as_str() != config_key)
+        .unwrap_or(true);
+    if needs_restart {
+        if let Some(mut proc) = guard.process.take() {
+            let _ = proc.child.kill();
+        }
+        guard.process = Some(start_ocr_process(exe_path, config_key)?);
+    }
+
+    guard.last_used = Instant::now();
+    let proc = guard.process.as_mut().unwrap();
+    let req_payload = serde_json::json!({ "image_path": image_path });
+    let req_line = format!("{}\n", req_payload.to_string());
+
+    if let Err(e) = proc.stdin.write_all(req_line.as_bytes()) {
+        guard.process = None;
+        return Err(format!("\u{5199}\u{5165} PaddleOCR-json \u{7ba1}\u{9053}\u{5931}\u{8d25}: {}", e));
+    }
+    if let Err(e) = proc.stdin.flush() {
+        guard.process = None;
+        return Err(format!("\u{5237}\u{65b0} PaddleOCR-json \u{7ba1}\u{9053}\u{5931}\u{8d25}: {}", e));
+    }
+
+    let mut resp_line = String::new();
+    match proc.reader.read_line(&mut resp_line) {
+        Ok(0) => {
+            guard.process = None;
+            Err("PaddleOCR \u{8fdb}\u{7a0b}\u{5f02}\u{5e38}\u{4e2d}\u{65ad}\u{9000}\u{51fa}".to_string())
+        }
+        Ok(_) => Ok(resp_line),
+        Err(e) => {
+            guard.process = None;
+            Err(format!("\u{4ece} PaddleOCR \u{7ba1}\u{9053}\u{8bfb}\u{53d6}\u{6570}\u{636e}\u{53d1}\u{751f}\u{9519}\u{8bef}: {}", e))
+        }
+    }
+}
+
+fn parse_ocr_response(resp_line: &str, language_label: &str) -> Result<Vec<OcrBlock>, String> {
+    let parsed: PaddleOcrOutput = serde_json::from_str(resp_line)
+        .map_err(|e| format!("\u{89e3}\u{6790} PaddleOCR \u{8fd4}\u{56de}\u{7684} JSON \u{5931}\u{8d25}: {} (Raw: {})", e, resp_line))?;
+
+    if parsed.code != 100 {
+        let detail = parsed
+            .msg
+            .or_else(|| parsed.data.as_ref().and_then(|value| value.as_str().map(|s| s.to_string())))
+            .unwrap_or_else(|| "\u{65e0}\u{8be6}\u{7ec6}\u{9519}\u{8bef}".to_string());
+        return Err(format!("OCR \u{8bc6}\u{522b}\u{5931}\u{8d25}: PaddleOCR-json \u{8fd4}\u{56de} code={}, msg={}, \u{6a21}\u{578b}={}\u{3002}\u{5982}\u{679c}\u{6b63}\u{5728}\u{8bc6}\u{522b}\u{97e9}\u{6587}\u{ff0c}\u{7a0b}\u{5e8f}\u{4f1a}\u{81ea}\u{52a8}\u{5c1d}\u{8bd5}\u{97e9}\u{6587}\u{6a21}\u{578b}; \u{5426}\u{5219}\u{8bf7}\u{5728} OCR \u{914d}\u{7f6e}\u{9875}\u{66f4}\u{65b0}\u{8fd0}\u{884c}\u{5305}\u{6216}\u{66f4}\u{6362}\u{5bf9}\u{5e94}\u{8bed}\u{8a00}\u{6a21}\u{578b}\u{3002}", parsed.code, detail, language_label));
+    }
+
+    let mut ocr_blocks = Vec::new();
+    if let Some(data) = parsed.data {
+        if let Some(arr) = data.as_array() {
+            for item in arr {
+                let text = item.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                let confidence = item.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                let mut box_coords = Vec::new();
+                if let Some(box_val) = item.get("box") {
+                    if let Some(box_arr) = box_val.as_array() {
+                        for point in box_arr {
+                            if let Some(pt) = point.as_array() {
+                                let x = pt.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                let y = pt.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                box_coords.push(vec![x, y]);
+                            }
+                        }
+                    }
+                }
+                ocr_blocks.push(OcrBlock { text, confidence, box_coords });
+            }
+        }
+    }
+    Ok(ocr_blocks)
 }
 
 #[tauri::command]
@@ -1031,78 +1245,41 @@ fn run_local_ocr_sync(
     // 3. 通信与常驻进程管理
     let manager = get_ocr_manager();
     let mut guard = manager.lock().unwrap();
-    
-    if guard.process.is_none() {
-        let new_proc = start_ocr_process(&resolved_exe)?;
-        guard.process = Some(new_proc);
-    }
-    
-    guard.last_used = Instant::now();
-    let proc = guard.process.as_mut().unwrap();
-    
-    // 写入 stdin 管道
-    let req_payload = serde_json::json!({ "image_path": abs_image_path });
-    let req_line = format!("{}\n", req_payload.to_string());
-    
-    if let Err(e) = proc.stdin.write_all(req_line.as_bytes()) {
-        guard.process = None; // 管道断开，重置进程状态
-        let _ = fs::remove_file(&ocr_temp_path);
-        return Err(format!("写入 PaddleOCR-json 管道失败: {}", e));
-    }
-    if let Err(e) = proc.stdin.flush() {
-        let _ = fs::remove_file(&ocr_temp_path);
-        return Err(format!("刷新 PaddleOCR-json 管道失败: {}", e));
-    }
-    
-    // 读取 stdout 响应
-    let mut resp_line = String::new();
-    match proc.reader.read_line(&mut resp_line) {
-        Ok(0) => {
-            guard.process = None; // 进程已关闭或异常崩溃
+    let default_resp = request_ocr_with_config(&mut guard, &resolved_exe, &abs_image_path, "")?;
+    let first_error = match parse_ocr_response(&default_resp, "default") {
+        Ok(blocks) if !blocks.is_empty() => {
             let _ = fs::remove_file(&ocr_temp_path);
-            return Err("PaddleOCR 进程异常中断退出".to_string());
+            return Ok(blocks);
         }
-        Ok(_) => {
-            let _ = fs::remove_file(&ocr_temp_path); // 立即清理临时图像文件
-            
-            let parsed: PaddleOcrOutput = serde_json::from_str(&resp_line)
-                .map_err(|e| format!("解析 PaddleOCR 返回的 JSON 失败: {} (Raw: {})", e, resp_line))?;
-                
-            if parsed.code != 100 {
-                return Err(parsed.msg.unwrap_or_else(|| "OCR 执行出错，返回非100状态码".to_string()));
+        Ok(_) => "OCR \u{8bc6}\u{522b}\u{5931}\u{8d25}: \u{9ed8}\u{8ba4}\u{6a21}\u{578b}\u{672a}\u{8bc6}\u{522b}\u{5230}\u{6587}\u{5b57}".to_string(),
+        Err(error) => error,
+    };
+
+    let korean_config = resolved_exe
+        .parent()
+        .map(|dir| dir.join("models").join("config_korean.txt"))
+        .filter(|path| path.exists());
+    if korean_config.is_some() {
+        match request_ocr_with_config(&mut guard, &resolved_exe, &abs_image_path, "korean")
+            .and_then(|resp| parse_ocr_response(&resp, "korean"))
+        {
+            Ok(blocks) if !blocks.is_empty() => {
+                let _ = fs::remove_file(&ocr_temp_path);
+                return Ok(blocks);
             }
-            
-            let mut ocr_blocks = Vec::new();
-            if let Some(data) = parsed.data {
-                if let Some(arr) = data.as_array() {
-                    for item in arr {
-                        let text = item.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-                        // 显式将 raw_score 映射为 confidence
-                        let confidence = item.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-                        
-                        let mut box_coords = Vec::new();
-                        if let Some(box_val) = item.get("box") {
-                            if let Some(box_arr) = box_val.as_array() {
-                                for point in box_arr {
-                                    if let Some(pt) = point.as_array() {
-                                        let x = pt.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                        let y = pt.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                        box_coords.push(vec![x, y]);
-                                    }
-                                }
-                            }
-                        }
-                        ocr_blocks.push(OcrBlock { text, confidence, box_coords });
-                    }
-                }
+            Ok(_) => {
+                let _ = fs::remove_file(&ocr_temp_path);
+                return Err(first_error);
             }
-            Ok(ocr_blocks)
-        }
-        Err(e) => {
-            let _ = fs::remove_file(&ocr_temp_path);
-            Err(format!("从 PaddleOCR 管道读取数据发生错误: {}", e))
+            Err(korean_error) => {
+                let _ = fs::remove_file(&ocr_temp_path);
+                return Err(format!("{}\u{ff1b}\u{97e9}\u{6587}\u{6a21}\u{578b}\u{91cd}\u{8bd5}\u{5931}\u{8d25}: {}", first_error, korean_error));
+            }
         }
     }
+
+    let _ = fs::remove_file(&ocr_temp_path);
+    Err(first_error)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1116,10 +1293,41 @@ pub struct HistoryRecord {
     pub status: String,
 }
 
-#[tauri::command]
-fn get_history() -> Result<String, String> {
+
+fn history_path_from_config() -> PathBuf {
+    let mut config_path = app_data_dir();
+    config_path.push("config.json");
+    if let Ok(config_str) = fs::read_to_string(config_path) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
+            if let Some(dir) = config.get("historyDir").and_then(|value| value.as_str()) {
+                let trimmed = dir.trim();
+                if !trimmed.is_empty() {
+                    return PathBuf::from(trimmed).join("history.json");
+                }
+            }
+        }
+    }
+
     let mut path = app_data_dir();
     path.push("history.json");
+    path
+}
+
+fn history_limits_from_config() -> (usize, u64) {
+    let mut config_path = app_data_dir();
+    config_path.push("config.json");
+    let cfg: serde_json::Value = fs::read_to_string(config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let max_records = cfg.get("historyMaxRecords").and_then(|v| v.as_u64()).unwrap_or(100).clamp(10, 5000) as usize;
+    let max_bytes = cfg.get("historyMaxBytes").and_then(|v| v.as_u64()).unwrap_or(2 * 1024 * 1024).clamp(64 * 1024, 100 * 1024 * 1024);
+    (max_records, max_bytes)
+}
+
+#[tauri::command]
+fn get_history() -> Result<String, String> {
+    let path = history_path_from_config();
     if !path.exists() {
         return Ok("[]".to_string());
     }
@@ -1128,11 +1336,10 @@ fn get_history() -> Result<String, String> {
 
 #[tauri::command]
 fn add_history(record: String) -> Result<(), String> {
-    let mut path = app_data_dir();
-    if !path.exists() {
-        fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    let path = history_path_from_config();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    path.push("history.json");
     let mut history: Vec<serde_json::Value> = if path.exists() {
         let content = fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
         serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
@@ -1142,19 +1349,56 @@ fn add_history(record: String) -> Result<(), String> {
     
     if let Ok(new_record) = serde_json::from_str::<serde_json::Value>(&record) {
         history.insert(0, new_record); // Add to beginning
-        if history.len() > 100 { // Keep last 100 records max
-            history.truncate(100);
+        let (max_records, max_bytes) = history_limits_from_config();
+        if history.len() > max_records {
+            history.truncate(max_records);
         }
-        let json_str = serde_json::to_string_pretty(&history).map_err(|e| e.to_string())?;
+        let mut json_str = serde_json::to_string_pretty(&history).map_err(|e| e.to_string())?;
+        while json_str.as_bytes().len() as u64 > max_bytes && history.len() > 1 {
+            history.pop();
+            json_str = serde_json::to_string_pretty(&history).map_err(|e| e.to_string())?;
+        }
         fs::write(path, json_str).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
+
+#[tauri::command]
+fn get_history_info() -> Result<serde_json::Value, String> {
+    let path = history_path_from_config();
+    let (max_records, max_bytes) = history_limits_from_config();
+    let bytes = if path.exists() { fs::metadata(&path).map_err(|e| e.to_string())?.len() } else { 0 };
+    let count = if path.exists() {
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
+        serde_json::from_str::<Vec<serde_json::Value>>(&content).map(|items| items.len()).unwrap_or(0)
+    } else { 0 };
+    let dir = path.parent().map(|parent| parent.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy().to_string(),
+        "dir": dir,
+        "bytes": bytes,
+        "count": count,
+        "maxRecords": max_records,
+        "maxBytes": max_bytes,
+    }))
+}
+
+#[tauri::command]
+fn choose_history_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("\u{9009}\u{62e9}\u{5386}\u{53f2}\u{8bb0}\u{5f55}\u{76ee}\u{5f55}");
+    if let Some(dir) = current_dir {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            dialog = dialog.set_directory(trimmed);
+        }
+    }
+    Ok(dialog.pick_folder().map(|path| path.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 fn clear_history() -> Result<(), String> {
-    let mut path = app_data_dir();
-    path.push("history.json");
+    let path = history_path_from_config();
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
     }
@@ -1168,9 +1412,11 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_shortcut_status,
-            get_config, get_history, add_history, clear_history,
+            get_config, get_history, get_history_info, choose_history_dir, add_history, clear_history,
             save_config,
             download_paddleocr_release,
+            choose_ocr_install_dir,
+            move_ocr_runtime,
             check_local_ocr_status,
             is_autostart_enabled,
             set_autostart_enabled,
@@ -1192,8 +1438,8 @@ pub fn run() {
                 disable_windows_transition(&screenshot_win);
             }
 
-            let configured_hotkey = read_configured_hotkey();
-            let shortcut_status = register_global_shortcuts(app.handle(), &configured_hotkey);
+            let (configured_hotkey, configured_translate_hotkey) = read_configured_hotkeys();
+            let shortcut_status = register_global_shortcuts(app.handle(), &configured_hotkey, &configured_translate_hotkey);
             app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
 
             let screenshot_item = tauri::menu::MenuItemBuilder::new("立即截图").id("screenshot").build(app)?;
