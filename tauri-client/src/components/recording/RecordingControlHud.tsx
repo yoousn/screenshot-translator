@@ -47,7 +47,7 @@ export default function RecordingControlHud({
           <Button data-no-drag="true" size="small" type="primary" icon={<CheckOutlined />} loading={busy && status === "saving"} disabled={isCounting} onClick={onSave} style={{ height: 30, borderRadius: 999, fontWeight: 750, boxShadow: "0 8px 18px rgba(37,99,235,0.24)" }}>
             {"\u4fdd\u5b58"}
           </Button>
-          <Button data-no-drag="true" size="small" danger icon={<CloseOutlined />} disabled={busy && status === "saving"} onClick={onCancel} style={{ height: 30, borderRadius: 999, background: "rgba(255,255,255,0.96)", fontWeight: 750 }}>
+          <Button data-no-drag="true" size="small" danger icon={<CloseOutlined />} onClick={onCancel} style={{ height: 30, borderRadius: 999, background: "rgba(255,255,255,0.96)", fontWeight: 750 }}>
             {"\u53d6\u6d88"}
           </Button>
         </Space>

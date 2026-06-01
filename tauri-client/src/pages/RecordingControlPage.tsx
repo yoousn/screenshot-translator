@@ -147,11 +147,13 @@ function RecordingControlContent() {
     setOverlayStatus("saving");
     try {
       if (activeStartedAtRef.current !== null) await stopActiveSegment();
+      if (cancelledRef.current) return;
       const segments = [...segmentsRef.current];
       if (segments.length === 0) throw new Error("没有可保存的录屏片段");
       await winRef.current.setAlwaysOnTop(false).catch(() => {});
       await winRef.current.hide().catch(() => {});
       const savedPath = await invoke<string>("concat_recording_segments", { segmentPaths: segments });
+      if (cancelledRef.current) return;
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       segmentsRef.current = [];
       message.success(`录屏已保存：${savedPath}`);
