@@ -56,13 +56,19 @@ function RecordingControlContent() {
     setBusy(nextBusy);
   };
 
-  const closeOverlay = async () => {
+  const dismissOverlay = async () => {
     cancelledRef.current = true;
     allowCloseRef.current = true;
-    await withTimeout(invoke("hide_recording_overlay").catch(() => {}), 250);
-    await withTimeout(emit("recording-ended").catch(() => {}), 250);
-    await withTimeout(winRef.current.close().catch(() => {}), 500);
-    await winRef.current.hide().catch(() => {});
+    await Promise.all([
+      withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
+      withTimeout(emit("recording-ended").catch(() => {}), 150),
+      withTimeout(winRef.current.hide().catch(() => {}), 150),
+    ]);
+  };
+
+  const closeOverlay = async () => {
+    await dismissOverlay();
+    await withTimeout(winRef.current.close().catch(() => {}), 300);
   };
 
   const startSegment = async () => {
@@ -166,11 +172,12 @@ function RecordingControlContent() {
     setOverlayBusy(true);
     setOverlayStatus("saving");
     try {
+      await dismissOverlay();
       await stopActiveSegment(true);
       const segments = [...segmentsRef.current];
       if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       segmentsRef.current = [];
-      await closeOverlay();
+      await withTimeout(winRef.current.close().catch(() => {}), 300);
     } finally {
       setOverlayBusy(false);
     }

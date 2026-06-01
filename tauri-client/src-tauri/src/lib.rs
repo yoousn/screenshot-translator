@@ -2584,7 +2584,6 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to start ffmpeg recording: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(120));
     if let Some(status) = child
         .try_wait()
         .map_err(|e| format!("Failed to inspect ffmpeg recording process: {}", e))?
