@@ -159,6 +159,7 @@ function RecordingControlContent() {
       message.success(`录屏已保存：${savedPath}`);
       await closeOverlay();
     } catch (error: any) {
+      if (cancelledRef.current) return;
       setOverlayStatus(activeStartedAtRef.current === null ? "paused" : "recording");
       await winRef.current.show().catch(() => {});
       await winRef.current.setAlwaysOnTop(true).catch(() => {});
