@@ -199,12 +199,13 @@ export const renderTranslatedBlocks = (
         const { lines, lineHeight } = fitText(ctx, text, drawWidth, drawHeight, baseFontSize);
         ctx.fillStyle = fontColor;
         ctx.textBaseline = "middle";
-        ctx.textAlign = "center";
+        ctx.textAlign = "left";
 
         const totalTextHeight = lines.length * lineHeight;
         let y = eraseY + paddingY + drawHeight / 2 - totalTextHeight / 2 + lineHeight / 2;
+        const textX = eraseX + paddingX;
         for (const line of lines) {
-          ctx.fillText(line, eraseX + paddingX + drawWidth / 2, y);
+          ctx.fillText(line, textX, y);
           y += lineHeight;
         }
       });

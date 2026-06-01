@@ -186,7 +186,7 @@ export default function useOcrConfigController() {
       await openPath(installDir);
       return;
     }
-    message.info("\u8bf7\u5148\u4e0b\u8f7d\u6216\u9009\u62e9 PaddleOCR-json.exe");
+    message.info("Please choose a RapidOCR ONNX or PaddleOCR-json runtime first.");
   };
 
   const hasUpdate = Boolean(latest && latest.tag_name !== config.paddleOcrReleaseTag);

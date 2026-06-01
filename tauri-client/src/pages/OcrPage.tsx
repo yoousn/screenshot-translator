@@ -106,10 +106,10 @@ export default function OcrPage() {
   const copyText = async () => {
     try {
       await navigator.clipboard.writeText(textRef.current);
-      message.success("OCR 文本已复制");
       setContextMenu(null);
+      await winRef.current.close();
     } catch (error) {
-      message.error("复制失败");
+      message.error("Copy failed");
     }
   };
 
@@ -142,9 +142,9 @@ export default function OcrPage() {
           userSelect: "none",
         }}
       >
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#1f2937" }}>OCR 识字结果</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#1f2937" }}>{title}</div>
         <div data-no-drag="true" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-          <Tooltip title={alwaysOnTop ? "取消置顶" : "置顶窗口"}>
+          <Tooltip title={alwaysOnTop ? "Unpin" : "Pin window"}>
             <Button
               size="small"
               type={alwaysOnTop ? "primary" : "text"}
@@ -152,7 +152,7 @@ export default function OcrPage() {
               onClick={toggleAlwaysOnTop}
             />
           </Tooltip>
-          <Tooltip title="关闭">
+          <Tooltip title="Close">
             <Button size="small" type="text" danger icon={<CloseOutlined />} onClick={closeWindow} />
           </Tooltip>
         </div>
@@ -160,8 +160,8 @@ export default function OcrPage() {
 
       {contextMenu && (
         <div data-no-drag="true" style={{ position: "absolute", left: Math.max(8, contextMenu.x), top: Math.max(8, contextMenu.y), zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(event) => event.stopPropagation()}>
-          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>复制</button>
-          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>关闭</button>
+          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>Copy and close</button>
+          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>Close</button>
         </div>
       )}
 
@@ -170,7 +170,7 @@ export default function OcrPage() {
           <Input.TextArea
             value={text}
             onChange={(event) => { textRef.current = event.target.value; setText(event.target.value); }}
-            placeholder="未识别到文字"
+            placeholder="No text recognized"
             style={{ height: "100%", resize: "none", fontSize: 13, lineHeight: 1.55 }}
           />
         </div>
@@ -202,7 +202,7 @@ export default function OcrPage() {
 
         <div data-no-drag="true" style={{ display: "flex", justifyContent: "flex-end", cursor: "auto" }}>
           <Button size="small" type="primary" icon={<CopyOutlined />} onClick={copyText} disabled={!text}>
-            复制文本
+            Copy and close
           </Button>
         </div>
       </div>

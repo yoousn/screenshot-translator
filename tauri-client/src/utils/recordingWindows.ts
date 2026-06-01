@@ -19,6 +19,7 @@ export type RecordingOptionsPayload = {
 export type RecordingWindowPayload = {
   options: RecordingOptionsPayload;
   countdownSeconds: number;
+  autoStart?: boolean;
   borderLabels: string[];
 };
 
@@ -61,14 +62,18 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
     w: Math.max(160, Math.round(selection.w / factor)),
     h: Math.max(100, Math.round(selection.h / factor)),
   };
-  const controlSize = { w: 450, h: 58 };
+  const controlSize = { w: 560, h: 58 };
   const screenInfo = window.screen as Screen & { availLeft?: number; availTop?: number };
   const screenLeft = screenInfo.availLeft || 0;
   const screenTop = screenInfo.availTop || 0;
   const screenRight = screenLeft + screenInfo.availWidth;
   const screenBottom = screenTop + screenInfo.availHeight;
-  const controlX = Math.min(Math.max(screenLeft + 4, overlayRect.x + 8), Math.max(screenLeft + 4, screenRight - controlSize.w - 4));
-  const controlY = Math.min(Math.max(screenTop + 4, overlayRect.y + 8), Math.max(screenTop + 4, screenBottom - controlSize.h - 4));
+  const centeredX = overlayRect.x + Math.round((overlayRect.w - controlSize.w) / 2);
+  const controlX = Math.min(Math.max(screenLeft + 8, centeredX), Math.max(screenLeft + 8, screenRight - controlSize.w - 8));
+  const belowY = overlayRect.y + overlayRect.h + 10;
+  const aboveY = overlayRect.y - controlSize.h - 10;
+  const preferredY = belowY + controlSize.h <= screenBottom - 8 ? belowY : aboveY;
+  const controlY = Math.min(Math.max(screenTop + 8, preferredY), Math.max(screenTop + 8, screenBottom - controlSize.h - 8));
 
   const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"] };
   let sent = false;

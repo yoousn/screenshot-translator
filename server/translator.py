@@ -256,7 +256,7 @@ class LLMTranslator(BaseTranslator):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": f"You are a translation assistant. Translate the following text into {target_language}. Translate every meaningful English word or phrase, including short UI labels and mixed Chinese-English text. Keep product names, commands, package names, file paths, and flags unchanged when they are technical identifiers. Output ONLY the translated text, do not include any commentary, explanations, or quotes."},
+                {"role": "system", "content": f"You are a translation assistant. Translate the following text into {target_language}. Translate every meaningful English word or phrase, including short UI labels, list items, buttons, and mixed Chinese-English text. Preserve line meaning and do not skip short interface text. Keep product names, commands, package names, file paths, flags, PATH, Windows, OCR, ONNX, RapidOCR, PaddleOCR-json, and .exe identifiers unchanged when they are technical identifiers. Output ONLY the translated text, do not include commentary, explanations, or quotes."},
                 {"role": "user", "content": text}
             ],
             "temperature": 0.3

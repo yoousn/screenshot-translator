@@ -6,7 +6,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import ScreenshotToolbar from "../components/screenshot/ScreenshotToolbar";
 import TextAnnotationEditor from "../components/screenshot/TextAnnotationEditor";
 import TranslationLoadingOverlay from "../components/screenshot/TranslationLoadingOverlay";
-import RecordingPrepToolbar from "../components/recording/RecordingPrepToolbar";
 import type { Annotation, AnnotationTool, EditingTextDraft, OcrBlock, Point, Rect, TranslatePair } from "../types/screenshot";
 import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, makeTextAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
 import { cropSelectionFromLoadedImage, getPhysicalSelection, loadPngImage, renderEditedSelectionBase64 } from "../utils/screenshotImage";
@@ -620,6 +619,11 @@ export default function ScreenshotPage() {
           selectAnnotationTool(nextTool);
           return;
         }
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        if (!isOCRingRef.current && !isTranslatingRef.current && !isScrollCapturingRef.current && recordingStatusRef.current === "idle") handleOCR();
+        return;
       }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
@@ -1477,50 +1481,45 @@ export default function ScreenshotPage() {
   };
 
   const enterRecordingMode = async (mode: RecordingMode = "region") => {
-    if (isTranslatingRef.current || isOCRingRef.current || isScrollCapturingRef.current) return;
+    if (isTranslatingRef.current || isOCRingRef.current || isScrollCapturingRef.current || isRecordingBusyRef.current) return;
     try {
       setRecordingMode(mode);
       recordingModeRef.current = mode;
       const { targets } = await loadRecordingPrerequisites();
       recordingSegmentsRef.current = [];
-      recordingRegionRef.current = null;
       recordingStartedAtRef.current = null;
       setRecordingStartedAt(null);
       setRecordingElapsedMs(0);
-      recordingStatusRef.current = "ready";
-      setRecordingStatus("ready");
 
       if (mode === "region") {
-        if (screenshotModeRef.current !== "record") {
-          setScreenshotMode("record");
-          screenshotModeRef.current = "record";
-          setCurrentRect(EMPTY_RECT, true);
-          setSelection(false);
-          message.info("请重新框选红色录制区域");
-          renderNeededRef.current = true;
-          return;
-        }
         if (!hasSelectedRef.current) {
-          message.info("请框选红色录制区域");
+          if (screenshotModeRef.current !== "record") {
+            setScreenshotMode("record");
+            screenshotModeRef.current = "record";
+            setCurrentRect(EMPTY_RECT, true);
+            setSelection(false);
+          }
+          message.info("Please select a recording area first");
           renderNeededRef.current = true;
           return;
         }
       } else if (mode === "window") {
         const target = targets.windows.find((item) => item.id === selectedWindowTargetId) || targets.windows[0];
-        if (!target) throw new Error("未检测到可录制窗口");
+        if (!target) throw new Error("No recordable window detected");
         setSelectedWindowTargetId(target.id);
         await applyRecordingTarget(target);
       } else {
         const target = targets.displays.find((item) => item.id === selectedDisplayTargetId) || targets.displays[0];
-        if (!target) throw new Error("未检测到显示器");
+        if (!target) throw new Error("No display detected");
         setSelectedDisplayTargetId(target.id);
         await applyRecordingTarget(target);
       }
-      renderNeededRef.current = true;
+
+      await startRecording();
     } catch (error: any) {
       recordingStatusRef.current = "idle";
       setRecordingStatus("idle");
-      message.error(`进入录制模式失败：${error?.message || error}`);
+      message.error(`Failed to enter recording mode: ${error?.message || error}`);
     }
   };
 
@@ -1554,24 +1553,26 @@ export default function ScreenshotPage() {
   };
 
   const startRecording = async () => {
-    if (isRecordingBusyRef.current || recordingStatusRef.current === "recording") return;
+    if (isRecordingBusyRef.current) return;
     try {
       setIsRecordingBusy(true);
       const options = await buildRecordingOptions();
-      const region = { x: options.region_x, y: options.region_y, w: options.region_w, h: options.region_h };
+      const normalizedOptions = { ...options, fps: 30, resolution: "1080p", output_dir: null };
+      const region = { x: normalizedOptions.region_x, y: normalizedOptions.region_y, w: normalizedOptions.region_w, h: normalizedOptions.region_h };
       recordingStatusRef.current = "recording";
       setRecordingStatus("recording");
       await openRecordingWindows({
-        options,
-        countdownSeconds: recordingCountdownSeconds,
+        options: normalizedOptions,
+        countdownSeconds: 0,
+        autoStart: false,
       }, region);
       const win = getCurrentWindow();
       await win.setAlwaysOnTop(false).catch(() => {});
       await win.hide().catch(() => {});
     } catch (error: any) {
-      recordingStatusRef.current = "ready";
-      setRecordingStatus("ready");
-      message.error("启动录制失败：" + (error?.message || error));
+      recordingStatusRef.current = "idle";
+      setRecordingStatus("idle");
+      message.error("Failed to open recording controls: " + (error?.message || error));
     } finally {
       setIsRecordingBusy(false);
     }
@@ -1852,31 +1853,7 @@ export default function ScreenshotPage() {
 
       <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }} />
 
-      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "ready" && (
-        <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>
-          <RecordingPrepToolbar
-            mode={recordingMode}
-            windowTargets={recordingTargets.windows}
-            displayTargets={recordingTargets.displays}
-            selectedWindowTargetId={selectedWindowTargetId}
-            selectedDisplayTargetId={selectedDisplayTargetId}
-            fps={recordingFps}
-            resolution={recordingResolution}
-            audioMode={recordingAudioMode}
-            countdownSeconds={recordingCountdownSeconds}
-            audioOptions={audioOptions}
-            busy={isRecordingBusy}
-            onSelectWindowTarget={(value) => selectRecordingTarget("window", value)}
-            onSelectDisplayTarget={(value) => selectRecordingTarget("display", value)}
-            onFpsChange={setRecordingFps}
-            onResolutionChange={setRecordingResolution}
-            onAudioModeChange={setRecordingAudioMode}
-            onCountdownChange={setRecordingCountdownSeconds}
-            onStart={startRecording}
-            onCancel={cancelRecording}
-          />
-        </div>
-      )}
+
 
       {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && scrollCaptureMode !== "idle" && (
         <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>

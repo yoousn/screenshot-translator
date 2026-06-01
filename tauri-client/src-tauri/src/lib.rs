@@ -11,7 +11,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use tauri::Emitter;
 use tauri::Manager;
@@ -22,6 +22,7 @@ const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
+static RECORDING_OVERLAY_COLOR: AtomicU32 = AtomicU32::new(RECORDING_BORDER_BLUE);
 
 static SCREENSHOT_JPEG: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 fn get_screenshot_jpeg() -> &'static Mutex<Option<Vec<u8>>> {
@@ -43,6 +44,9 @@ struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
 
 const DEFAULT_SCREENSHOT_HOTKEY: &str = "Alt+A";
 const TRANSLATE_HOTKEY_LABEL: &str = "Alt+T";
+const RECORDING_BORDER_BLUE: u32 = 0xeb6325;
+const RECORDING_BORDER_RED: u32 = 0x4444ef;
+const RECORDING_BORDER_YELLOW: u32 = 0x0b9ef5;
 const RECORDING_HOTKEY_LABEL: &str = "Alt+R";
 
 fn normalize_key_code(key: &str) -> Option<String> {
@@ -91,7 +95,7 @@ fn parse_hotkey(hotkey: &str) -> Result<Shortcut, String> {
         .filter(|part| !part.is_empty())
         .collect();
     if parts.len() < 2 {
-        return Err("快捷键至少需要一个修饰键，例如 Alt+A".to_string());
+        return Err("Hotkey requires at least one modifier, for example Alt+A".to_string());
     }
 
     let mut modifiers = Modifiers::empty();
@@ -103,17 +107,17 @@ fn parse_hotkey(hotkey: &str) -> Result<Shortcut, String> {
             "cmd" | "command" | "meta" | "win" | "windows" | "super" => {
                 modifiers |= Modifiers::META
             }
-            other => return Err(format!("不支持的修饰键: {}", other)),
+            other => return Err(format!("Unsupported modifier key: {}", other)),
         }
     }
     if modifiers.is_empty() {
-        return Err("快捷键至少需要 Alt/Ctrl/Shift/Win 中的一个修饰键".to_string());
+        return Err("Hotkey requires one of Alt/Ctrl/Shift/Win".to_string());
     }
 
     let key_part = parts.last().copied().unwrap_or_default();
     let code_name =
-        normalize_key_code(key_part).ok_or_else(|| format!("不支持的按键: {}", key_part))?;
-    let code = Code::from_str(&code_name).map_err(|_| format!("不支持的按键: {}", key_part))?;
+        normalize_key_code(key_part).ok_or_else(|| format!("Unsupported key: {}", key_part))?;
+    let code = Code::from_str(&code_name).map_err(|_| format!("Unsupported key: {}", key_part))?;
     Ok(Shortcut::new(Some(modifiers), code))
 }
 
@@ -362,6 +366,39 @@ fn find_paddleocr_json_exe(dir: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
+
+fn find_rapidocr_exe(dir: &std::path::Path) -> Option<PathBuf> {
+    if !dir.exists() {
+        return None;
+    }
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let matches = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| {
+                    let lower = name.to_ascii_lowercase();
+                    lower == "rapidocr-json.exe"
+                        || lower == "rapidocr_onnx.exe"
+                        || lower == "rapidocr.exe"
+                        || lower == "rapidocr-cli.exe"
+                })
+                .unwrap_or(false);
+            if matches {
+                return Some(path);
+            }
+        }
+        if path.is_dir() {
+            if let Some(found) = find_rapidocr_exe(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 fn portable_ocr_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
@@ -377,10 +414,6 @@ fn default_ocr_install_dir() -> PathBuf {
     dir.push("runtime");
     dir
 }
-fn resolve_paddleocr_json_exe_from_path(path: &std::path::Path) -> Option<PathBuf> {
-    resolve_ocr_executable_from_path(path)
-}
-
 fn ocr_runtime_manifest_path(exe_path: &std::path::Path) -> Option<PathBuf> {
     exe_path.parent().map(|dir| dir.join("ocr-runtime.json"))
 }
@@ -415,7 +448,9 @@ fn resolve_ocr_executable_from_path(path: &std::path::Path) -> Option<PathBuf> {
         return Some(path.to_path_buf());
     }
     if path.is_dir() {
-        return resolve_manifest_entry_from_dir(path).or_else(|| find_paddleocr_json_exe(path));
+        return resolve_manifest_entry_from_dir(path)
+            .or_else(|| find_rapidocr_exe(path))
+            .or_else(|| find_paddleocr_json_exe(path));
     }
     None
 }
@@ -428,7 +463,14 @@ fn ocr_runtime_protocol(exe_path: &std::path::Path) -> String {
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string())
         })
-        .unwrap_or_else(|| "paddleocr-json-stdin".to_string())
+        .unwrap_or_else(|| {
+            let name = exe_path.file_name().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+            if name.contains("rapidocr") {
+                "cli-json-file".to_string()
+            } else {
+                "paddleocr-json-stdin".to_string()
+            }
+        })
 }
 
 fn write_paddleocr_runtime_manifest(
@@ -465,34 +507,40 @@ fn resolve_local_ocr_executable(
 
     if let Some(path) = executable_path.filter(|path| !path.trim().is_empty()) {
         let raw_path = PathBuf::from(path.trim());
-        return resolve_paddleocr_json_exe_from_path(&raw_path).ok_or_else(|| {
+        return resolve_ocr_executable_from_path(&raw_path).ok_or_else(|| {
             format!(
-                "未在指定 OCR 路径找到 PaddleOCR-json.exe：{}",
+                "No OCR runtime entry found at selected path: {}",
                 raw_path.to_string_lossy()
             )
         });
     }
 
     if let Some(portable_dir) = portable_ocr_dir() {
-        if let Some(path) = find_paddleocr_json_exe(&portable_dir) {
+        if let Some(path) = resolve_manifest_entry_from_dir(&portable_dir)
+            .or_else(|| find_rapidocr_exe(&portable_dir))
+            .or_else(|| find_paddleocr_json_exe(&portable_dir))
+        {
             return Ok(path);
         }
     }
 
     let install_dir = default_ocr_install_dir();
-    if let Some(path) = find_paddleocr_json_exe(&install_dir) {
+    if let Some(path) = resolve_manifest_entry_from_dir(&install_dir)
+        .or_else(|| find_rapidocr_exe(&install_dir))
+        .or_else(|| find_paddleocr_json_exe(&install_dir))
+    {
         return Ok(path);
     }
 
     let resource_path = app
         .path()
         .resolve("resources/ocr/PaddleOCR-json.exe", BaseDirectory::Resource)
-        .map_err(|e| format!("解析 OCR 资源路径失败：{}", e))?;
+        .map_err(|e| format!("Resolve OCR resource path failed: {}", e))?;
     if resource_path.is_file() {
         return Ok(resource_path);
     }
 
-    Err("未找到 OCR 运行入口。默认请放在软件同级 ocr\\PaddleOCR-json.exe，或在模型/视频配置中选择运行包目录。".to_string())
+    Err("OCR runtime not found. Put a RapidOCR ONNX runtime with ocr-runtime.json in the app ocr directory, or choose a runtime directory in settings.".to_string())
 }
 
 fn emit_ocr_progress(
@@ -564,18 +612,17 @@ async fn download_paddleocr_release(
     tag: String,
     install_dir: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let lower_url = url.to_ascii_lowercase();
     let allowed = [
         "https://github.com/hiroi-sora/PaddleOCR-json/releases/download/",
         "https://objects.githubusercontent.com/github-production-release-asset-",
     ];
-    if !allowed.iter().any(|prefix| url.starts_with(prefix))
-        || !url.to_ascii_lowercase().ends_with(".7z")
-    {
-        return Err("\u{8bf7}\u{9009}\u{62e9} PaddleOCR-json \u{5b98}\u{65b9} GitHub Release \u{7684} Windows .7z \u{6587}\u{4ef6}".to_string());
+    if !allowed.iter().any(|prefix| url.starts_with(prefix)) || !lower_url.ends_with(".7z") {
+        return Err("Please choose an official Windows .7z OCR runtime release".to_string());
     }
 
     stop_ocr_process();
-    emit_ocr_progress(&app, "准备下载", 0, None, 1);
+    emit_ocr_progress(&app, "Preparing", 0, None, 1);
 
     let safe_tag = sanitize_tag(&tag);
     let filename = format!("PaddleOCR-json-{}.7z", safe_tag);
@@ -583,18 +630,14 @@ async fn download_paddleocr_release(
         .timeout(Duration::from_secs(300))
         .user_agent("ScreenshotTranslator/1.0")
         .build()
-        .map_err(|e| format!("\u{521b}\u{5efa}\u{4e0b}\u{8f7d}\u{5ba2}\u{6237}\u{7aef}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
-    let resp = client.get(&url).send().await.map_err(|e| {
-        format!(
-            "\u{4e0b}\u{8f7d} PaddleOCR-json \u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
+        .map_err(|e| format!("failed to create download client: {}", e))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("failed to download OCR runtime: {}", e))?;
     if !resp.status().is_success() {
-        return Err(format!(
-            "\u{4e0b}\u{8f7d} PaddleOCR-json \u{5931}\u{8d25}\u{ff1a}HTTP {}",
-            resp.status()
-        ));
+        return Err(format!("failed to download OCR runtime: HTTP {}", resp.status()));
     }
 
     let total = resp.content_length();
@@ -602,67 +645,40 @@ async fn download_paddleocr_release(
     let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
     let mut downloaded: u64 = 0;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("\u{8bfb}\u{53d6} PaddleOCR-json \u{4e0b}\u{8f7d}\u{6570}\u{636e}\u{5931}\u{8d25}\u{ff1a}{}", e))?;
+        let chunk = chunk.map_err(|e| format!("failed to read OCR runtime download: {}", e))?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         let percent = total
             .map(|value| ((downloaded as f64 / value.max(1) as f64) * 70.0).round() as u8)
             .unwrap_or(10)
             .clamp(1, 70);
-        emit_ocr_progress(&app, "下载中", downloaded, total, percent);
+        emit_ocr_progress(&app, "Downloading", downloaded, total, percent);
     }
 
     let mut download_dir = app_data_dir();
     download_dir.push("ocr");
     download_dir.push("downloads");
-    fs::create_dir_all(&download_dir).map_err(|e| {
-        format!(
-            "\u{521b}\u{5efa}\u{4e0b}\u{8f7d}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
+    fs::create_dir_all(&download_dir).map_err(|e| format!("failed to create OCR download directory: {}", e))?;
     let archive_path = download_dir.join(filename);
-    fs::write(&archive_path, &bytes).map_err(|e| {
-        format!(
-            "\u{4fdd}\u{5b58} PaddleOCR-json \u{538b}\u{7f29}\u{5305}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
+    fs::write(&archive_path, &bytes).map_err(|e| format!("failed to save OCR archive: {}", e))?;
 
-    emit_ocr_progress(&app, "解压中", downloaded, total, 75);
+    emit_ocr_progress(&app, "Extracting", downloaded, total, 75);
     let install_dir = install_dir
         .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| ensure_writable_dir(default_ocr_install_dir()));
     if install_dir.exists() {
-        fs::remove_dir_all(&install_dir).map_err(|e| {
-            format!(
-                "\u{6e05}\u{7406} OCR \u{5b89}\u{88c5}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-                e
-            )
-        })?;
+        fs::remove_dir_all(&install_dir).map_err(|e| format!("failed to clean OCR install directory: {}", e))?;
     }
-    fs::create_dir_all(&install_dir).map_err(|e| {
-        format!(
-            "\u{521b}\u{5efa} OCR \u{5b89}\u{88c5}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
-
-    sevenz_rust::decompress_file(&archive_path, &install_dir).map_err(|e| {
-        format!(
-            "\u{89e3}\u{538b} PaddleOCR-json \u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
+    fs::create_dir_all(&install_dir).map_err(|e| format!("failed to create OCR install directory: {}", e))?;
+    sevenz_rust::decompress_file(&archive_path, &install_dir).map_err(|e| format!("failed to extract OCR runtime: {}", e))?;
     let _ = fs::remove_file(&archive_path);
-    emit_ocr_progress(&app, "检查可执行文件", downloaded, total, 95);
+    emit_ocr_progress(&app, "Checking", downloaded, total, 95);
 
-    let exe_path = find_paddleocr_json_exe(&install_dir).ok_or_else(|| {
-        "\u{89e3}\u{538b}\u{540e}\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe".to_string()
-    })?;
+    let exe_path = find_paddleocr_json_exe(&install_dir)
+        .ok_or_else(|| "PaddleOCR-json.exe was not found after extraction".to_string())?;
     write_paddleocr_runtime_manifest(&install_dir, &tag, &exe_path)?;
-    emit_ocr_progress(&app, "完成", downloaded, total, 100);
+    emit_ocr_progress(&app, "Done", downloaded, total, 100);
 
     Ok(serde_json::json!({
         "path": exe_path.to_string_lossy().to_string(),
@@ -681,7 +697,7 @@ fn choose_ocr_install_dir() -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn choose_ocr_runtime_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new().set_title("选择 OCR 运行包目录");
+    let mut dialog = rfd::FileDialog::new().set_title("Choose OCR runtime directory");
     if let Some(dir) = current_dir {
         let trimmed = dir.trim();
         if !trimmed.is_empty() {
@@ -693,9 +709,7 @@ fn choose_ocr_runtime_dir(current_dir: Option<String>) -> Result<Option<String>,
             }
         }
     }
-    Ok(dialog
-        .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
+    Ok(dialog.pick_folder().map(|path| path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -705,39 +719,24 @@ fn move_ocr_runtime(
 ) -> Result<serde_json::Value, String> {
     let target_dir = PathBuf::from(target_dir);
     if target_dir.as_os_str().is_empty() {
-        return Err("\u{8bf7}\u{9009}\u{62e9}\u{76ee}\u{6807}\u{76ee}\u{5f55}".to_string());
+        return Err("Please choose a target OCR directory".to_string());
     }
     stop_ocr_process();
 
     let source_exe = executable_path
         .filter(|path| !path.trim().is_empty())
-        .and_then(|path| resolve_paddleocr_json_exe_from_path(&PathBuf::from(path.trim())))
-        .or_else(|| portable_ocr_dir().and_then(|dir| find_paddleocr_json_exe(&dir)))
-        .or_else(|| find_paddleocr_json_exe(&default_ocr_install_dir()))
-        .ok_or_else(|| "\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe\u{ff0c}\u{8bf7}\u{5148}\u{4e0b}\u{8f7d}\u{6216}\u{9009}\u{62e9} OCR \u{76ee}\u{5f55}".to_string())?;
+        .and_then(|path| resolve_ocr_executable_from_path(&PathBuf::from(path.trim())))
+        .or_else(|| portable_ocr_dir().and_then(|dir| resolve_ocr_executable_from_path(&dir)))
+        .or_else(|| resolve_ocr_executable_from_path(&default_ocr_install_dir()))
+        .ok_or_else(|| "No OCR runtime found. Choose or install a runtime first.".to_string())?;
     let source_dir = source_exe
         .parent()
-        .ok_or_else(|| "\u{65e0}\u{6cd5}\u{89e3}\u{6790} OCR \u{76ee}\u{5f55}".to_string())?
+        .ok_or_else(|| "Failed to resolve OCR runtime directory".to_string())?
         .to_path_buf();
 
-    let source_canon = fs::canonicalize(&source_dir).map_err(|e| {
-        format!(
-            "\u{8bfb}\u{53d6} OCR \u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
-    fs::create_dir_all(&target_dir).map_err(|e| {
-        format!(
-            "\u{521b}\u{5efa}\u{76ee}\u{6807}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
-    let target_canon = fs::canonicalize(&target_dir).map_err(|e| {
-        format!(
-            "\u{89e3}\u{6790}\u{76ee}\u{6807}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
+    let source_canon = fs::canonicalize(&source_dir).map_err(|e| format!("failed to read OCR directory: {}", e))?;
+    fs::create_dir_all(&target_dir).map_err(|e| format!("failed to create target OCR directory: {}", e))?;
+    let target_canon = fs::canonicalize(&target_dir).map_err(|e| format!("failed to resolve target OCR directory: {}", e))?;
     if source_canon == target_canon {
         return Ok(serde_json::json!({
             "path": source_exe.to_string_lossy().to_string(),
@@ -746,11 +745,11 @@ fn move_ocr_runtime(
     }
 
     copy_dir_recursive(&source_dir, &target_dir)?;
-    let exe_path = find_paddleocr_json_exe(&target_dir).ok_or_else(|| {
-        "\u{79fb}\u{52a8}\u{5b8c}\u{6210}\u{540e}\u{672a}\u{627e}\u{5230} PaddleOCR-json.exe"
-            .to_string()
-    })?;
-    if !target_dir.join("ocr-runtime.json").exists() {
+    let exe_path = resolve_ocr_executable_from_path(&target_dir)
+        .ok_or_else(|| "No OCR runtime entry found after moving directory".to_string())?;
+    if !target_dir.join("ocr-runtime.json").exists()
+        && exe_path.file_name().and_then(|name| name.to_str()).map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe")).unwrap_or(false)
+    {
         let _ = write_paddleocr_runtime_manifest(&target_dir, "custom", &exe_path);
     }
 
@@ -944,6 +943,7 @@ mod win32 {
         pub fn IsWindowVisible(hWnd: isize) -> i32;
         pub fn SetCursorPos(X: i32, Y: i32) -> i32;
         pub fn mouse_event(dwFlags: u32, dx: u32, dy: u32, dwData: u32, dwExtraInfo: usize);
+        pub fn InvalidateRect(hWnd: isize, lpRect: *const RECT, bErase: i32) -> i32;
     }
     #[link(name = "dwmapi")]
     extern "system" {
@@ -1056,9 +1056,7 @@ const LWA_COLORKEY: u32 = 0x00000001;
 #[cfg(target_os = "windows")]
 const TRANSPARENT_COLOR_KEY: u32 = 0x000000;
 #[cfg(target_os = "windows")]
-const RECORDING_BORDER_COLORREF: u32 = 0x4f3bff;
-#[cfg(target_os = "windows")]
-const RECORDING_BORDER_THICKNESS: i32 = 1;
+const RECORDING_BORDER_THICKNESS: i32 = 2;
 
 #[cfg(target_os = "windows")]
 fn wide_null(value: &str) -> Vec<u16> {
@@ -1092,7 +1090,8 @@ unsafe extern "system" fn recording_overlay_wnd_proc(
             let width = ps.rc_paint.right.max(1);
             let height = ps.rc_paint.bottom.max(1);
             let transparent_brush = win32::CreateSolidBrush(TRANSPARENT_COLOR_KEY);
-            let red_brush = win32::CreateSolidBrush(RECORDING_BORDER_COLORREF);
+            let border_color = RECORDING_OVERLAY_COLOR.load(Ordering::Relaxed);
+            let red_brush = win32::CreateSolidBrush(border_color);
             let full = win32::RECT {
                 left: 0,
                 top: 0,
@@ -1166,13 +1165,41 @@ fn hide_recording_overlay() -> Result<(), String> {
     hide_recording_overlay_internal();
     Ok(())
 }
+fn recording_color_ref(status: &str) -> u32 {
+    match status {
+        "recording" => RECORDING_BORDER_RED,
+        "paused" => RECORDING_BORDER_YELLOW,
+        _ => RECORDING_BORDER_BLUE,
+    }
+}
+
+#[tauri::command]
+fn set_recording_overlay_status(status: String) -> Result<(), String> {
+    RECORDING_OVERLAY_COLOR.store(recording_color_ref(status.trim()), Ordering::Relaxed);
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(overlay) = get_recording_overlay()
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+        {
+            unsafe {
+                let _ = win32::InvalidateRect(overlay.hwnd, std::ptr::null(), 1);
+                let _ = win32::UpdateWindow(overlay.hwnd);
+            }
+        }
+    }
+    Ok(())
+}
+
 
 #[tauri::command]
 fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
     if w <= 0 || h <= 0 {
-        return Err("录制区域尺寸无效".to_string());
+        return Err("Invalid recording region size".to_string());
     }
     hide_recording_overlay_internal();
+    RECORDING_OVERLAY_COLOR.store(RECORDING_BORDER_BLUE, Ordering::Relaxed);
     #[cfg(target_os = "windows")]
     {
         let (tx, rx) = mpsc::channel::<Result<isize, String>>();
@@ -1209,7 +1236,7 @@ fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> 
                     std::ptr::null_mut(),
                 );
                 if hwnd == 0 {
-                    Err("创建原生录制边框失败".to_string())
+                    Err("Failed to create native recording border".to_string())
                 } else {
                     let _ = win32::SetLayeredWindowAttributes(
                         hwnd,
@@ -1254,7 +1281,7 @@ fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> 
         });
         let hwnd = rx
             .recv_timeout(std::time::Duration::from_millis(1000))
-            .map_err(|_| "创建原生录制边框超时".to_string())??;
+            .map_err(|_| "Timed out creating native recording border".to_string())??;
         *get_recording_overlay().lock().map_err(|e| e.to_string())? =
             Some(NativeRecordingOverlay { hwnd });
         Ok(())
@@ -1305,9 +1332,9 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
         move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
-            let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
+            let screens = Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
             if screens.is_empty() {
-                return Err("未检测到显示器".to_string());
+                return Err("No display detected".to_string());
             }
             let screen = if let Some((cx, cy)) = get_cursor_position() {
                 Screen::from_point(cx, cy).unwrap_or_else(|_| screens[0])
@@ -1317,27 +1344,27 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
             let info = screen.display_info;
             let screen_info = (info.x, info.y, info.width, info.height);
 
-            let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
+            let image = screen.capture().map_err(|e| format!("Screenshot failed: {}", e))?;
             let mut buffer = std::io::Cursor::new(Vec::new());
             let encoder =
                 screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
             image
                 .write_with_encoder(encoder)
-                .map_err(|e| format!("生成JPEG字节流失败：{}", e))?;
+                .map_err(|e| format!("Encode JPEG failed: {}", e))?;
             let jpeg_bytes = buffer.into_inner();
             let base64_data = BASE64_STANDARD.encode(&jpeg_bytes);
             Ok((jpeg_bytes, base64_data, screen_info))
         },
     )
     .await
-    .map_err(|e| format!("截屏任务执行失败：{}", e))??;
+    .map_err(|e| format!("Screenshot task failed: {}", e))??;
 
     // Store JPEG bytes in memory for capture_region (avoids disk read on the critical path)
     if let Ok(mut guard) = get_screenshot_jpeg().lock() {
         *guard = Some(jpeg_bytes.clone());
     }
 
-    // Write to disk asynchronously (non-blocking) — only needed as a backup
+    // Write to disk asynchronously (non-blocking) 鈥?only needed as a backup
     let write_dir = app_data_dir();
     let write_path = write_dir.join("fullscreen_temp.jpg");
     let jpeg_for_write = jpeg_bytes.clone();
@@ -1358,7 +1385,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
             "screenshot",
             tauri::WebviewUrl::App("index.html".into()),
         )
-        .title("YSN 截图辅助窗口")
+        .title("YSN Screenshot Helper")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -1368,7 +1395,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
         .shadow(false)
         .focused(false)
         .build()
-        .map_err(|e| format!("创建截图窗口失败：{}", e))?
+        .map_err(|e| format!("Create screenshot window failed: {}", e))?
     };
 
     // Disable transition animation to avoid windows rendering delay/flicker
@@ -1425,18 +1452,18 @@ async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn quick_fullscreen_capture() -> Result<(), String> {
-    let screens = Screen::all().map_err(|e| format!("无法获取显示设备：{}", e))?;
+    let screens = Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
     if screens.is_empty() {
-        return Err("未检测到显示器".to_string());
+        return Err("No display detected".to_string());
     }
     let screen = if let Some((cx, cy)) = get_cursor_position() {
         Screen::from_point(cx, cy).unwrap_or_else(|_| screens[0])
     } else {
         screens[0]
     };
-    let image = screen.capture().map_err(|e| format!("截屏失败：{}", e))?;
+    let image = screen.capture().map_err(|e| format!("Screenshot failed: {}", e))?;
     let (width, height) = image.dimensions();
-    let mut clipboard = Clipboard::new().map_err(|e| format!("初始化系统剪贴板失败：{}", e))?;
+    let mut clipboard = Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
     let img_data = ImageData {
         width: width as usize,
         height: height as usize,
@@ -1444,7 +1471,7 @@ fn quick_fullscreen_capture() -> Result<(), String> {
     };
     clipboard
         .set_image(img_data)
-        .map_err(|e| format!("复制图像到剪贴板失败：{}", e))?;
+        .map_err(|e| format!("Copy image to clipboard failed: {}", e))?;
     Ok(())
 }
 
@@ -1712,16 +1739,16 @@ fn get_fullscreen_image() -> Result<String, String> {
     let mut path = app_data_dir();
     path.push("fullscreen_temp.jpg");
     if !path.exists() {
-        return Err("没有可用的全屏截图".to_string());
+        return Err("No display detected".to_string());
     }
-    let bytes = fs::read(&path).map_err(|e| format!("读取全屏图失败：{}", e))?;
+    let bytes = fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?;
     Ok(BASE64_STANDARD.encode(&bytes))
 }
 
 #[tauri::command]
 fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     if w <= 0 || h <= 0 {
-        return Err("选区范围无效".to_string());
+        return Err("Invalid selection region".to_string());
     }
 
     // Try memory first (fast), fall back to disk
@@ -1733,9 +1760,9 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
             let mut path = app_data_dir();
             path.push("fullscreen_temp.jpg");
             if !path.exists() {
-                return Err("原始截图文件不存在".to_string());
+                return Err("No display detected".to_string());
             }
-            fs::read(&path).map_err(|e| format!("读取全屏图失败：{}", e))?
+            fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?
         }
     };
 
@@ -1743,7 +1770,7 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
         &jpeg_bytes,
         screenshots::image::ImageFormat::Jpeg,
     )
-    .map_err(|e| format!("加载全屏图失败：{}", e))?;
+    .map_err(|e| format!("Load fullscreen image failed: {}", e))?;
     let iw = img.width() as i32;
     let ih = img.height() as i32;
     let sx = x.clamp(0, iw.saturating_sub(1));
@@ -1754,7 +1781,7 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     cropped
         .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
-        .map_err(|e| format!("图片编码 PNG 失败：{}", e))?;
+        .map_err(|e| format!("Encode PNG failed: {}", e))?;
     let bytes = buffer.into_inner();
     let mut cropped_path = app_data_dir();
     cropped_path.push("cropped_temp.png");
@@ -1811,15 +1838,15 @@ fn scroll_mouse_at(x: i32, y: i32, delta: i32) -> Result<(), String> {
 fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
     let bytes = BASE64_STANDARD
         .decode(&image_base64)
-        .map_err(|e| format!("Base64解码失败：{}", e))?;
+        .map_err(|e| format!("Decode base64 failed: {}", e))?;
     let img = screenshots::image::load_from_memory_with_format(
         &bytes,
         screenshots::image::ImageFormat::Png,
     )
-    .map_err(|e| format!("解析裁剪图像数据失败：{}", e))?;
+    .map_err(|e| format!("Parse cropped image data failed: {}", e))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
-    let mut clipboard = Clipboard::new().map_err(|e| format!("初始化系统剪贴板失败：{}", e))?;
+    let mut clipboard = Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
     let img_data = ImageData {
         width: width as usize,
         height: height as usize,
@@ -1827,7 +1854,7 @@ fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
     };
     clipboard
         .set_image(img_data)
-        .map_err(|e| format!("复制图像到剪贴板失败：{}", e))?;
+        .map_err(|e| format!("Copy image to clipboard failed: {}", e))?;
     Ok(())
 }
 
@@ -1835,21 +1862,21 @@ fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
 async fn save_image_to_file(image_base64: String) -> Result<String, String> {
     let bytes = BASE64_STANDARD
         .decode(&image_base64)
-        .map_err(|e| format!("Base64解码失败：{}", e))?;
+        .map_err(|e| format!("Decode base64 failed: {}", e))?;
     let file_path = rfd::AsyncFileDialog::new()
-        .add_filter("PNG 图像", &["png"])
+        .add_filter("PNG Image", &["png"])
         .set_file_name("screenshot.png")
         .save_file()
         .await;
     if let Some(file_handle) = file_path {
         let path = file_handle.path();
-        fs::write(path, &bytes).map_err(|e| format!("写入文件失败：{}", e))?;
+        fs::write(path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
         if !path.exists() {
-            return Err("文件未成功写入磁盘".to_string());
+            return Err("No display detected".to_string());
         }
         Ok(path.to_string_lossy().to_string())
     } else {
-        Err("用户取消了保存".to_string())
+        Err("Save cancelled by user".to_string())
     }
 }
 
@@ -1966,14 +1993,14 @@ fn extract_ffmpeg_exe_from_zip(
 ) -> Result<PathBuf, String> {
     let reader = Cursor::new(bytes);
     let mut archive =
-        zip::ZipArchive::new(reader).map_err(|e| format!("读取 ffmpeg 压缩包失败：{}", e))?;
-    fs::create_dir_all(install_dir).map_err(|e| format!("创建 ffmpeg 目录失败：{}", e))?;
+        zip::ZipArchive::new(reader).map_err(|e| format!("Read ffmpeg archive failed: {}", e))?;
+    fs::create_dir_all(install_dir).map_err(|e| format!("Create ffmpeg directory failed: {}", e))?;
     let target = install_dir.join("ffmpeg.exe");
     let mut found = false;
     for index in 0..archive.len() {
         let mut file = archive
             .by_index(index)
-            .map_err(|e| format!("读取 ffmpeg 压缩包文件失败：{}", e))?;
+            .map_err(|e| format!("Read ffmpeg archive entry failed: {}", e))?;
         if !file
             .name()
             .replace('\\', "/")
@@ -1984,13 +2011,13 @@ fn extract_ffmpeg_exe_from_zip(
             continue;
         }
         let mut out =
-            fs::File::create(&target).map_err(|e| format!("写入 ffmpeg.exe 失败：{}", e))?;
-        std::io::copy(&mut file, &mut out).map_err(|e| format!("解压 ffmpeg.exe 失败：{}", e))?;
+            fs::File::create(&target).map_err(|e| format!("Create ffmpeg.exe failed: {}", e))?;
+        std::io::copy(&mut file, &mut out).map_err(|e| format!("Extract ffmpeg.exe failed: {}", e))?;
         found = true;
         break;
     }
     if !found {
-        return Err("压缩包内未找到 ffmpeg.exe".to_string());
+        return Err("ffmpeg.exe was not found in the archive".to_string());
     }
     Ok(target)
 }
@@ -2000,7 +2027,7 @@ fn cleanup_finished_recording_process() -> Result<bool, String> {
     let finished = if let Some(child) = guard.as_mut() {
         child
             .try_wait()
-            .map_err(|e| format!("读取录屏进程状态失败：{}", e))?
+            .map_err(|e| format!("Read recording process status failed: {}", e))?
             .is_some()
     } else {
         false
@@ -2192,14 +2219,14 @@ unsafe extern "system" fn enum_recording_windows(hwnd: isize, lparam: isize) -> 
 #[tauri::command]
 fn get_recording_targets(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let displays = Screen::all()
-        .map_err(|e| format!("无法获取显示器：{}", e))?
+        .map_err(|e| format!("Failed to enumerate displays: {}", e))?
         .into_iter()
         .enumerate()
         .map(|(index, screen)| {
             let info = screen.display_info;
             serde_json::json!({
                 "id": index.to_string(),
-                "title": format!("显示器 {} ({}x{})", index + 1, info.width, info.height),
+                "title": format!("Display {} ({}x{})", index + 1, info.width, info.height),
                 "x": info.x,
                 "y": info.y,
                 "w": info.width,
@@ -2253,21 +2280,59 @@ fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String
     }))
 }
 
+fn recording_temp_dir() -> PathBuf {
+    let mut dir = app_data_dir();
+    dir.push("recordings");
+    dir
+}
+
+fn default_recording_output_dir() -> PathBuf {
+    dirs::video_dir()
+        .unwrap_or_else(app_data_dir)
+        .join("YSN")
+}
+
+fn timestamped_recording_file_name() -> String {
+    let now = chrono::Local::now();
+    format!("YSN_{}.mp4", now.format("%Y%m%d_%H%M%S"))
+}
+
+fn unique_recording_output_path() -> Result<PathBuf, String> {
+    let dir = default_recording_output_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("create recording directory failed: {}", e))?;
+    let base = timestamped_recording_file_name();
+    let path = dir.join(&base);
+    if !path.exists() {
+        return Ok(path);
+    }
+    let stem = base.trim_end_matches(".mp4");
+    for index in 2..1000 {
+        let candidate = dir.join(format!("{}_{}.mp4", stem, index));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("failed to create unique recording filename".to_string())
+}
+
 fn recording_output_path(output_dir: Option<String>) -> Result<PathBuf, String> {
     let dir = output_dir
         .filter(|value| !value.trim().is_empty())
         .map(|value| PathBuf::from(value.trim()))
-        .unwrap_or_else(|| {
-            let mut dir = app_data_dir();
-            dir.push("recordings");
-            dir
-        });
-    fs::create_dir_all(&dir).map_err(|e| format!("创建录屏目录失败：{}", e))?;
+        .unwrap_or_else(recording_temp_dir);
+    fs::create_dir_all(&dir).map_err(|e| format!("create recording temp directory failed: {}", e))?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
     Ok(dir.join(format!("recording_{}.mp4", millis)))
+}
+
+#[tauri::command]
+fn get_default_recording_output_dir() -> Result<String, String> {
+    let dir = default_recording_output_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("create recording directory failed: {}", e))?;
+    Ok(dir.to_string_lossy().to_string())
 }
 
 fn resolution_scale_filter(resolution: &str) -> Option<&'static str> {
@@ -2287,7 +2352,7 @@ fn push_recording_audio_input(
 ) -> Result<(), String> {
     let name = device
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("请选择{}音频设备", label))?;
+        .ok_or_else(|| format!("Please choose {} audio device", label))?;
     let trimmed = name.trim();
     if let Some(wasapi_device) = trimmed.strip_prefix("wasapi:") {
         args.extend([
@@ -2331,7 +2396,7 @@ fn build_recording_args(
         options.region_h,
     ) {
         if w <= 0 || h <= 0 {
-            return Err("录屏区域尺寸无效".to_string());
+            return Err("Invalid recording region size".to_string());
         }
         args.extend([
             "-offset_x".to_string(),
@@ -2347,13 +2412,13 @@ fn build_recording_args(
     let audio_inputs = match audio_mode {
         "none" => 0,
         "mic" => {
-            push_recording_audio_input(options.mic_device.as_deref(), "麦克风", &mut args)?;
+            push_recording_audio_input(options.mic_device.as_deref(), "microphone", &mut args)?;
             1
         }
         "system" => {
             push_recording_audio_input(
                 options.system_audio_device.as_deref(),
-                "系统声音",
+                "绯荤粺澹伴煶",
                 &mut args,
             )?;
             1
@@ -2361,13 +2426,13 @@ fn build_recording_args(
         "system_mic" => {
             push_recording_audio_input(
                 options.system_audio_device.as_deref(),
-                "系统声音",
+                "绯荤粺澹伴煶",
                 &mut args,
             )?;
-            push_recording_audio_input(options.mic_device.as_deref(), "麦克风", &mut args)?;
+            push_recording_audio_input(options.mic_device.as_deref(), "microphone", &mut args)?;
             2
         }
-        _ => return Err("未知录屏音频模式".to_string()),
+        _ => return Err("Unknown recording audio mode".to_string()),
     };
 
     args.extend([
@@ -2420,17 +2485,17 @@ async fn get_ffmpeg_release_info() -> Result<serde_json::Value, String> {
         .timeout(Duration::from_secs(30))
         .user_agent("ScreenshotTranslator/1.0")
         .build()
-        .map_err(|e| format!("创建请求客户端失败：{}", e))?;
+        .map_err(|e| format!("Create request client failed: {}", e))?;
     let release = client
         .get("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest")
         .send()
         .await
-        .map_err(|e| format!("检查 ffmpeg 更新失败：{}", e))?
+        .map_err(|e| format!("Check ffmpeg release failed: {}", e))?
         .error_for_status()
-        .map_err(|e| format!("检查 ffmpeg 更新失败：{}", e))?
+        .map_err(|e| format!("Read ffmpeg release response failed: {}", e))?
         .json::<GithubReleaseInfo>()
         .await
-        .map_err(|e| format!("解析 ffmpeg Release 失败：{}", e))?;
+        .map_err(|e| format!("Parse ffmpeg release failed: {}", e))?;
 
     let asset = release
         .assets
@@ -2448,7 +2513,7 @@ async fn get_ffmpeg_release_info() -> Result<serde_json::Value, String> {
                 name.ends_with(".zip") && name.contains("win64") && !name.contains("shared")
             })
         })
-        .ok_or_else(|| "官方 Release 中未找到 Windows x64 ffmpeg zip 包".to_string())?;
+        .ok_or_else(|| "No Windows x64 ffmpeg zip asset found in the official release".to_string())?;
 
     Ok(serde_json::json!({
         "tag": release.tag_name,
@@ -2474,23 +2539,23 @@ async fn download_ffmpeg_release(
         || !url.to_ascii_lowercase().ends_with(".zip")
     {
         return Err(
-            "请选择 BtbN/FFmpeg-Builds 官方 GitHub Release 的 Windows zip 文件".to_string(),
+            "Please choose an official Windows zip from BtbN/FFmpeg-Builds GitHub Releases".to_string(),
         );
     }
 
-    emit_ffmpeg_progress(&app, "准备下载", 0, None, 1);
+    emit_ffmpeg_progress(&app, "Preparing", 0, None, 1);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))
         .user_agent("ScreenshotTranslator/1.0")
         .build()
-        .map_err(|e| format!("创建下载客户端失败：{}", e))?;
+        .map_err(|e| format!("Create download client failed: {}", e))?;
     let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("下载 ffmpeg 失败：{}", e))?;
+        .map_err(|e| format!("Download ffmpeg failed: {}", e))?;
     if !resp.status().is_success() {
-        return Err(format!("下载 ffmpeg 失败：HTTP {}", resp.status()));
+        return Err(format!("Download ffmpeg failed: HTTP {}", resp.status()));
     }
 
     let total = resp.content_length();
@@ -2498,29 +2563,29 @@ async fn download_ffmpeg_release(
     let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
     let mut downloaded: u64 = 0;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("读取 ffmpeg 下载数据失败：{}", e))?;
+        let chunk = chunk.map_err(|e| format!("Read ffmpeg download stream failed: {}", e))?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         let percent = total
             .map(|value| ((downloaded as f64 / value.max(1) as f64) * 80.0).round() as u8)
             .unwrap_or(10)
             .clamp(1, 80);
-        emit_ffmpeg_progress(&app, "下载中", downloaded, total, percent);
+        emit_ffmpeg_progress(&app, "Downloading", downloaded, total, percent);
     }
 
     let safe_tag = sanitize_tag(&tag);
     let mut download_dir = app_data_dir();
     download_dir.push("ffmpeg");
     download_dir.push("downloads");
-    fs::create_dir_all(&download_dir).map_err(|e| format!("创建 ffmpeg 下载目录失败：{}", e))?;
+    fs::create_dir_all(&download_dir).map_err(|e| format!("Create ffmpeg download directory failed: {}", e))?;
     let archive_path = download_dir.join(format!("ffmpeg-{}.zip", safe_tag));
-    fs::write(&archive_path, &bytes).map_err(|e| format!("保存 ffmpeg 压缩包失败：{}", e))?;
+    fs::write(&archive_path, &bytes).map_err(|e| format!("Save ffmpeg archive failed: {}", e))?;
 
-    emit_ffmpeg_progress(&app, "安装中", downloaded, total, 85);
+    emit_ffmpeg_progress(&app, "Installing", downloaded, total, 85);
     let install_dir = ensure_writable_dir(default_ffmpeg_install_dir());
     let exe_path = extract_ffmpeg_exe_from_zip(&bytes, &install_dir)?;
     let _ = fs::remove_file(&archive_path);
-    emit_ffmpeg_progress(&app, "完成", downloaded, total, 100);
+    emit_ffmpeg_progress(&app, "瀹屾垚", downloaded, total, 100);
 
     Ok(serde_json::json!({
         "path": exe_path.to_string_lossy().to_string(),
@@ -2532,7 +2597,7 @@ async fn download_ffmpeg_release(
 #[tauri::command]
 fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
-        .set_title("选择 ffmpeg.exe")
+        .set_title("Choose ffmpeg.exe")
         .add_filter("ffmpeg", &["exe"]);
     if let Some(path) = current_path {
         let trimmed = path.trim();
@@ -2550,7 +2615,7 @@ fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<Strin
 
 #[tauri::command]
 fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new().set_title("选择录屏输出目录");
+    let mut dialog = rfd::FileDialog::new().set_title("Choose recording output directory");
     if let Some(dir) = current_dir {
         let trimmed = dir.trim();
         if !trimmed.is_empty() {
@@ -2568,12 +2633,13 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     {
         let guard = get_recording_process().lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
-            return Err("录屏已在进行中".to_string());
+            return Err("Recording is already running".to_string());
         }
     }
 
     let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| {
-        "未找到 ffmpeg.exe。默认请放在软件同级 ffmpeg\\ffmpeg.exe，或在“模型/视频配置”里选择 ffmpeg.exe。".to_string()
+        r"ffmpeg.exe was not found. Put ffmpeg
+fmpeg.exe next to the app or choose ffmpeg.exe in settings.".to_string()
     })?;
     let output_path = recording_output_path(options.output_dir.clone())?;
     let args = build_recording_args(&options, &output_path)?;
@@ -2596,7 +2662,7 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     if guard.is_some() {
         let _ = child.kill();
         let _ = child.wait();
-        return Err("录屏已在进行中".to_string());
+        return Err("Recording is already running".to_string());
     }
     *guard = Some(child);
     Ok(output_path.to_string_lossy().to_string())
@@ -2644,14 +2710,6 @@ fn cancel_recording_process() -> Result<(), String> {
     stop_recording_internal(250)
 }
 
-fn default_recording_file_name() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("YSN_Recording_{}.mp4", seconds)
-}
-
 fn escape_concat_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
@@ -2664,7 +2722,7 @@ fn concat_recording_segments(
     segment_paths: Vec<String>,
 ) -> Result<String, String> {
     if segment_paths.is_empty() {
-        return Err("没有可合并的录屏片段".to_string());
+        return Err("no recording segments to merge".to_string());
     }
     let existing_segments: Vec<PathBuf> = segment_paths
         .iter()
@@ -2672,27 +2730,19 @@ fn concat_recording_segments(
         .filter(|path| path.exists())
         .collect();
     if existing_segments.is_empty() {
-        return Err("录屏片段不存在，无法保存".to_string());
+        return Err("video file does not exist".to_string());
     }
 
-    let default_name = default_recording_file_name();
-    let save_path = rfd::FileDialog::new()
-        .set_title("保存区域录屏")
-        .add_filter("MP4 视频", &["mp4"])
-        .set_file_name(&default_name)
-        .save_file()
-        .ok_or_else(|| "用户取消了保存".to_string())?;
-
+    let save_path = unique_recording_output_path()?;
     if existing_segments.len() == 1 {
-        fs::copy(&existing_segments[0], &save_path).map_err(|e| format!("保存录屏失败：{}", e))?;
+        fs::copy(&existing_segments[0], &save_path).map_err(|e| format!("save recording failed: {}", e))?;
         return Ok(save_path.to_string_lossy().to_string());
     }
 
     let ffmpeg = find_ffmpeg_executable(&app)
-        .ok_or_else(|| "未找到 ffmpeg.exe，无法合并录屏片段".to_string())?;
-    let mut list_path = app_data_dir();
-    list_path.push("recordings");
-    fs::create_dir_all(&list_path).map_err(|e| format!("创建录屏临时目录失败：{}", e))?;
+        .ok_or_else(|| "ffmpeg.exe not found, cannot merge recording segments".to_string())?;
+    let mut list_path = recording_temp_dir();
+    fs::create_dir_all(&list_path).map_err(|e| format!("create recording temp directory failed: {}", e))?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2703,7 +2753,7 @@ fn concat_recording_segments(
         .map(|path| format!("file '{}'", escape_concat_path(path)))
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(&list_path, list_body).map_err(|e| format!("写入录屏合并列表失败：{}", e))?;
+    fs::write(&list_path, list_body).map_err(|e| format!("create recording temp directory failed: {}", e))?;
 
     let args = vec![
         "-y".to_string(),
@@ -2723,12 +2773,43 @@ fn concat_recording_segments(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| format!("启动 ffmpeg 合并失败：{}", e))?;
+        .map_err(|e| format!("failed to start ffmpeg merge: {}", e))?;
     let _ = fs::remove_file(&list_path);
     if !status.success() {
-        return Err(format!("ffmpeg 合并录屏片段失败：{}", status));
+        return Err(format!("ffmpeg failed to merge recording segments: {}", status));
     }
     Ok(save_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    let file_path = PathBuf::from(path.trim());
+    if !file_path.is_file() {
+        return Err("video file does not exist".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "Set-Clipboard -LiteralPath {}",
+            shell_escape_powershell_single(&file_path.to_string_lossy())
+        );
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .status()
+            .map_err(|e| format!("failed to start clipboard command: {}", e))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("failed to copy video file to clipboard: {}", status));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("copying video files is not supported on this platform".to_string())
+    }
+}
+
+fn shell_escape_powershell_single(value: &str) -> String {
+    format!("'{}'", value.replace("'", "''"))
 }
 
 #[tauri::command]
@@ -2822,15 +2903,15 @@ fn start_ocr_process(
     config_key: &str,
 ) -> Result<LocalOcrProcess, String> {
     if !exe_path.is_file() {
-        return Err(format!(
-            "本地 OCR 执行文件无效：{}",
-            exe_path.to_string_lossy()
-        ));
+        return Err(format!("Local OCR executable is invalid: {}", exe_path.to_string_lossy()));
+
+
+
     }
 
     let exe_dir = exe_path
         .parent()
-        .ok_or_else(|| "无法获取可执行文件所在目录".to_string())?;
+        .ok_or_else(|| "Failed to get OCR executable directory".to_string())?;
 
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -2852,30 +2933,30 @@ fn start_ocr_process(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动 PaddleOCR 子进程失败: {}", e))?;
+        .map_err(|e| format!("Start OCR process failed: {}", e))?;
 
     let stdin = child
         .stdin
         .take()
-        .ok_or("无法打开 stdin 管道".to_string())?;
+        .ok_or("Failed to open stdin pipe".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or("无法打开 stdout 管道".to_string())?;
+        .ok_or("Failed to open stdout pipe".to_string())?;
     let mut reader = BufReader::new(stdout);
 
-    // 同步等待初始化完成标志: "OCR init completed."
+    // Wait for OCR initialization marker: "OCR init completed."
     let mut init_line = String::new();
     loop {
         init_line.clear();
         match reader.read_line(&mut init_line) {
-            Ok(0) => return Err("PaddleOCR 进程在初始化完成前已关闭".to_string()),
+            Ok(0) => return Err("OCR process closed before initialization completed".to_string()),
             Ok(_) => {
                 if init_line.contains("OCR init completed.") {
                     break;
                 }
             }
-            Err(e) => return Err(format!("读取 PaddleOCR 初始化输出失败: {}", e)),
+            Err(e) => return Err(format!("Read OCR initialization output failed: {}", e)),
         }
     }
 
@@ -3124,7 +3205,7 @@ async fn run_local_ocr(
     let task =
         tokio::task::spawn_blocking(move || run_local_ocr_sync(app, image_base64, executable_path));
     match tokio::time::timeout(timeout, task).await {
-        Ok(joined) => joined.map_err(|e| format!("本地 OCR 任务执行失败: {}", e))?,
+        Ok(joined) => joined.map_err(|e| format!("Local OCR task failed: {}", e))?,
         Err(_) => {
             let manager = get_ocr_manager();
             if let Ok(mut guard) = manager.try_lock() {
@@ -3132,7 +3213,7 @@ async fn run_local_ocr(
                     let _ = proc.child.kill();
                 }
             }
-            Err(format!("本地 OCR 超时 ({} ms)", timeout.as_millis()))
+            Err(format!("Local OCR timed out ({} ms)", timeout.as_millis()))
         }
     }
 }
@@ -3145,13 +3226,13 @@ fn run_local_ocr_sync(
     let resolved_exe = resolve_local_ocr_executable(&app, executable_path)?;
 
     if !resolved_exe.is_file() {
-        return Err(format!("本地 OCR 执行文件不存在于 {:?}", resolved_exe));
+        return Err(format!("Local OCR executable does not exist: {}", resolved_exe.display()));
     }
 
-    // 2. 解码并使用高精度微秒级时间戳作为唯一标识保存临时识别图片，防并发冲突
+    // Save the image to a unique temporary file for OCR.
     let bytes = BASE64_STANDARD
         .decode(&image_base64)
-        .map_err(|e| format!("图片解码失败: {}", e))?;
+        .map_err(|e| format!("Decode image failed: {}", e))?;
 
     let rand_suffix: u64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3160,7 +3241,7 @@ fn run_local_ocr_sync(
 
     let mut ocr_temp_path = std::env::temp_dir();
     ocr_temp_path.push(format!("ocr-{}.png", rand_suffix));
-    fs::write(&ocr_temp_path, &bytes).map_err(|e| format!("保存临时识别图像失败: {}", e))?;
+    fs::write(&ocr_temp_path, &bytes).map_err(|e| format!("Save temporary OCR image failed: {}", e))?;
 
     let abs_image_path = ocr_temp_path.to_string_lossy().to_string();
 
@@ -3377,6 +3458,7 @@ pub fn run() {
             add_history,
             clear_history,
             get_recording_info,
+            get_default_recording_output_dir,
             get_recording_targets,
             get_ffmpeg_release_info,
             download_ffmpeg_release,
@@ -3388,8 +3470,10 @@ pub fn run() {
             set_window_capture_excluded,
             show_recording_overlay,
             hide_recording_overlay,
+            set_recording_overlay_status,
             concat_recording_segments,
             cleanup_recording_files,
+            copy_file_to_clipboard,
             save_config,
             download_paddleocr_release,
             choose_ocr_install_dir,
@@ -3427,13 +3511,13 @@ pub fn run() {
             );
             app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
 
-            let screenshot_item = tauri::menu::MenuItemBuilder::new("立即截图")
+            let screenshot_item = tauri::menu::MenuItemBuilder::new("Screenshot Now")
                 .id("screenshot")
                 .build(app)?;
-            let show_item = tauri::menu::MenuItemBuilder::new("显示主窗口")
+            let show_item = tauri::menu::MenuItemBuilder::new("Show Main Window")
                 .id("show")
                 .build(app)?;
-            let exit_item = tauri::menu::MenuItemBuilder::new("退出")
+            let exit_item = tauri::menu::MenuItemBuilder::new("Exit")
                 .id("exit")
                 .build(app)?;
             let tray_menu = tauri::menu::MenuBuilder::new(app)
@@ -3666,12 +3750,12 @@ mod tests {
         missing_mic.mic_device = Some("  ".to_string());
         assert!(super::build_recording_args(&missing_mic, output_path())
             .unwrap_err()
-            .contains("麦克风"));
+            .contains("microphone"));
 
         let unknown = recording_options("speaker_only");
         assert_eq!(
             super::build_recording_args(&unknown, output_path()).unwrap_err(),
-            "未知录屏音频模式"
+            "Unknown recording audio mode"
         );
     }
 
@@ -3730,3 +3814,4 @@ File formats:
         assert_eq!(super::sanitize_tag("***"), "___");
     }
 }
+
