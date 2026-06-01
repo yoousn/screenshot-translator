@@ -2595,8 +2595,11 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
 }
 
 fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
-    let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
-    if let Some(mut child) = guard.take() {
+    let child = {
+        let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
+        guard.take()
+    };
+    if let Some(mut child) = child {
         if let Some(stdin) = child.stdin.as_mut() {
             let _ = stdin.write_all(b"q\n");
             let _ = stdin.flush();
