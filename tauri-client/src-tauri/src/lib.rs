@@ -2565,9 +2565,11 @@ fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option<Str
 #[tauri::command]
 fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<String, String> {
     let _ = cleanup_finished_recording_process()?;
-    let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Err("录屏已在进行中".to_string());
+    {
+        let guard = get_recording_process().lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            return Err("录屏已在进行中".to_string());
+        }
     }
 
     let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| {
@@ -2589,6 +2591,12 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
         .map_err(|e| format!("Failed to inspect ffmpeg recording process: {}", e))?
     {
         return Err(format!("ffmpeg recording exited immediately with status {}. Check recording options, audio device, or ffmpeg version.", status));
+    }
+    let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("录屏已在进行中".to_string());
     }
     *guard = Some(child);
     Ok(output_path.to_string_lossy().to_string())
