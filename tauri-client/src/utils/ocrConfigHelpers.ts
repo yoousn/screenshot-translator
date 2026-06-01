@@ -2,13 +2,13 @@ export const REPO_API = "https://api.github.com/repos/hiroi-sora/PaddleOCR-json/
 export const REPO_URL = "https://github.com/hiroi-sora/PaddleOCR-json";
 
 export const T = {
-  pageTitle: "OCR 配置",
-  pageDesc: "当前版本强制使用客户端本地 PaddleOCR-json 做 OCR 识别；N100 后端只接收文本进行翻译，不再接收图片做云端 OCR。",
+  pageTitle: "模型/视频配置",
+  pageDesc: "管理本地 OCR、模型运行包和视频录制依赖。",
   repoTitle: "PaddleOCR-json 运行包说明",
-  repoDesc: "这里下载的是可直接运行的 PaddleOCR-json Windows x64 发布包，不再下载 PaddlePaddle/PaddleOCR 源码包。下载后会自动解压到应用本地 OCR 运行目录，删除压缩包，并把 PaddleOCR-json.exe 设置为默认调用路径。",
+  repoDesc: "这里下载的是可直接运行的 PaddleOCR-json Windows x64 发布包，不再下载 PaddlePaddle/PaddleOCR 源码包。下载后会优先解压到软件同级 ocr 目录，删除压缩包，并把 PaddleOCR-json.exe 设置为默认调用路径。",
   localTitle: "本地 OCR 执行配置",
   exePath: "PaddleOCR-json.exe 物理路径",
-  exePlaceholder: "留空则优先使用应用数据目录中的 OCR 运行包，其次使用内置 resources/ocr/PaddleOCR-json.exe",
+  exePlaceholder: "留空则优先使用软件同级 ocr\\PaddleOCR-json.exe，其次使用已选择或内置的 OCR 运行包",
   timeout: "本地 OCR 超时限制 (ms)",
   save: "保存本地 OCR 配置",
   saved: "OCR 配置已保存",
@@ -91,12 +91,24 @@ export interface ProgressPayload {
   percent: number;
 }
 
+export interface RuntimeManifest {
+  id?: string;
+  name?: string;
+  engine?: string;
+  version?: string;
+  entry?: string;
+  protocol?: string;
+  outputAdapter?: string;
+  languages?: string[];
+}
+
 export interface StatusResult {
   ok: boolean;
   path: string;
   exists: boolean;
   isFile: boolean;
   parentExists: boolean;
+  runtimeManifest?: RuntimeManifest | null;
 }
 
 export function summarizeRelease(body?: string) {

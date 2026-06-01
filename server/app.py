@@ -205,7 +205,7 @@ def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
             
         test_res = temp_t.translate("Test Connection", "en", "zh")
         
-        # 2. 验证成功，持久化写入 N100 配置文件
+        # 2. Persist validated settings locally
         _save_channel_config(channel, c)
         
         return {"status": "success", "result": test_res}

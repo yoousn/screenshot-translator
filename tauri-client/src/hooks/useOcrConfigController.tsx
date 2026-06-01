@@ -124,6 +124,30 @@ export default function useOcrConfigController() {
     }
   };
 
+
+  const chooseOcrRuntimeDir = async () => {
+    setCheckingStatus(true);
+    try {
+      const currentDir = config.localOcrExecutablePath || config.paddleOcrInstallDir || "";
+      const selectedDir = await invoke<string | null>("choose_ocr_runtime_dir", { currentDir });
+      if (!selectedDir) return;
+      const result = await checkOcrStatus(selectedDir, false);
+      if (!result?.ok) {
+        message.error("所选目录没有可用 OCR 运行入口");
+        return;
+      }
+      await saveConfig({
+        localOcrExecutablePath: selectedDir,
+        paddleOcrInstallDir: selectedDir,
+      }, false);
+      message.success("OCR 运行包已切换");
+    } catch (error: any) {
+      message.error("选择 OCR 运行包失败：" + (error?.message || error));
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
+
   const moveOcrDir = async () => {
     setMovingDir(true);
     try {
@@ -187,6 +211,7 @@ export default function useOcrConfigController() {
     checkOcrStatus,
     checkLatest,
     downloadLatest,
+    chooseOcrRuntimeDir,
     moveOcrDir,
     openOcrDir,
   };

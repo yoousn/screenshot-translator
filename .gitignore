@@ -49,5 +49,12 @@ server/*.png
 
 # Local OCR Client Binaries & DLLs & Models (Windows client bundle)
 /ocr/
+/ffmpeg/
 /tauri-client/src-tauri/resources/ocr/*
 !/tauri-client/src-tauri/resources/ocr/.gitkeep
+# Release artifacts
+/YSN-Screenshot-Translator-*.zip
+/YSN截图翻译-*.zip
+/YSN截图翻译-v*/
+/tauri-client/src-tauri/resources/ffmpeg/*
+!/tauri-client/src-tauri/resources/ffmpeg/.gitkeep

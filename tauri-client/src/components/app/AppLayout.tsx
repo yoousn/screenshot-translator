@@ -110,11 +110,11 @@ export default function AppLayout({
           }}
         >
           <Space size="middle">
-            <span style={{ fontSize: 12, color: "#8c8c8c" }}>算法核心：PIL 图像像素引擎 + PaddleOCR</span>
+            <span style={{ fontSize: 12, color: "#8c8c8c" }}>本地截图翻译</span>
           </Space>
 
           <Space size="middle" style={{ marginLeft: "auto" }}>
-            <Tooltip title={`服务器地址: ${serverUrl}`}>
+            <Tooltip title={`文本翻译服务: ${serverUrl}`}>
               <Space size="small">
                 {isOnline === "online" && <Tag color="success" icon={<WifiOutlined />} style={{ margin: 0 }}>服务在线 (Online)</Tag>}
                 {isOnline === "offline" && <Tag color="error" icon={<WifiOutlined />} style={{ margin: 0 }}>服务离线 (Offline)</Tag>}

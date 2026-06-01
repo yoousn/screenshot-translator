@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-const DEFAULT_SERVER_URL = "https://ocr.yousn.me";
+import { DEFAULT_TRANSLATION_SERVICE_URL } from "../utils/translationService";
 
 export default function useServerStatus() {
-  const [serverUrl, setServerUrl] = useState<string>(DEFAULT_SERVER_URL);
+  const [serverUrl, setServerUrl] = useState<string>(DEFAULT_TRANSLATION_SERVICE_URL);
   const [isOnline, setIsOnline] = useState<"checking" | "online" | "offline">("checking");
   const [isChecking, setIsChecking] = useState(false);
   const [responseTime, setResponseTime] = useState<number | null>(null);
@@ -40,13 +39,13 @@ export default function useServerStatus() {
     try {
       const configStr = await invoke<string>("get_config");
       const parsedConfig = JSON.parse(configStr);
-      const nextUrl = parsedConfig.serverUrl || DEFAULT_SERVER_URL;
+      const nextUrl = parsedConfig.serverUrl || DEFAULT_TRANSLATION_SERVICE_URL;
       setServerUrl(nextUrl);
       checkStatus(nextUrl);
     } catch (error) {
       console.error("Failed to load config for App layout:", error);
-      setServerUrl(DEFAULT_SERVER_URL);
-      checkStatus(DEFAULT_SERVER_URL);
+      setServerUrl(DEFAULT_TRANSLATION_SERVICE_URL);
+      checkStatus(DEFAULT_TRANSLATION_SERVICE_URL);
     }
   }, [checkStatus]);
 

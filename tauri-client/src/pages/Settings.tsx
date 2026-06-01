@@ -21,6 +21,7 @@ import {
   KeyOutlined
 } from "@ant-design/icons";
 import useSettingsController from "../hooks/useSettingsController";
+import { DEFAULT_TRANSLATION_SERVICE_URL } from "../utils/translationService";
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -73,8 +74,10 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         useLocalOcr: true,
         fallbackToRemoteOcr: false,
         localOcrTimeoutMs: 5000,
+        toolbarButtonGap: 6,
         hotkey: "Alt+A",
         translateHotkey: "Alt+T",
+        serverUrl: DEFAULT_TRANSLATION_SERVICE_URL,
       }}
       onFinish={onFinish}
       onValuesChange={handleFormChange}
@@ -87,7 +90,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
             系统设置
           </Title>
           <Paragraph type="secondary" style={{ fontSize: 12, margin: "4px 0 0 0" }}>
-            定制屏幕翻译系统的后端服务、翻译信道以及热键环境。
+            调整翻译、截图识别和快捷键。
           </Paragraph>
         </div>
         <Button
@@ -102,36 +105,36 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       </div>
 
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <Card title={<span><SlidersOutlined style={{ marginRight: 8 }} />1. 后端翻译服务配置 (N100 Core)</span>} bordered={false}>
+        <Card title={<span><SlidersOutlined style={{ marginRight: 8 }} />1. 翻译服务</span>} bordered={false}>
           <Row gutter={16}>
             <Col span={12}>
               <Form.Item
-                label={<Text strong style={{ fontSize: 12 }}>API 服务器地址</Text>}
+                label={<Text strong style={{ fontSize: 12 }}>文本翻译服务地址</Text>}
                 name="serverUrl"
-                rules={[{ required: true, message: "请输入 API 服务器地址" }]}
+                rules={[{ required: true, message: "请输入 文本翻译服务地址" }]}
               >
-                <Input placeholder="https://ocr.yousn.me" style={{ height: 32 }} />
+                <Input placeholder="填写文本翻译接口地址" style={{ height: 32 }} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -10 }}>
-                部署在家庭私有云 (如 N100) 上的文本翻译服务接入端口。
+                用于文本翻译请求的服务地址。
               </Text>
             </Col>
             <Col span={12}>
               <Form.Item
-                label={<Text strong style={{ fontSize: 12 }}>客户端认证令牌 (Token)</Text>}
+                label={<Text strong style={{ fontSize: 12 }}>翻译服务令牌 (Token)</Text>}
                 name="clientToken"
-                rules={[{ required: true, message: "请输入客户端令牌" }]}
+                rules={[{ required: true, message: "请输入翻译服务令牌" }]}
               >
-                <Input.Password placeholder="请输入您的私有 client_token" prefix={<KeyOutlined />} style={{ height: 32 }} />
+                <Input.Password placeholder="请输入 client_token" prefix={<KeyOutlined />} style={{ height: 32 }} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -10 }}>
-                与服务器端 `client_token` 保持一致，避免未授权访问。
+                与文本翻译服务令牌保持一致。
               </Text>
             </Col>
           </Row>
         </Card>
 
-        <Card title={<span><GlobalOutlined style={{ marginRight: 8 }} />2. 翻译信道配置 (Translation Channels)</span>} bordered={false}>
+        <Card title={<span><GlobalOutlined style={{ marginRight: 8 }} />2. 翻译通道</span>} bordered={false}>
           <Form.Item
             label={<Text strong style={{ fontSize: 12 }}>活动翻译信道</Text>}
             name="channel"
@@ -251,6 +254,16 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
               </Text>
             </Col>
             <Col span={12}>
+              <Form.Item label="按钮间隔 (px)" name="toolbarButtonGap">
+                <InputNumber min={0} max={16} placeholder="6" style={{ width: "100%", height: 32 }} />
+              </Form.Item>
+              <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
+                调整截图工具栏按钮之间的距离，觉得拥挤可调大。
+              </Text>
+            </Col>
+          </Row>
+          <Row gutter={24}>
+            <Col span={12}>
               <Form.Item label="视觉识别灵敏度" name="visualDetectionSensitivity">
                 <InputNumber min={1} max={5} placeholder="3" style={{ width: "100%", height: 32 }} />
               </Form.Item>
@@ -268,7 +281,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
                 <Switch />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
-                在 Windows 启动时自动静默加载该系统托盘服务。
+                开机后自动启动程序。
               </Text>
             </Col>
             <Col span={12}>

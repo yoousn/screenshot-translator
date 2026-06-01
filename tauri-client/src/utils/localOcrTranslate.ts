@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_TRANSLATION_SERVICE_URL } from "./translationService";
 import type { OcrBlock, TranslatePair } from "../types/screenshot";
 import { renderTranslatedBlocks } from "./translatedBlocks";
 
@@ -49,7 +50,7 @@ const requestTextTranslations = async (serverUrl: string, token: string, blocks:
 };
 
 export const translateWithLocalOcr = async (base64: string, config: LocalTranslateConfig) => {
-  const serverUrl = config.serverUrl || "https://ocr.yousn.me";
+  const serverUrl = config.serverUrl || DEFAULT_TRANSLATION_SERVICE_URL;
   const token = config.clientToken || "";
   const targetLang = config.targetLang || "zh";
 

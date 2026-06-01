@@ -1,5 +1,7 @@
-import React from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import React, { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
   Alert,
   Button,
@@ -22,11 +24,29 @@ import {
   ReloadOutlined,
   SaveOutlined,
   SafetyCertificateOutlined,
+  VideoCameraOutlined,
 } from "@ant-design/icons";
 import useOcrConfigController from "../hooks/useOcrConfigController";
 import { REPO_URL, T, formatBytes, summarizeRelease } from "../utils/ocrConfigHelpers";
 
 const { Title, Paragraph, Text } = Typography;
+
+type FfmpegReleaseInfo = {
+  tag: string;
+  pageUrl?: string | null;
+  assetName: string;
+  downloadUrl: string;
+  size?: number | null;
+  installDir: string;
+};
+
+type FfmpegProgress = {
+  phase: string;
+  downloaded: number;
+  total?: number | null;
+  percent: number;
+};
+
 export default function OcrConfig() {
   const {
     config,
@@ -47,9 +67,58 @@ export default function OcrConfig() {
     checkOcrStatus,
     checkLatest,
     downloadLatest,
+    chooseOcrRuntimeDir,
     moveOcrDir,
     openOcrDir,
   } = useOcrConfigController();
+
+  const [ffmpegPath, setFfmpegPath] = useState("");
+  const [ffmpegRelease, setFfmpegRelease] = useState<FfmpegReleaseInfo | null>(null);
+  const [checkingFfmpeg, setCheckingFfmpeg] = useState(false);
+  const [downloadingFfmpeg, setDownloadingFfmpeg] = useState(false);
+  const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegProgress | null>(null);
+
+  useEffect(() => {
+    const loadFfmpegPath = async () => {
+      try {
+        const stored = JSON.parse(await invoke<string>("get_config"));
+        setFfmpegPath(stored.recordingFfmpegPath || "");
+      } catch {}
+    };
+    loadFfmpegPath();
+    const unlisten = listen<FfmpegProgress>("ffmpeg-download-progress", (event) => setFfmpegProgress(event.payload));
+    return () => {
+      unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  const saveFfmpegPath = async (path: string) => {
+    const stored = JSON.parse(await invoke<string>("get_config"));
+    stored.recordingFfmpegPath = path.trim();
+    await invoke("save_config", { configStr: JSON.stringify(stored, null, 2) });
+    setFfmpegPath(path.trim());
+  };
+
+  const checkFfmpegRelease = async () => {
+    try {
+      setCheckingFfmpeg(true);
+      setFfmpegRelease(await invoke<FfmpegReleaseInfo>("get_ffmpeg_release_info"));
+    } finally {
+      setCheckingFfmpeg(false);
+    }
+  };
+
+  const downloadFfmpegRelease = async () => {
+    setDownloadingFfmpeg(true);
+    try {
+      const release = ffmpegRelease || await invoke<FfmpegReleaseInfo>("get_ffmpeg_release_info");
+      setFfmpegRelease(release);
+      const result = await invoke<{ path: string; installDir: string; bytes: number }>("download_ffmpeg_release", { url: release.downloadUrl, tag: release.tag });
+      await saveFfmpegPath(result.path);
+    } finally {
+      setDownloadingFfmpeg(false);
+    }
+  };
 
 
   return (
@@ -76,12 +145,16 @@ export default function OcrConfig() {
               <Space wrap>
                 <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => saveConfig()}>{T.save}</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={checkingStatus} onClick={() => checkOcrStatus()}>{T.checkStatus}</Button>
+                <Button icon={<FolderOpenOutlined />} onClick={chooseOcrRuntimeDir}>选择运行包</Button>
                 <Button icon={<FolderOpenOutlined />} onClick={openOcrDir} disabled={!config.localOcrExecutablePath && !status?.path && !config.paddleOcrInstallDir}>{T.openDir}</Button>
                 <Button loading={movingDir} onClick={moveOcrDir}>{T.moveInstallDir}</Button>
               </Space>
               <Descriptions size="small" column={1} bordered>
                 <Descriptions.Item label={T.mode}><Tag color="green">{T.localOnly}</Tag></Descriptions.Item>
                 <Descriptions.Item label={T.status}>{statusTag}</Descriptions.Item>
+                <Descriptions.Item label="运行包">{status?.runtimeManifest?.name || "PaddleOCR-json"}</Descriptions.Item>
+                <Descriptions.Item label="引擎">{status?.runtimeManifest?.engine || "paddleocr-json"}</Descriptions.Item>
+                <Descriptions.Item label="协议">{status?.runtimeManifest?.protocol || "paddleocr-json-stdin"}</Descriptions.Item>
                 <Descriptions.Item label={T.exePath}>{status?.path || config.localOcrExecutablePath || "-"}</Descriptions.Item>
               </Descriptions>
             </Space>
@@ -120,6 +193,26 @@ export default function OcrConfig() {
           </Card>
         </Col>
       </Row>
+
+      <Card title={<span><VideoCameraOutlined style={{ marginRight: 8 }} />FFmpeg 录屏运行包</span>} bordered={false} style={{ borderRadius: 16 }}>
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Alert type="info" showIcon message="默认查找软件同级 ffmpeg\ffmpeg.exe，也可以从官方 GitHub 下载/更新。" />
+          <Input value={ffmpegPath} placeholder="可留空自动查找软件同级 ffmpeg\ffmpeg.exe" onChange={(event) => setFfmpegPath(event.target.value)} />
+          <Space wrap>
+            <Button icon={<SaveOutlined />} onClick={() => saveFfmpegPath(ffmpegPath)}>保存路径</Button>
+            <Button icon={<ReloadOutlined />} loading={checkingFfmpeg} onClick={checkFfmpegRelease}>检查官方版本</Button>
+            <Button type="primary" icon={<CloudDownloadOutlined />} loading={downloadingFfmpeg} onClick={downloadFfmpegRelease}>下载/更新 ffmpeg</Button>
+            <Button icon={<GithubOutlined />} onClick={() => openUrl("https://github.com/BtbN/FFmpeg-Builds/releases/latest")}>官方 GitHub</Button>
+            <Button disabled={!ffmpegPath} onClick={() => ffmpegPath && openPath(ffmpegPath.replace(/[\\/][^\\/]+$/, ""))}>打开目录</Button>
+          </Space>
+          <Descriptions size="small" column={1} bordered>
+            <Descriptions.Item label="当前路径">{ffmpegPath || "自动查找"}</Descriptions.Item>
+            <Descriptions.Item label="官方版本">{ffmpegRelease ? `${ffmpegRelease.tag} / ${ffmpegRelease.assetName}` : "未检查"}</Descriptions.Item>
+            <Descriptions.Item label="默认安装目录">{ffmpegRelease?.installDir || "软件同级 ffmpeg 目录"}</Descriptions.Item>
+          </Descriptions>
+          {ffmpegProgress && <Progress percent={ffmpegProgress.percent} status={ffmpegProgress.percent >= 100 ? "success" : "active"} format={() => `${ffmpegProgress.phase} ${ffmpegProgress.percent}%`} />}
+        </Space>
+      </Card>
     </Space>
   );
 }

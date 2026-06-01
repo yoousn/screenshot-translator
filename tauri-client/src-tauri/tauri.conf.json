@@ -41,7 +41,8 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/ocr/**/*"
+      "resources/ocr/**/*",
+      "resources/ffmpeg/**/*"
     ],
     "icon": [
       "icons/32x32.png",

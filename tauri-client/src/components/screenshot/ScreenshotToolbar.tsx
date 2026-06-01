@@ -24,6 +24,7 @@ interface ScreenshotToolbarProps {
   isEditing: boolean;
   isTranslating: boolean;
   isOCRing: boolean;
+  isScrollCapturing?: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onSetEditing: (editing: boolean) => void;
@@ -34,21 +35,23 @@ interface ScreenshotToolbarProps {
   onShowTranslateResult: () => void;
   canShowTranslateResult: boolean;
   onOCR: () => void;
+  onScrollCapture?: () => void;
   onPin: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
   onCancel: () => void;
   onCopy: () => void;
+  buttonGap?: number;
 }
 
 const tools: Array<{ key: AnnotationTool; tip: string; icon: React.ReactNode }> = [
-  { key: "rect", tip: "方框", icon: <BorderOutlined /> },
-  { key: "circle", tip: "圆形", icon: <span style={{ fontSize: 22, lineHeight: 1 }}>○</span> },
-  { key: "arrow", tip: "箭头", icon: <ArrowUpOutlined rotate={45} style={{ fontSize: 18 }} /> },
-  { key: "brush", tip: "画笔", icon: <EditOutlined style={{ fontSize: 18 }} /> },
-  { key: "mosaic", tip: "马赛克", icon: <span style={{ fontSize: 20, lineHeight: 1 }}>▦</span> },
-  { key: "text", tip: "文字", icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
+  { key: "rect", tip: "方框 1", icon: <BorderOutlined /> },
+  { key: "circle", tip: "圆形 2", icon: <span style={{ fontSize: 22, lineHeight: 1 }}>○</span> },
+  { key: "arrow", tip: "箭头 3", icon: <ArrowUpOutlined rotate={45} style={{ fontSize: 18 }} /> },
+  { key: "brush", tip: "画笔 4", icon: <EditOutlined style={{ fontSize: 18 }} /> },
+  { key: "mosaic", tip: "马赛克 6", icon: <span style={{ fontSize: 20, lineHeight: 1 }}>▦</span> },
+  { key: "text", tip: "文字 5 / T", icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
 ];
 
 const squareButtonStyle: React.CSSProperties = { width: 36, height: 36, padding: 0, fontSize: 18 };
@@ -68,6 +71,7 @@ export default function ScreenshotToolbar({
   isEditing,
   isTranslating,
   isOCRing,
+  isScrollCapturing = false,
   canUndo,
   canRedo,
   onSetEditing,
@@ -78,16 +82,19 @@ export default function ScreenshotToolbar({
   onShowTranslateResult,
   canShowTranslateResult,
   onOCR,
+  onScrollCapture,
   onPin,
   onUndo,
   onRedo,
   onSave,
   onCancel,
   onCopy,
+  buttonGap = 6,
 }: ScreenshotToolbarProps) {
+  const normalizedGap = Math.max(0, Math.min(16, Number(buttonGap) || 0));
   return (
     <div ref={containerRef} style={style} onContextMenu={(event) => event.stopPropagation()}>
-      <Space size={6} style={{ display: "inline-flex", flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "center" }}>
+      <Space size={normalizedGap} style={{ display: "inline-flex", flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "center" }}>
         {tools.map((item) => (
           <Tooltip key={item.key} title={item.tip}>
             <Button
@@ -118,7 +125,8 @@ export default function ScreenshotToolbar({
             <Button size="middle" style={{ width: 24, height: 36, padding: 0 }} disabled={isTranslating || isOCRing} icon={<DownOutlined style={{ fontSize: 10 }} />} />
           </Button.Group>
         </Dropdown>
-        <Tooltip title="OCR 识字"><Button size="middle" style={squareButtonStyle} icon={<ScanOutlined />} onClick={onOCR} loading={isOCRing} disabled={isTranslating} /></Tooltip>
+        <Tooltip title="OCR 识字"><Button size="middle" style={squareButtonStyle} icon={<ScanOutlined />} onClick={onOCR} loading={isOCRing} disabled={isTranslating || isScrollCapturing} /></Tooltip>
+        {onScrollCapture && <Tooltip title="滚动截图"><Button size="middle" style={squareButtonStyle} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>SCR</span>} onClick={onScrollCapture} loading={isScrollCapturing} disabled={isTranslating || isOCRing} /></Tooltip>}
         <Tooltip title="贴图"><Button size="middle" style={squareButtonStyle} icon={<PushpinOutlined />} onClick={onPin} /></Tooltip>
         <Tooltip title="撤销 Ctrl+Z"><Button size="middle" style={squareButtonStyle} disabled={!canUndo} icon={<UndoOutlined />} onClick={onUndo} /></Tooltip>
         <Tooltip title="恢复 Ctrl+Y / Ctrl+Shift+Z"><Button size="middle" style={squareButtonStyle} disabled={!canRedo} icon={<RedoOutlined />} onClick={onRedo} /></Tooltip>

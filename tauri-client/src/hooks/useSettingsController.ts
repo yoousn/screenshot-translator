@@ -203,7 +203,12 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
     setIsSaving(true);
     try {
       const { autostart: autostartVal, ...rawConfigValues } = values;
+      let existingConfig = {};
+      try {
+        existingConfig = JSON.parse(await invoke<string>("get_config"));
+      } catch {}
       const configValues = {
+        ...existingConfig,
         ...rawConfigValues,
         useLocalOcr: true,
         fallbackToRemoteOcr: false,

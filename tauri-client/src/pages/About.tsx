@@ -82,16 +82,16 @@ export default function About() {
 
           <Row gutter={16} style={{ marginTop: 12 }}>
             <Col span={12}>
-              <Card type="inner" title={<span><ThunderboltOutlined style={{ marginRight: 6, color: "#1677ff" }} />N100 边缘算法服务器</span>}>
+              <Card type="inner" title={<span><ThunderboltOutlined style={{ marginRight: 6, color: "#1677ff" }} />轻量本地客户端</span>}>
                 <Paragraph type="secondary" style={{ fontSize: 11, margin: 0, lineHeight: 1.6 }}>
-                  翻译与 OCR 处理内核部署于轻量级私有服务器，支持 PaddleOCR 物理像素提取以及 PIL 蒙版排版重绘，将 CPU/GPU 算力完美隔离。
+                  截图、识字、翻译和贴图围绕本机工作流设计，启动快、占用低，适合日常高频使用。
                 </Paragraph>
               </Card>
             </Col>
             <Col span={12}>
-              <Card type="inner" title={<span><SafetyCertificateOutlined style={{ marginRight: 6, color: "#52c41a" }} />混合 OCR 协同调度</span>}>
+              <Card type="inner" title={<span><SafetyCertificateOutlined style={{ marginRight: 6, color: "#52c41a" }} />本地 OCR 识别</span>}>
                 <Paragraph type="secondary" style={{ fontSize: 11, margin: 0, lineHeight: 1.6 }}>
-                  支持 PaddleOCR 本地可执行程序极速运行及在线 API 自动回退，抵御高负荷并发场景，确保极端条件下的翻译率达 100%。
+                  默认使用本地 OCR 运行包识别文字，后续可替换为 RapidOCR / ONNX 等模型包。
                 </Paragraph>
               </Card>
             </Col>

@@ -31,11 +31,12 @@ interface Config {
   enableUiControlDetection?: boolean;
   enableVisualDetection?: boolean;
   detectionBorderWidth?: number;
+  toolbarButtonGap?: number;
   visualDetectionSensitivity?: number;
 }
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
-const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 620, height: 86 };
+const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 680, height: 86 };
 const OCR_WINDOW_SIZE = { width: 460, height: 360 };
 const FLOATING_PANEL_MARGIN = 8;
 const FLOATING_PANEL_GAP = 8;
@@ -43,17 +44,104 @@ const DEFAULT_ANNOTATION_COLOR = "#ff4d4f";
 const DEFAULT_ANNOTATION_TOOL: AnnotationTool = "rect";
 const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circle: 4, mosaic: 16, arrow: 4, text: 4, brush: 4 };
 
-const makeImageFormData = (base64: string) => {
-  const byteCharacters = atob(base64);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const getImageDataFromImage = (image: HTMLImageElement) => {
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Canvas unavailable");
+  ctx.drawImage(image, 0, 0);
+  return ctx.getImageData(0, 0, image.width, image.height);
+};
+
+const sampledRegionDiff = (
+  prev: ImageData,
+  next: ImageData,
+  prevStartY: number,
+  nextStartY: number,
+  height: number,
+  sampleCols = 36,
+  sampleRows = 28,
+) => {
+  const width = Math.min(prev.width, next.width);
+  if (width <= 0 || height <= 0) return Number.POSITIVE_INFINITY;
+  let total = 0;
+  let count = 0;
+  for (let row = 0; row < sampleRows; row += 1) {
+    const yRatio = sampleRows === 1 ? 0 : row / (sampleRows - 1);
+    const prevY = Math.min(prev.height - 1, Math.max(0, Math.round(prevStartY + yRatio * (height - 1))));
+    const nextY = Math.min(next.height - 1, Math.max(0, Math.round(nextStartY + yRatio * (height - 1))));
+    for (let col = 0; col < sampleCols; col += 1) {
+      const xRatio = sampleCols === 1 ? 0 : col / (sampleCols - 1);
+      const x = Math.min(width - 1, Math.max(0, Math.round(xRatio * (width - 1))));
+      const prevOffset = (prevY * prev.width + x) * 4;
+      const nextOffset = (nextY * next.width + x) * 4;
+      total += Math.abs(prev.data[prevOffset] - next.data[nextOffset]);
+      total += Math.abs(prev.data[prevOffset + 1] - next.data[nextOffset + 1]);
+      total += Math.abs(prev.data[prevOffset + 2] - next.data[nextOffset + 2]);
+      count += 3;
+    }
   }
-  const byteArray = new Uint8Array(byteNumbers);
-  const blob = new Blob([byteArray], { type: "image/png" });
-  const formData = new FormData();
-  formData.append("image", blob, "screenshot.png");
-  return formData;
+  return count ? total / count : Number.POSITIVE_INFINITY;
+};
+
+const findScrollOverlap = (prev: ImageData, next: ImageData) => {
+  const comparableHeight = Math.min(prev.height, next.height);
+  const minOverlap = Math.max(24, Math.round(comparableHeight * 0.08));
+  const maxOverlap = Math.max(minOverlap, Math.round(comparableHeight * 0.58));
+  const step = Math.max(4, Math.round(comparableHeight / 80));
+  let bestOverlap = Math.round(comparableHeight * 0.2);
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let overlap = minOverlap; overlap <= maxOverlap; overlap += step) {
+    const score = sampledRegionDiff(prev, next, prev.height - overlap, 0, overlap);
+    if (score < bestScore) {
+      bestScore = score;
+      bestOverlap = overlap;
+    }
+  }
+  return { overlap: bestOverlap, score: bestScore };
+};
+
+const isSameScrollFrame = (prev: ImageData, next: ImageData) => {
+  const height = Math.min(prev.height, next.height);
+  const score = sampledRegionDiff(prev, next, 0, 0, height, 40, 32);
+  return score < 2;
+};
+
+const stitchScrollFrames = async (frames: string[]) => {
+  if (frames.length === 0) throw new Error("未采集到滚动截图帧");
+  const images = await Promise.all(frames.map((frame) => loadPngImage(frame)));
+  const imageDataList = images.map(getImageDataFromImage);
+  const segments: Array<{ image: HTMLImageElement; cropTop: number; drawHeight: number }> = [
+    { image: images[0], cropTop: 0, drawHeight: images[0].height },
+  ];
+
+  for (let index = 1; index < images.length; index += 1) {
+    const previousData = imageDataList[index - 1];
+    const currentData = imageDataList[index];
+    if (isSameScrollFrame(previousData, currentData)) continue;
+    const { overlap, score } = findScrollOverlap(previousData, currentData);
+    const fallbackOverlap = Math.round(images[index].height * 0.2);
+    const cropTop = score <= 42 ? overlap : fallbackOverlap;
+    const drawHeight = Math.max(1, images[index].height - cropTop);
+    segments.push({ image: images[index], cropTop, drawHeight });
+  }
+
+  const width = Math.max(...segments.map(({ image }) => image.width));
+  const height = segments.reduce((sum, segment) => sum + segment.drawHeight, 0);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas unavailable");
+  let offsetY = 0;
+  segments.forEach(({ image, cropTop, drawHeight }) => {
+    ctx.drawImage(image, 0, cropTop, image.width, drawHeight, 0, offsetY, image.width, drawHeight);
+    offsetY += drawHeight;
+  });
+  return canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
 };
 
 export default function ScreenshotPage() {
@@ -70,6 +158,7 @@ export default function ScreenshotPage() {
   const [screenshotMode, setScreenshotMode] = useState("normal");
   const [isTranslating, setIsTranslating] = useState(false);
   const [isOCRing, setIsOCRing] = useState(false);
+  const [isScrollCapturing, setIsScrollCapturing] = useState(false);
   const [config, setConfig] = useState<Config>({});
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
@@ -89,6 +178,7 @@ export default function ScreenshotPage() {
   const [overlayVisible, setOverlayVisible] = useState(false);
   const isTranslatingRef = useRef(false);
   const isOCRingRef = useRef(false);
+  const isScrollCapturingRef = useRef(false);
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
   const lastRectQueryRef = useRef(0);
@@ -195,6 +285,7 @@ export default function ScreenshotPage() {
   configRef.current = config;
   isTranslatingRef.current = isTranslating;
   isOCRingRef.current = isOCRing;
+  isScrollCapturingRef.current = isScrollCapturing;
   windowRectsRef.current = windowRects;
   hoverRectRef.current = hoverRect;
   hoverCandidatesRef.current = hoverCandidates;
@@ -396,6 +487,25 @@ export default function ScreenshotPage() {
       }
       if (!hasSelectedRef.current) return;
       if (editingTextDraftRef.current) return;
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        const toolByKey: Record<string, AnnotationTool> = {
+          "1": "rect",
+          "2": "circle",
+          "3": "arrow",
+          "4": "brush",
+          "5": "text",
+          "6": "mosaic",
+          t: "text",
+          T: "text",
+        };
+        const nextTool = toolByKey[e.key];
+        if (nextTool) {
+          e.preventDefault();
+          setIsEditing(true);
+          selectAnnotationTool(nextTool);
+          return;
+        }
+      }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
         undoAnnotation();
@@ -427,7 +537,7 @@ export default function ScreenshotPage() {
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "q" || e.key === "Q")) {
         e.preventDefault();
-        if (isTranslatingRef.current || isOCRingRef.current) return;
+        if (isTranslatingRef.current || isOCRingRef.current || isScrollCapturingRef.current) return;
         handleTranslate();
       }
       if (!e.ctrlKey && !e.metaKey && (e.key === "p" || e.key === "P")) {
@@ -1156,6 +1266,46 @@ export default function ScreenshotPage() {
     }
   };
 
+  const handleScrollCapture = async () => {
+    if (!hasSelectedRef.current || isScrollCapturingRef.current || isTranslatingRef.current || isOCRingRef.current) return;
+    const selection = getCurrentPhysicalSelection();
+    if (selection.w <= 0 || selection.h <= 0) return;
+    const centerX = Math.round(selection.x + selection.w / 2);
+    const centerY = Math.round(selection.y + selection.h / 2);
+    const win = getCurrentWindow();
+    const frames: string[] = [];
+    try {
+      setIsScrollCapturing(true);
+      message.loading({ content: "正在滚动截图...", key: "scroll-shot", duration: 0 });
+      await win.hide();
+      await sleep(180);
+      for (let index = 0; index < 5; index += 1) {
+        frames.push(await invoke<string>("capture_live_region", {
+          x: Math.round(selection.x),
+          y: Math.round(selection.y),
+          w: Math.round(selection.w),
+          h: Math.round(selection.h),
+        }));
+        if (index < 4) {
+          await invoke("scroll_mouse_at", { x: centerX, y: centerY, delta: -720 });
+          await sleep(450);
+        }
+      }
+      const stitched = await stitchScrollFrames(frames);
+      await invoke("copy_image_to_clipboard", { imageBase64: stitched });
+      await emit("screenshot-captured", stitched);
+      message.destroy("scroll-shot");
+      await invoke("cancel_screenshot", { label: win.label }).catch(() => {});
+      resetScreenshotState();
+    } catch (error: any) {
+      await win.show().catch(() => {});
+      await win.setFocus().catch(() => {});
+      message.error({ content: `滚动截图失败：${error?.message || error}`, key: "scroll-shot", duration: 4 });
+    } finally {
+      setIsScrollCapturing(false);
+    }
+  };
+
   const resetScreenshotState = () => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
@@ -1189,6 +1339,7 @@ export default function ScreenshotPage() {
     pendingDetectionRef.current = null;
     setIsTranslating(false);
     setIsOCRing(false);
+    setIsScrollCapturing(false);
     setScreenshotState("initializing");
     setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
@@ -1262,6 +1413,7 @@ export default function ScreenshotPage() {
           isEditing={isEditing}
           isTranslating={isTranslating}
           isOCRing={isOCRing}
+          isScrollCapturing={isScrollCapturing}
           canUndo={annotationHistory.length > 0}
           canRedo={redoAnnotations.length > 0}
           onSetEditing={setIsEditing}
@@ -1272,12 +1424,14 @@ export default function ScreenshotPage() {
           onShowTranslateResult={handleShowTranslateResult}
           canShowTranslateResult={Boolean(translatePairs && translatePairs.length > 0)}
           onOCR={handleOCR}
+          onScrollCapture={handleScrollCapture}
           onPin={handlePin}
           onUndo={undoAnnotation}
           onRedo={redoAnnotation}
           onSave={() => confirmScreenshot("save")}
           onCancel={cancelScreenshot}
           onCopy={() => confirmScreenshot("copy")}
+          buttonGap={config.toolbarButtonGap ?? 6}
         />
       )}
 
