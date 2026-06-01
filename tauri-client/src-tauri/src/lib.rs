@@ -2636,7 +2636,7 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
 }
 #[tauri::command]
 fn stop_recording() -> Result<(), String> {
-    stop_recording_internal(1200)
+    stop_recording_internal(800)
 }
 
 #[tauri::command]

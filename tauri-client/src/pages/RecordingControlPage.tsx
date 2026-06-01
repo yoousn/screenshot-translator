@@ -92,7 +92,7 @@ function RecordingControlContent() {
       setElapsedMs(accumulatedMsRef.current);
     }
     const command = fastCancel ? "cancel_recording_process" : "stop_recording";
-    await withTimeout(invoke(command).catch(() => {}), fastCancel ? 800 : 1800);
+    await withTimeout(invoke(command).catch(() => {}), fastCancel ? 800 : 1100);
   };
 
   const runCountdownAndStart = async (seconds: number) => {
