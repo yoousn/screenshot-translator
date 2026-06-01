@@ -12,6 +12,7 @@ import {
   SaveOutlined,
   ScanOutlined,
   UndoOutlined,
+  VideoCameraOutlined,
 } from "@ant-design/icons";
 import type { AnnotationTool } from "../../types/screenshot";
 
@@ -36,6 +37,7 @@ interface ScreenshotToolbarProps {
   canShowTranslateResult: boolean;
   onOCR: () => void;
   onScrollCapture?: () => void;
+  onRecording?: (mode: "region" | "window" | "display") => void;
   onPin: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -50,16 +52,16 @@ const tools: Array<{ key: AnnotationTool; tip: string; icon: React.ReactNode }> 
   { key: "circle", tip: "圆形 2", icon: <span style={{ fontSize: 22, lineHeight: 1 }}>○</span> },
   { key: "arrow", tip: "箭头 3", icon: <ArrowUpOutlined rotate={45} style={{ fontSize: 18 }} /> },
   { key: "brush", tip: "画笔 4", icon: <EditOutlined style={{ fontSize: 18 }} /> },
-  { key: "mosaic", tip: "马赛克 6", icon: <span style={{ fontSize: 20, lineHeight: 1 }}>▦</span> },
   { key: "text", tip: "文字 5 / T", icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
+  { key: "mosaic", tip: "马赛克 6", icon: <span style={{ fontSize: 20, lineHeight: 1 }}>▦</span> },
 ];
 
 const squareButtonStyle: React.CSSProperties = { width: 36, height: 36, padding: 0, fontSize: 18 };
 
 const getToolHint = (annotationTool: AnnotationTool | null) => {
-  if (annotationTool === "text") return "点击选区添加文字，点击文字可编辑";
-  if (annotationTool === "rect" || annotationTool === "circle") return "拖动可移动已画标注";
-  return "画错可撤销";
+  if (annotationTool === "text") return "点击选区添加文字，点击已有文字可编辑";
+  if (annotationTool === "rect" || annotationTool === "circle") return "方框/圆可拖动移动，边缘可调整大小";
+  return "画错可撤销删除";
 };
 
 export default function ScreenshotToolbar({
@@ -83,6 +85,7 @@ export default function ScreenshotToolbar({
   canShowTranslateResult,
   onOCR,
   onScrollCapture,
+  onRecording,
   onPin,
   onUndo,
   onRedo,
@@ -94,7 +97,7 @@ export default function ScreenshotToolbar({
   const normalizedGap = Math.max(0, Math.min(16, Number(buttonGap) || 0));
   return (
     <div ref={containerRef} style={style} onContextMenu={(event) => event.stopPropagation()}>
-      <Space size={normalizedGap} style={{ display: "inline-flex", flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "center" }}>
+      <Space size={[normalizedGap, 6]} wrap style={{ display: "inline-flex", maxWidth: "100%", whiteSpace: "normal", alignItems: "center" }}>
         {tools.map((item) => (
           <Tooltip key={item.key} title={item.tip}>
             <Button
@@ -120,13 +123,33 @@ export default function ScreenshotToolbar({
         >
           <Button.Group>
             <Tooltip title="翻译并重绘">
-              <Button size="middle" style={{ width: 42, height: 36, padding: 0 }} type="primary" ghost onClick={(event) => { event.stopPropagation(); onTranslate(); }} loading={isTranslating} disabled={isOCRing} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>A/译</span>} />
+              <Button size="middle" style={{ width: 42, height: 36, padding: 0 }} type="primary" ghost onClick={(event) => { event.stopPropagation(); onTranslate(); }} loading={isTranslating} disabled={isOCRing} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>A/文</span>} />
             </Tooltip>
             <Button size="middle" style={{ width: 24, height: 36, padding: 0 }} disabled={isTranslating || isOCRing} icon={<DownOutlined style={{ fontSize: 10 }} />} />
           </Button.Group>
         </Dropdown>
         <Tooltip title="OCR 识字"><Button size="middle" style={squareButtonStyle} icon={<ScanOutlined />} onClick={onOCR} loading={isOCRing} disabled={isTranslating || isScrollCapturing} /></Tooltip>
         {onScrollCapture && <Tooltip title="滚动截图"><Button size="middle" style={squareButtonStyle} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>SCR</span>} onClick={onScrollCapture} loading={isScrollCapturing} disabled={isTranslating || isOCRing} /></Tooltip>}
+        {onRecording && (
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: [
+                { key: "region", label: "区域录制" },
+                { key: "window", label: "窗口录制" },
+                { key: "display", label: "显示器录制" },
+              ],
+              onClick: ({ key }) => onRecording(key as "region" | "window" | "display"),
+            }}
+          >
+            <Button.Group>
+              <Tooltip title="录制">
+                <Button size="middle" style={{ width: 42, height: 36, padding: 0 }} icon={<VideoCameraOutlined />} disabled={isTranslating || isOCRing || isScrollCapturing} />
+              </Tooltip>
+              <Button size="middle" style={{ width: 24, height: 36, padding: 0 }} disabled={isTranslating || isOCRing || isScrollCapturing} icon={<DownOutlined style={{ fontSize: 10 }} />} />
+            </Button.Group>
+          </Dropdown>
+        )}
         <Tooltip title="贴图"><Button size="middle" style={squareButtonStyle} icon={<PushpinOutlined />} onClick={onPin} /></Tooltip>
         <Tooltip title="撤销 Ctrl+Z"><Button size="middle" style={squareButtonStyle} disabled={!canUndo} icon={<UndoOutlined />} onClick={onUndo} /></Tooltip>
         <Tooltip title="恢复 Ctrl+Y / Ctrl+Shift+Z"><Button size="middle" style={squareButtonStyle} disabled={!canRedo} icon={<RedoOutlined />} onClick={onRedo} /></Tooltip>
@@ -134,8 +157,8 @@ export default function ScreenshotToolbar({
         <Tooltip title="取消"><Button size="middle" style={{ width: 42, height: 36, padding: 0, color: "#ef4444", borderColor: "transparent", background: "transparent", fontSize: 20, borderRadius: 10, boxShadow: "none" }} icon={<CloseOutlined />} onClick={onCancel} /></Tooltip>
         <Tooltip title="完成并复制"><Button size="middle" style={{ width: 42, height: 36, padding: 0, color: "#16a34a", borderColor: "transparent", background: "transparent", fontSize: 20, borderRadius: 10, boxShadow: "none" }} icon={<CheckOutlined />} onClick={onCopy} /></Tooltip>
       </Space>
-      {isEditing && (
-        <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, color: "#ffffff", fontSize: 12, textShadow: "0 1px 2px rgba(0,0,0,0.45)" }}>
+      {isEditing && annotationTool && (
+        <div style={{ marginTop: 8, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, color: "#334155", fontSize: 12, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "6px 8px" }}>
           <span>大小</span>
           <InputNumber size="small" min={1} max={48} value={annotationSize} onChange={(value) => onSetAnnotationSize(Number(value || 1))} style={{ width: 74 }} />
           {annotationTool !== "mosaic" && (

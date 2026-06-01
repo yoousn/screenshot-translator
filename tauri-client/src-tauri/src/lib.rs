@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, Mutex, OnceLock};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -21,16 +21,29 @@ use tokio::time::Duration;
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
 
 static SCREENSHOT_JPEG: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 fn get_screenshot_jpeg() -> &'static Mutex<Option<Vec<u8>>> {
     SCREENSHOT_JPEG.get_or_init(|| Mutex::new(None))
 }
 
+#[derive(Clone, Copy)]
+struct NativeRecordingOverlay {
+    hwnd: isize,
+}
+
+unsafe impl Send for NativeRecordingOverlay {}
+
+fn get_recording_overlay() -> &'static Mutex<Option<NativeRecordingOverlay>> {
+    RECORDING_OVERLAY.get_or_init(|| Mutex::new(None))
+}
+
 struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
 
 const DEFAULT_SCREENSHOT_HOTKEY: &str = "Alt+A";
 const TRANSLATE_HOTKEY_LABEL: &str = "Alt+T";
+const RECORDING_HOTKEY_LABEL: &str = "Alt+R";
 
 fn normalize_key_code(key: &str) -> Option<String> {
     let trimmed = key.trim();
@@ -190,6 +203,27 @@ fn register_global_shortcuts(
             }
             Err(e) => errors.push(format!("{}: {}", translate_hotkey, e)),
         }
+    }
+
+    match parse_hotkey(RECORDING_HOTKEY_LABEL) {
+        Ok(shortcut) => {
+            if let Err(e) =
+                app.global_shortcut()
+                    .on_shortcut(shortcut, move |app, _shortcut, event| {
+                        if event.state() == ShortcutState::Pressed {
+                            let app_h = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = start_screenshot(app_h, Some("record".to_string())).await {
+                                    eprintln!("Failed to start recording selection: {}", e);
+                                }
+                            });
+                        }
+                    })
+            {
+                errors.push(format!("{}: {}", RECORDING_HOTKEY_LABEL, e));
+            }
+        }
+        Err(e) => errors.push(format!("{}: {}", RECORDING_HOTKEY_LABEL, e)),
     }
 
     if errors.is_empty() {
@@ -804,6 +838,8 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 mod win32 {
+    use std::ffi::c_void;
+
     #[repr(C)]
     #[derive(Clone, Copy)]
     #[allow(clippy::upper_case_acronyms)]
@@ -820,10 +856,77 @@ mod win32 {
         pub right: i32,
         pub bottom: i32,
     }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct PAINTSTRUCT {
+        pub hdc: isize,
+        pub f_erase: i32,
+        pub rc_paint: RECT,
+        pub f_restore: i32,
+        pub f_inc_update: i32,
+        pub rgb_reserved: [u8; 32],
+    }
+    #[repr(C)]
+    pub struct WNDCLASSW {
+        pub style: u32,
+        pub lpfn_wnd_proc: Option<unsafe extern "system" fn(isize, u32, usize, isize) -> isize>,
+        pub cb_cls_extra: i32,
+        pub cb_wnd_extra: i32,
+        pub h_instance: isize,
+        pub h_icon: isize,
+        pub h_cursor: isize,
+        pub hbr_background: isize,
+        pub lpsz_menu_name: *const u16,
+        pub lpsz_class_name: *const u16,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct MSG {
+        pub hwnd: isize,
+        pub message: u32,
+        pub w_param: usize,
+        pub l_param: isize,
+        pub time: u32,
+        pub pt: POINT,
+    }
     pub type EnumWindowsProc = Option<unsafe extern "system" fn(isize, isize) -> i32>;
     extern "system" {
+        pub fn GetModuleHandleW(lpModuleName: *const u16) -> isize;
+        pub fn RegisterClassW(lpWndClass: *const WNDCLASSW) -> u16;
+        pub fn CreateWindowExW(
+            dwExStyle: u32,
+            lpClassName: *const u16,
+            lpWindowName: *const u16,
+            dwStyle: u32,
+            X: i32,
+            Y: i32,
+            nWidth: i32,
+            nHeight: i32,
+            hWndParent: isize,
+            hMenu: isize,
+            hInstance: isize,
+            lpParam: *mut c_void,
+        ) -> isize;
+        pub fn DefWindowProcW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> isize;
+        pub fn DestroyWindow(hWnd: isize) -> i32;
+        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn UpdateWindow(hWnd: isize) -> i32;
+        pub fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
+        pub fn PostQuitMessage(nExitCode: i32);
+        pub fn GetMessageW(lpMsg: *mut MSG, hWnd: isize, wMsgFilterMin: u32, wMsgFilterMax: u32) -> i32;
+        pub fn TranslateMessage(lpMsg: *const MSG) -> i32;
+        pub fn DispatchMessageW(lpMsg: *const MSG) -> isize;
+        pub fn BeginPaint(hWnd: isize, lpPaint: *mut PAINTSTRUCT) -> isize;
+        pub fn EndPaint(hWnd: isize, lpPaint: *const PAINTSTRUCT) -> i32;
+        pub fn FillRect(hDC: isize, lprc: *const RECT, hbr: isize) -> i32;
+        pub fn CreateSolidBrush(color: u32) -> isize;
+        pub fn DeleteObject(ho: isize) -> i32;
+        pub fn SetLayeredWindowAttributes(hwnd: isize, crKey: u32, bAlpha: u8, dwFlags: u32) -> i32;
+        pub fn SetWindowDisplayAffinity(hWnd: isize, dwAffinity: u32) -> i32;
         pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
+        pub fn GetWindowTextLengthW(hWnd: isize) -> i32;
+        pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
         pub fn EnumWindows(lpEnumFunc: EnumWindowsProc, lParam: isize) -> i32;
         pub fn EnumChildWindows(
             hWndParent: isize,
@@ -849,6 +952,33 @@ mod win32 {
             cbAttribute: u32,
         ) -> i32;
     }
+}
+
+#[tauri::command]
+fn set_window_capture_excluded(
+    app: tauri::AppHandle,
+    label: String,
+    excluded: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        const WDA_NONE: u32 = 0x00000000;
+        const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+        let window = app
+            .get_webview_window(&label)
+            .ok_or_else(|| format!("window not found: {}", label))?;
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        let affinity = if excluded { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+        let ok = unsafe { win32::SetWindowDisplayAffinity(hwnd, affinity) };
+        if ok == 0 {
+            return Err("SetWindowDisplayAffinity failed".to_string());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, label, excluded);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -885,12 +1015,213 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
     }
 }
 
+#[cfg(target_os = "windows")]
+const RECORDING_OVERLAY_CLASS: &str = "YSNRecordingOverlayNative";
+#[cfg(target_os = "windows")]
+const WM_PAINT: u32 = 0x000F;
+#[cfg(target_os = "windows")]
+const WM_DESTROY: u32 = 0x0002;
+#[cfg(target_os = "windows")]
+const WM_CLOSE: u32 = 0x0010;
+#[cfg(target_os = "windows")]
+const WM_NCHITTEST: u32 = 0x0084;
+#[cfg(target_os = "windows")]
+const HTTRANSPARENT: isize = -1;
+#[cfg(target_os = "windows")]
+const WS_POPUP: u32 = 0x80000000;
+#[cfg(target_os = "windows")]
+const WS_EX_TOPMOST: u32 = 0x00000008;
+#[cfg(target_os = "windows")]
+const WS_EX_TRANSPARENT: u32 = 0x00000020;
+#[cfg(target_os = "windows")]
+const WS_EX_TOOLWINDOW: u32 = 0x00000080;
+#[cfg(target_os = "windows")]
+const WS_EX_LAYERED: u32 = 0x00080000;
+#[cfg(target_os = "windows")]
+const SW_SHOWNOACTIVATE: i32 = 4;
+#[cfg(target_os = "windows")]
+const LWA_COLORKEY: u32 = 0x00000001;
+#[cfg(target_os = "windows")]
+const TRANSPARENT_COLOR_KEY: u32 = 0x000000;
+#[cfg(target_os = "windows")]
+const RECORDING_BORDER_COLORREF: u32 = 0x4f3bff;
+#[cfg(target_os = "windows")]
+const RECORDING_BORDER_THICKNESS: i32 = 1;
+
+#[cfg(target_os = "windows")]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn recording_overlay_wnd_proc(
+    hwnd: isize,
+    msg: u32,
+    w_param: usize,
+    l_param: isize,
+) -> isize {
+    match msg {
+        WM_NCHITTEST => HTTRANSPARENT,
+        WM_PAINT => {
+            let mut ps = win32::PAINTSTRUCT {
+                hdc: 0,
+                f_erase: 0,
+                rc_paint: win32::RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                f_restore: 0,
+                f_inc_update: 0,
+                rgb_reserved: [0; 32],
+            };
+            let hdc = win32::BeginPaint(hwnd, &mut ps);
+            let width = ps.rc_paint.right.max(1);
+            let height = ps.rc_paint.bottom.max(1);
+            let transparent_brush = win32::CreateSolidBrush(TRANSPARENT_COLOR_KEY);
+            let red_brush = win32::CreateSolidBrush(RECORDING_BORDER_COLORREF);
+            let full = win32::RECT { left: 0, top: 0, right: width, bottom: height };
+            let top = win32::RECT { left: 0, top: 0, right: width, bottom: RECORDING_BORDER_THICKNESS.min(height) };
+            let bottom = win32::RECT { left: 0, top: (height - RECORDING_BORDER_THICKNESS).max(0), right: width, bottom: height };
+            let left = win32::RECT { left: 0, top: 0, right: RECORDING_BORDER_THICKNESS.min(width), bottom: height };
+            let right = win32::RECT { left: (width - RECORDING_BORDER_THICKNESS).max(0), top: 0, right: width, bottom: height };
+            win32::FillRect(hdc, &full, transparent_brush);
+            win32::FillRect(hdc, &top, red_brush);
+            win32::FillRect(hdc, &bottom, red_brush);
+            win32::FillRect(hdc, &left, red_brush);
+            win32::FillRect(hdc, &right, red_brush);
+            let _ = win32::DeleteObject(transparent_brush);
+            let _ = win32::DeleteObject(red_brush);
+            win32::EndPaint(hwnd, &ps);
+            0
+        }
+        WM_CLOSE => {
+            win32::DestroyWindow(hwnd);
+            0
+        }
+        WM_DESTROY => {
+            win32::PostQuitMessage(0);
+            0
+        }
+        _ => win32::DefWindowProcW(hwnd, msg, w_param, l_param),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_recording_overlay_internal() {
+    let overlay = get_recording_overlay().lock().ok().and_then(|mut guard| guard.take());
+    if let Some(overlay) = overlay {
+        unsafe {
+            let _ = win32::PostMessageW(overlay.hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_recording_overlay_internal() {}
+
+#[tauri::command]
+fn hide_recording_overlay() -> Result<(), String> {
+    hide_recording_overlay_internal();
+    Ok(())
+}
+
+#[tauri::command]
+fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
+    if w <= 0 || h <= 0 {
+        return Err("录制区域尺寸无效".to_string());
+    }
+    hide_recording_overlay_internal();
+    #[cfg(target_os = "windows")]
+    {
+        let (tx, rx) = mpsc::channel::<Result<isize, String>>();
+        std::thread::spawn(move || {
+            let result = unsafe {
+                let class_name = wide_null(RECORDING_OVERLAY_CLASS);
+                let title = wide_null("YSN Recording Border");
+                let h_instance = win32::GetModuleHandleW(std::ptr::null());
+                let wnd_class = win32::WNDCLASSW {
+                    style: 0,
+                    lpfn_wnd_proc: Some(recording_overlay_wnd_proc),
+                    cb_cls_extra: 0,
+                    cb_wnd_extra: 0,
+                    h_instance,
+                    h_icon: 0,
+                    h_cursor: 0,
+                    hbr_background: 0,
+                    lpsz_menu_name: std::ptr::null(),
+                    lpsz_class_name: class_name.as_ptr(),
+                };
+                let _ = win32::RegisterClassW(&wnd_class);
+                let hwnd = win32::CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+                    class_name.as_ptr(),
+                    title.as_ptr(),
+                    WS_POPUP,
+                    x,
+                    y,
+                    w,
+                    h,
+                    0,
+                    0,
+                    h_instance,
+                    std::ptr::null_mut(),
+                );
+                if hwnd == 0 {
+                    Err("创建原生录制边框失败".to_string())
+                } else {
+                    let _ = win32::SetLayeredWindowAttributes(hwnd, TRANSPARENT_COLOR_KEY, 255, LWA_COLORKEY);
+                    let _ = win32::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    let _ = win32::UpdateWindow(hwnd);
+                    Ok(hwnd)
+                }
+            };
+            let hwnd = match result {
+                Ok(hwnd) => {
+                    let _ = tx.send(Ok(hwnd));
+                    hwnd
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
+            };
+            let mut msg = win32::MSG {
+                hwnd: 0,
+                message: 0,
+                w_param: 0,
+                l_param: 0,
+                time: 0,
+                pt: win32::POINT { x: 0, y: 0 },
+            };
+            unsafe {
+                while win32::GetMessageW(&mut msg, 0, 0, 0) > 0 {
+                    let _ = win32::TranslateMessage(&msg);
+                    let _ = win32::DispatchMessageW(&msg);
+                }
+            }
+            if let Ok(mut guard) = get_recording_overlay().lock() {
+                if guard.map(|value| value.hwnd) == Some(hwnd) {
+                    *guard = None;
+                }
+            }
+        });
+        let hwnd = rx.recv_timeout(std::time::Duration::from_millis(1000)).map_err(|_| "创建原生录制边框超时".to_string())??;
+        *get_recording_overlay().lock().map_err(|e| e.to_string())? = Some(NativeRecordingOverlay { hwnd });
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
 fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
     for (label, window) in app.webview_windows() {
         if label == "screenshot" && include_primary {
             let _ = window.set_always_on_top(false);
             let _ = window.hide();
         } else if label.starts_with("screenshot_") {
+            let _ = window.set_always_on_top(false);
+            let _ = window.hide();
+            let _ = window.close();
+        } else if label == "recording_border" || label.starts_with("recording_border_") {
             let _ = window.set_always_on_top(false);
             let _ = window.hide();
             let _ = window.close();
@@ -1033,6 +1364,7 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
 
 #[tauri::command]
 async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
+    hide_recording_overlay_internal();
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
     Ok(())
@@ -1476,6 +1808,10 @@ struct RecordingOptions {
     mic_device: Option<String>,
     system_audio_device: Option<String>,
     output_dir: Option<String>,
+    region_x: Option<i32>,
+    region_y: Option<i32>,
+    region_w: Option<i32>,
+    region_h: Option<i32>,
 }
 
 fn ffmpeg_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
@@ -1625,7 +1961,7 @@ fn cleanup_finished_recording_process() -> Result<bool, String> {
 fn find_ffmpeg_executable(app: &tauri::AppHandle) -> Option<PathBuf> {
     for candidate in ffmpeg_candidates(app) {
         if candidate.to_string_lossy().eq_ignore_ascii_case("ffmpeg") {
-            if Command::new("ffmpeg").arg("-version").output().is_ok() {
+            if hidden_ffmpeg_command(Path::new("ffmpeg")).arg("-version").output().is_ok() {
                 return Some(candidate);
             }
         } else if candidate.is_file() {
@@ -1670,8 +2006,18 @@ fn ffmpeg_supports_input_format(formats_output: &str, format_name: &str) -> bool
     })
 }
 
+fn hidden_ffmpeg_command(ffmpeg_path: &Path) -> Command {
+    let mut cmd = Command::new(ffmpeg_path);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 fn ffmpeg_input_formats(ffmpeg_path: &Path) -> String {
-    Command::new(ffmpeg_path)
+    hidden_ffmpeg_command(ffmpeg_path)
         .args(["-hide_banner", "-formats"])
         .output()
         .map(|out| {
@@ -1687,7 +2033,7 @@ fn ffmpeg_input_formats(ffmpeg_path: &Path) -> String {
 fn collect_ffmpeg_audio_devices(ffmpeg_path: &Path) -> Vec<String> {
     let mut devices = Vec::new();
     let input_formats = ffmpeg_input_formats(ffmpeg_path);
-    if let Ok(out) = Command::new(ffmpeg_path)
+    if let Ok(out) = hidden_ffmpeg_command(ffmpeg_path)
         .args([
             "-hide_banner",
             "-list_devices",
@@ -1707,7 +2053,7 @@ fn collect_ffmpeg_audio_devices(ffmpeg_path: &Path) -> Vec<String> {
         devices.extend(parse_quoted_audio_devices(&combined, true, None));
     }
     if ffmpeg_supports_input_format(&input_formats, "wasapi") {
-        if let Ok(out) = Command::new(ffmpeg_path)
+        if let Ok(out) = hidden_ffmpeg_command(ffmpeg_path)
             .args([
                 "-hide_banner",
                 "-list_devices",
@@ -1735,6 +2081,96 @@ fn collect_ffmpeg_audio_devices(ffmpeg_path: &Path) -> Vec<String> {
         }
     }
     devices
+}
+
+
+#[cfg(target_os = "windows")]
+struct RecordingWindowListContext {
+    excluded_hwnds: Vec<isize>,
+    windows: Vec<serde_json::Value>,
+}
+
+#[cfg(target_os = "windows")]
+fn window_title(hwnd: isize) -> String {
+    let len = unsafe { win32::GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; (len + 1) as usize];
+    let copied = unsafe { win32::GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if copied <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..copied as usize]).trim().to_string()
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_recording_windows(hwnd: isize, lparam: isize) -> i32 {
+    let ctx = &mut *(lparam as *mut RecordingWindowListContext);
+    if hwnd == 0 || ctx.excluded_hwnds.contains(&hwnd) || win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    let title = window_title(hwnd);
+    if title.is_empty() {
+        return 1;
+    }
+    if let Some(rect) = hwnd_rect(hwnd, true) {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        if w >= 120 && h >= 80 {
+            ctx.windows.push(serde_json::json!({
+                "id": hwnd.to_string(),
+                "title": title,
+                "x": rect.left,
+                "y": rect.top,
+                "w": w,
+                "h": h,
+            }));
+        }
+    }
+    1
+}
+
+#[tauri::command]
+fn get_recording_targets(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let displays = Screen::all()
+        .map_err(|e| format!("无法获取显示器：{}", e))?
+        .into_iter()
+        .enumerate()
+        .map(|(index, screen)| {
+            let info = screen.display_info;
+            serde_json::json!({
+                "id": index.to_string(),
+                "title": format!("显示器 {} ({}x{})", index + 1, info.width, info.height),
+                "x": info.x,
+                "y": info.y,
+                "w": info.width,
+                "h": info.height,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    #[cfg(target_os = "windows")]
+    let windows = {
+        let mut ctx = RecordingWindowListContext {
+            excluded_hwnds: excluded_app_hwnds(&app),
+            windows: Vec::new(),
+        };
+        unsafe {
+            win32::EnumWindows(
+                Some(enum_recording_windows),
+                &mut ctx as *mut RecordingWindowListContext as isize,
+            );
+        }
+        ctx.windows
+    };
+    #[cfg(not(target_os = "windows"))]
+    let windows: Vec<serde_json::Value> = Vec::new();
+
+    Ok(serde_json::json!({
+        "windows": windows,
+        "displays": displays,
+    }))
 }
 
 #[tauri::command]
@@ -1829,9 +2265,26 @@ fn build_recording_args(
         "gdigrab".to_string(),
         "-framerate".to_string(),
         fps.clone(),
-        "-i".to_string(),
-        "desktop".to_string(),
     ];
+    if let (Some(x), Some(y), Some(w), Some(h)) = (
+        options.region_x,
+        options.region_y,
+        options.region_w,
+        options.region_h,
+    ) {
+        if w <= 0 || h <= 0 {
+            return Err("录屏区域尺寸无效".to_string());
+        }
+        args.extend([
+            "-offset_x".to_string(),
+            x.to_string(),
+            "-offset_y".to_string(),
+            y.to_string(),
+            "-video_size".to_string(),
+            format!("{}x{}", w, h),
+        ]);
+    }
+    args.extend(["-i".to_string(), "desktop".to_string()]);
 
     let audio_inputs = match audio_mode {
         "none" => 0,
@@ -2060,21 +2513,16 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     }
 
     let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| {
-        "未找到 ffmpeg.exe。默认请放在软件同级 ffmpeg\\ffmpeg.exe，或在录屏页面选择 ffmpeg.exe。".to_string()
+        "未找到 ffmpeg.exe。默认请放在软件同级 ffmpeg\\ffmpeg.exe，或在“模型/视频配置”里选择 ffmpeg.exe。".to_string()
     })?;
     let output_path = recording_output_path(options.output_dir.clone())?;
     let args = build_recording_args(&options, &output_path)?;
 
-    let mut cmd = Command::new(&ffmpeg);
+    let mut cmd = hidden_ffmpeg_command(&ffmpeg);
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to start ffmpeg recording: {}", e))?;
@@ -2119,6 +2567,103 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
 #[tauri::command]
 fn stop_recording() -> Result<(), String> {
     stop_recording_internal(3000)
+}
+
+fn default_recording_file_name() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("YSN_Recording_{}.mp4", seconds)
+}
+
+fn escape_concat_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").replace('\'', "'\\''")
+}
+
+#[tauri::command]
+fn concat_recording_segments(app: tauri::AppHandle, segment_paths: Vec<String>) -> Result<String, String> {
+    if segment_paths.is_empty() {
+        return Err("没有可合并的录屏片段".to_string());
+    }
+    let existing_segments: Vec<PathBuf> = segment_paths
+        .iter()
+        .map(|path| PathBuf::from(path.trim()))
+        .filter(|path| path.exists())
+        .collect();
+    if existing_segments.is_empty() {
+        return Err("录屏片段不存在，无法保存".to_string());
+    }
+
+    let default_name = default_recording_file_name();
+    let save_path = rfd::FileDialog::new()
+        .set_title("保存区域录屏")
+        .add_filter("MP4 视频", &["mp4"])
+        .set_file_name(&default_name)
+        .save_file()
+        .ok_or_else(|| "用户取消了保存".to_string())?;
+
+    if existing_segments.len() == 1 {
+        fs::copy(&existing_segments[0], &save_path)
+            .map_err(|e| format!("保存录屏失败：{}", e))?;
+        return Ok(save_path.to_string_lossy().to_string());
+    }
+
+    let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| "未找到 ffmpeg.exe，无法合并录屏片段".to_string())?;
+    let mut list_path = app_data_dir();
+    list_path.push("recordings");
+    fs::create_dir_all(&list_path).map_err(|e| format!("创建录屏临时目录失败：{}", e))?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    list_path.push(format!("concat_{}.txt", millis));
+    let list_body = existing_segments
+        .iter()
+        .map(|path| format!("file '{}'", escape_concat_path(path)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&list_path, list_body).map_err(|e| format!("写入录屏合并列表失败：{}", e))?;
+
+    let args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-f".to_string(),
+        "concat".to_string(),
+        "-safe".to_string(),
+        "0".to_string(),
+        "-i".to_string(),
+        list_path.to_string_lossy().to_string(),
+        "-c".to_string(),
+        "copy".to_string(),
+        save_path.to_string_lossy().to_string(),
+    ];
+    let status = hidden_ffmpeg_command(&ffmpeg)
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("启动 ffmpeg 合并失败：{}", e))?;
+    let _ = fs::remove_file(&list_path);
+    if !status.success() {
+        return Err(format!("ffmpeg 合并录屏片段失败：{}", status));
+    }
+    Ok(save_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let path_buf = PathBuf::from(trimmed);
+        if path_buf.exists() {
+            let _ = fs::remove_file(path_buf);
+        }
+    }
+    Ok(())
 }
 
 use serde::{Deserialize, Serialize};
@@ -2734,6 +3279,13 @@ fn clear_history() -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -2745,12 +3297,18 @@ pub fn run() {
             add_history,
             clear_history,
             get_recording_info,
+            get_recording_targets,
             get_ffmpeg_release_info,
             download_ffmpeg_release,
             choose_ffmpeg_executable,
             choose_recording_output_dir,
             start_recording,
             stop_recording,
+            set_window_capture_excluded,
+            show_recording_overlay,
+            hide_recording_overlay,
+            concat_recording_segments,
+            cleanup_recording_files,
             save_config,
             download_paddleocr_release,
             choose_ocr_install_dir,
@@ -2878,6 +3436,10 @@ pub fn run() {
                 {
                     CAPTURING.store(false, Ordering::SeqCst);
                 }
+            } else if label == "recording_border" || label.starts_with("recording_border_") {
+                if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
+                    let _ = window.set_always_on_top(false);
+                }
             } else if label == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     let _ = window.hide();
@@ -2944,6 +3506,10 @@ mod tests {
             mic_device: Some("dshow:Microphone Array".to_string()),
             system_audio_device: Some("wasapi:default".to_string()),
             output_dir: None,
+            region_x: None,
+            region_y: None,
+            region_w: None,
+            region_h: None,
         }
     }
 
@@ -2960,6 +3526,10 @@ mod tests {
             mic_device: None,
             system_audio_device: None,
             output_dir: None,
+            region_x: None,
+            region_y: None,
+            region_w: None,
+            region_h: None,
         };
         let args = super::build_recording_args(&options, output_path()).unwrap();
         assert!(args.windows(2).any(|pair| pair == ["-framerate", "30"]));

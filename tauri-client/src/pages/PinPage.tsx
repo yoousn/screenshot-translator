@@ -37,7 +37,7 @@ export default function PinPage() {
     };
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      setContextMenu({ x: e.clientX, y: e.clientY });
+      setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 112), y: Math.min(e.clientY, window.innerHeight - 76) });
     };
     const handleClick = () => setContextMenu(null);
 
@@ -93,7 +93,7 @@ export default function PinPage() {
       
       {/* 操作提示小浮层，仅在调整透明度时或鼠标悬浮时隐约可见，这里为了极简暂不额外实现复杂的 UI */}
       {contextMenu && (
-        <div style={{ position: "absolute", left: contextMenu.x, top: contextMenu.y, zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ position: "absolute", left: Math.max(8, contextMenu.x), top: Math.max(8, contextMenu.y), zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(e) => e.stopPropagation()}>
           <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer" }} onClick={copyPinnedImage}>复制</button>
           <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={() => getCurrentWindow().close()}>关闭</button>
         </div>

@@ -10,9 +10,12 @@ interface TextAnnotationEditorProps {
 }
 
 export default function TextAnnotationEditor({ draft, onChange, onCommit, onCancel }: TextAnnotationEditorProps) {
+  const left = Math.max(8, Math.min(draft.x, window.innerWidth - 240));
+  const top = Math.max(8, Math.min(draft.y, window.innerHeight - 48));
+
   return (
     <div
-      style={{ position: "absolute", left: draft.x, top: draft.y, zIndex: 80, display: "flex", gap: 6, alignItems: "center", padding: 6, borderRadius: 8, background: "rgba(255,255,255,0.96)", boxShadow: "0 8px 24px rgba(0,0,0,0.16)" }}
+      style={{ position: "absolute", left, top, zIndex: 80, display: "flex", gap: 6, alignItems: "center", padding: 6, borderRadius: 8, background: "rgba(255,255,255,0.96)", boxShadow: "0 8px 24px rgba(0,0,0,0.16)" }}
       onMouseDown={(event) => event.stopPropagation()}
     >
       <Input

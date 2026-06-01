@@ -33,14 +33,15 @@ export const getActionToolbarStyle = ({
     position: "absolute",
     top: clamp(topCandidate, margin, maxTop),
     left: clamp(leftCandidate, margin, maxLeft),
-    zIndex: 100,
+    zIndex: 320,
     background: "#fff",
     padding: "6px 10px",
     borderRadius: 8,
     boxShadow: "0 2px 12px rgba(0, 0, 0, 0.12)",
     border: "1px solid #e8e8e8",
-    width: "max-content",
+    width: "fit-content",
     maxWidth: `calc(100vw - ${margin * 2}px)`,
-    whiteSpace: "nowrap",
+    boxSizing: "border-box",
+    whiteSpace: "normal",
   };
 };

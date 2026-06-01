@@ -6,7 +6,9 @@
     "main",
     "screenshot",
     "pin_*",
-    "ocr_*"
+    "ocr_*",
+    "recording_overlay",
+    "recording_control"
   ],
   "permissions": [
     "core:default",

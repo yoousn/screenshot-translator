@@ -5,12 +5,13 @@ import App from "./App";
 import ScreenshotPage from "./pages/ScreenshotPage";
 import PinPage from "./pages/PinPage";
 import OcrPage from "./pages/OcrPage";
+import RecordingControlPage from "./pages/RecordingControlPage";
 import "./index.css";
 
 const label = getCurrentWindow().label;
 
 // Set transparent background BEFORE React renders for screenshot windows
-if (label === "screenshot") {
+if (label === "screenshot" || label === "recording_control") {
   document.body.style.backgroundColor = "transparent";
   document.documentElement.style.backgroundColor = "transparent";
   document.body.classList.add("transparent-window");
@@ -24,6 +25,8 @@ if (label === "screenshot") {
   Component = PinPage;
 } else if (label.startsWith("ocr_")) {
   Component = OcrPage;
+} else if (label === "recording_control") {
+  Component = RecordingControlPage;
 } else {
   Component = App;
 }

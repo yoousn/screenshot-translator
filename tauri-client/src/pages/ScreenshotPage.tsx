@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { message } from "antd";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { Button, Space, message } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ScreenshotToolbar from "../components/screenshot/ScreenshotToolbar";
 import TextAnnotationEditor from "../components/screenshot/TextAnnotationEditor";
 import TranslationLoadingOverlay from "../components/screenshot/TranslationLoadingOverlay";
+import RecordingPrepToolbar from "../components/recording/RecordingPrepToolbar";
 import type { Annotation, AnnotationTool, EditingTextDraft, OcrBlock, Point, Rect, TranslatePair } from "../types/screenshot";
 import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, makeTextAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
 import { cropSelectionFromLoadedImage, getPhysicalSelection, loadPngImage, renderEditedSelectionBase64 } from "../utils/screenshotImage";
@@ -18,6 +18,7 @@ import { openPinWindow } from "../utils/pinWindows";
 import { getDetectionCandidatesAt, rectSignature } from "../utils/detectionCandidates";
 import { translateWithLocalOcr } from "../utils/localOcrTranslate";
 import { renderScreenshotCanvas } from "../utils/renderScreenshotCanvas";
+import { openRecordingWindows } from "../utils/recordingWindows";
 
 interface Config {
   serverUrl?: string;
@@ -43,8 +44,43 @@ const FLOATING_PANEL_GAP = 8;
 const DEFAULT_ANNOTATION_COLOR = "#ff4d4f";
 const DEFAULT_ANNOTATION_TOOL: AnnotationTool = "rect";
 const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circle: 4, mosaic: 16, arrow: 4, text: 4, brush: 4 };
+const RECORDING_BORDER_COLOR = "#ef4444";
+const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
+const RECORDING_TOOLBAR_FALLBACK_SIZE = { width: 980, height: 96 };
+
+type RecordingStatus = "idle" | "ready" | "recording";
+type RecordingMode = "region" | "window" | "display";
+type ScrollCaptureMode = "idle" | "ready" | "capturing";
+
+type RecordingInfo = {
+  ffmpegFound: boolean;
+  ffmpegPath?: string;
+  isRecording: boolean;
+  audioDevices?: string[];
+};
+
+type RecordingTarget = {
+  id: string;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+type RecordingTargets = {
+  windows: RecordingTarget[];
+  displays: RecordingTarget[];
+};
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const formatRecordingTime = (ms: number) => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+};
 
 const getImageDataFromImage = (image: HTMLImageElement) => {
   const canvas = document.createElement("canvas");
@@ -159,6 +195,20 @@ export default function ScreenshotPage() {
   const [isTranslating, setIsTranslating] = useState(false);
   const [isOCRing, setIsOCRing] = useState(false);
   const [isScrollCapturing, setIsScrollCapturing] = useState(false);
+  const [scrollCaptureMode, setScrollCaptureMode] = useState<ScrollCaptureMode>("idle");
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>("idle");
+  const [recordingFps, setRecordingFps] = useState(30);
+  const [recordingResolution, setRecordingResolution] = useState("1080p");
+  const [recordingAudioMode, setRecordingAudioMode] = useState("none");
+  const [recordingCountdownSeconds, setRecordingCountdownSeconds] = useState(1);
+  const [recordingMode, setRecordingMode] = useState<RecordingMode>("region");
+  const [recordingTargets, setRecordingTargets] = useState<RecordingTargets>({ windows: [], displays: [] });
+  const [selectedWindowTargetId, setSelectedWindowTargetId] = useState<string | null>(null);
+  const [selectedDisplayTargetId, setSelectedDisplayTargetId] = useState<string | null>(null);
+  const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
+  const [isRecordingBusy, setIsRecordingBusy] = useState(false);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [config, setConfig] = useState<Config>({});
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
@@ -179,6 +229,16 @@ export default function ScreenshotPage() {
   const isTranslatingRef = useRef(false);
   const isOCRingRef = useRef(false);
   const isScrollCapturingRef = useRef(false);
+  const scrollCaptureModeRef = useRef<ScrollCaptureMode>("idle");
+  const scrollFramesRef = useRef<string[]>([]);
+  const scrollTimerRef = useRef<number | null>(null);
+  const isScrollFramePendingRef = useRef(false);
+  const recordingStatusRef = useRef<RecordingStatus>("idle");
+  const recordingSegmentsRef = useRef<string[]>([]);
+  const isRecordingBusyRef = useRef(false);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const recordingModeRef = useRef<RecordingMode>("region");
+  const recordingRegionRef = useRef<RecordingTarget | null>(null);
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
   const lastRectQueryRef = useRef(0);
@@ -244,6 +304,22 @@ export default function ScreenshotPage() {
     setSelectedAnnotationIndex(null);
     setEditingTextDraft(null);
     setDraftAnnotation(null);
+    if (scrollTimerRef.current) {
+      window.clearInterval(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+    scrollFramesRef.current = [];
+    scrollCaptureModeRef.current = "idle";
+    setIsScrollCapturing(false);
+    setScrollCaptureMode("idle");
+    recordingSegmentsRef.current = [];
+    recordingRegionRef.current = null;
+    recordingStatusRef.current = "idle";
+    setRecordingStatus("idle");
+    setIsRecordingBusy(false);
+    recordingStartedAtRef.current = null;
+    setRecordingStartedAt(null);
+    setRecordingElapsedMs(0);
     windowRectsRef.current = [];
     setWindowRects([]);
     setHoverCandidate(null);
@@ -254,6 +330,8 @@ export default function ScreenshotPage() {
     pendingDetectionRef.current = null;
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
+    setScreenshotMode("normal");
+    screenshotModeRef.current = "normal";
     setScreenshotState("initializing");
     setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
@@ -286,6 +364,11 @@ export default function ScreenshotPage() {
   isTranslatingRef.current = isTranslating;
   isOCRingRef.current = isOCRing;
   isScrollCapturingRef.current = isScrollCapturing;
+  scrollCaptureModeRef.current = scrollCaptureMode;
+  recordingStatusRef.current = recordingStatus;
+  isRecordingBusyRef.current = isRecordingBusy;
+  recordingStartedAtRef.current = recordingStartedAt;
+  recordingModeRef.current = recordingMode;
   windowRectsRef.current = windowRects;
   hoverRectRef.current = hoverRect;
   hoverCandidatesRef.current = hoverCandidates;
@@ -447,9 +530,31 @@ export default function ScreenshotPage() {
 
     let unlistenMode: (() => void) | null = null;
     let unlistenEvent: (() => void) | null = null;
+    let unlistenRecordingEnded: (() => void) | null = null;
 
-    listen<string>("screenshot-mode", (event) => setScreenshotMode(event.payload || "normal"))
+    listen<string>("screenshot-mode", (event) => {
+      const nextMode = event.payload || "normal";
+      setScreenshotMode(nextMode);
+      if (nextMode === "record") {
+        setRecordingMode("region");
+        recordingModeRef.current = "region";
+      }
+    })
       .then((unsub) => { unlistenMode = unsub; })
+      .catch(() => {});
+
+    listen("recording-ended", () => {
+      recordingSegmentsRef.current = [];
+      recordingStartedAtRef.current = null;
+      recordingRegionRef.current = null;
+      setRecordingStartedAt(null);
+      setRecordingElapsedMs(0);
+      recordingStatusRef.current = "idle";
+      setRecordingStatus("idle");
+      resetScreenshotState();
+      invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
+    })
+      .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
     listen("screenshot-updated", (event) => {
@@ -470,6 +575,16 @@ export default function ScreenshotPage() {
         return;
       }
       if (e.key === "Escape") {
+        if (recordingStatusRef.current !== "idle") {
+          e.preventDefault();
+          cancelRecording();
+          return;
+        }
+        if (scrollCaptureModeRef.current !== "idle") {
+          e.preventDefault();
+          cancelManualScrollCapture();
+          return;
+        }
         forceCloseScreenshots();
         return;
       }
@@ -486,7 +601,7 @@ export default function ScreenshotPage() {
         return;
       }
       if (!hasSelectedRef.current) return;
-      if (editingTextDraftRef.current) return;
+      if (editingTextDraftRef.current) commitTextDraft();
       if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         const toolByKey: Record<string, AnnotationTool> = {
           "1": "rect",
@@ -532,6 +647,14 @@ export default function ScreenshotPage() {
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
+        if (recordingStatusRef.current !== "idle") {
+          finishRecording();
+          return;
+        }
+        if (scrollCaptureModeRef.current === "capturing") {
+          finishManualScrollCapture();
+          return;
+        }
         confirmScreenshot("save");
         return;
       }
@@ -551,6 +674,7 @@ export default function ScreenshotPage() {
       window.removeEventListener("keydown", handleKeyDown);
       if (unlistenEvent) unlistenEvent();
       if (unlistenMode) unlistenMode();
+      if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, []);
@@ -575,7 +699,15 @@ export default function ScreenshotPage() {
     const observer = new ResizeObserver(updateToolbarSize);
     observer.observe(toolbar);
     return () => observer.disconnect();
-  }, [hasSelected]);
+  }, [hasSelected, recordingStatus, scrollCaptureMode, isEditing, annotationTool, recordingMode]);
+
+  useEffect(() => {
+    if (recordingStatus !== "recording" || !recordingStartedAt) return;
+    const updateElapsed = () => setRecordingElapsedMs(Date.now() - recordingStartedAt);
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 500);
+    return () => window.clearInterval(timer);
+  }, [recordingStatus, recordingStartedAt]);
 
   const loadConfig = async () => {
     try {
@@ -872,9 +1004,9 @@ export default function ScreenshotPage() {
       isDrawingAnnotationRef.current = true;
       annotationStartRef.current = { x: cx, y: cy };
       setAnnotationDraft(
-        annotationToolRef.current === "brush"
-          ? { type: "brush", rect: { x: cx, y: cy, w: 0, h: 0 }, points: [{ x: cx, y: cy }] }
-          : { type: annotationToolRef.current, rect: { x: cx, y: cy, w: 0, h: 0 } }
+        annotationToolRef.current === "brush" || annotationToolRef.current === "mosaic"
+          ? { type: annotationToolRef.current, rect: { x: cx, y: cy, w: 0, h: 0 }, points: [{ x: cx, y: cy }], color: annotationColorRef.current, size: annotationSizeRef.current }
+          : { type: annotationToolRef.current, rect: { x: cx, y: cy, w: 0, h: 0 }, color: annotationColorRef.current, size: annotationSizeRef.current }
       );
       return;
     }
@@ -914,7 +1046,7 @@ export default function ScreenshotPage() {
     if (mouseTrackerRef.current) {
       mouseTrackerRef.current.style.left = `${cx + 16}px`;
       mouseTrackerRef.current.style.top = `${cy + 20}px`;
-      mouseTrackerRef.current.textContent = `${cx}, ${cy}${hasSelectedRef.current ? ` | ${rectRef.current.w}×${rectRef.current.h}` : ""}`;
+      mouseTrackerRef.current.textContent = `${cx}, ${cy}`;
     }
 
     if (isDraggingAnnotationRef.current && selectedAnnotationIndexRef.current !== null) {
@@ -1092,6 +1224,9 @@ export default function ScreenshotPage() {
     if (valid && wasSelecting && screenshotModeRef.current === "translate") {
       setTimeout(() => handleTranslate(), 0);
     }
+    if (valid && wasSelecting && screenshotModeRef.current === "record") {
+      setTimeout(() => enterRecordingMode("region"), 0);
+    }
   };
 
   const handleDoubleClick = () => {
@@ -1115,6 +1250,9 @@ export default function ScreenshotPage() {
       draftAnnotation: draftAnnotationRef.current,
       selectedAnnotationIndex: selectedAnnotationIndexRef.current,
       detectionBorderWidth: configRef.current.detectionBorderWidth || 2,
+      selectionBorderColor: recordingStatusRef.current !== "idle" ? RECORDING_BORDER_COLOR : scrollCaptureModeRef.current !== "idle" ? SCROLL_CAPTURE_BORDER_COLOR : undefined,
+      selectionLabelColor: recordingStatusRef.current !== "idle" ? "rgba(239, 68, 68, 0.9)" : scrollCaptureModeRef.current !== "idle" ? "rgba(249, 115, 22, 0.9)" : undefined,
+      selectionOnly: recordingStatusRef.current !== "idle",
     });
   }
 
@@ -1123,6 +1261,35 @@ export default function ScreenshotPage() {
     image: imageRef.current,
     rect: rectRef.current,
   });
+
+  const getCurrentAbsoluteSelection = async (): Promise<RecordingTarget> => {
+    const selection = getCurrentPhysicalSelection();
+    const origin = await getCurrentWindow().outerPosition().catch(() => ({ x: 0, y: 0 }));
+    return {
+      id: "region",
+      title: "翻译结果",
+      x: Math.round(origin.x + selection.x),
+      y: Math.round(origin.y + selection.y),
+      w: Math.round(selection.w),
+      h: Math.round(selection.h),
+    };
+  };
+
+  const rectFromAbsoluteTarget = async (target: RecordingTarget) => {
+    const canvas = canvasRef.current;
+    const image = imageRef.current;
+    const origin = await getCurrentWindow().outerPosition().catch(() => ({ x: 0, y: 0 }));
+    const scaleX = image && canvas ? image.naturalWidth / canvas.width : 1;
+    const scaleY = image && canvas ? image.naturalHeight / canvas.height : 1;
+    return {
+      x: Math.round((target.x - origin.x) / scaleX),
+      y: Math.round((target.y - origin.y) / scaleY),
+      w: Math.round(target.w / scaleX),
+      h: Math.round(target.h / scaleY),
+      kind: "window",
+    } as Rect;
+  };
+
 
   const cropCurrentSelectionFromLoadedImage = () => cropSelectionFromLoadedImage({
     canvas: canvasRef.current,
@@ -1266,44 +1433,299 @@ export default function ScreenshotPage() {
     }
   };
 
-  const handleScrollCapture = async () => {
-    if (!hasSelectedRef.current || isScrollCapturingRef.current || isTranslatingRef.current || isOCRingRef.current) return;
+  const isLikelySystemAudioDevice = (device: string) => /wasapi:|stereo mix|立体声|混音|loopback|virtual audio|output|speaker|扬声器/i.test(device);
+  const isLikelyMicrophoneDevice = (device: string) => !isLikelySystemAudioDevice(device);
+
+  const formatAudioDeviceLabel = (device: string) => {
+    if (device === "wasapi:default") return "系统声音（默认输出）";
+    if (device.startsWith("wasapi:")) return `系统声音：${device.slice("wasapi:".length)}`;
+    if (device.startsWith("dshow:")) return device.slice("dshow:".length);
+    return device;
+  };
+
+  const getRecordingDevices = () => {
+    const devices = recordingInfo?.audioDevices || [];
+    return {
+      mic: devices.find(isLikelyMicrophoneDevice) || null,
+      system: devices.find(isLikelySystemAudioDevice) || null,
+      hasSystem: devices.some(isLikelySystemAudioDevice),
+    };
+  };
+
+  const loadRecordingPrerequisites = async () => {
+    const [info, targets] = await Promise.all([
+      invoke<RecordingInfo>("get_recording_info"),
+      invoke<RecordingTargets>("get_recording_targets").catch(() => ({ windows: [], displays: [] })),
+    ]);
+    setRecordingInfo(info);
+    setRecordingTargets(targets);
+    if (!selectedWindowTargetId && targets.windows.length > 0) setSelectedWindowTargetId(targets.windows[0].id);
+    if (!selectedDisplayTargetId && targets.displays.length > 0) setSelectedDisplayTargetId(targets.displays[0].id);
+    if (!info.ffmpegFound) {
+      throw new Error("未找到 ffmpeg.exe，请先在模型/视频配置里下载或选择 FFmpeg。");
+    }
+    return { info, targets };
+  };
+
+  const applyRecordingTarget = async (target: RecordingTarget) => {
+    recordingRegionRef.current = target;
+    const nextRect = await rectFromAbsoluteTarget(target);
+    setCurrentRect(nextRect, true);
+    setSelection(true);
+    setHoverCandidate(null);
+    renderNeededRef.current = true;
+  };
+
+  const enterRecordingMode = async (mode: RecordingMode = "region") => {
+    if (isTranslatingRef.current || isOCRingRef.current || isScrollCapturingRef.current) return;
+    try {
+      setRecordingMode(mode);
+      recordingModeRef.current = mode;
+      const { targets } = await loadRecordingPrerequisites();
+      recordingSegmentsRef.current = [];
+      recordingRegionRef.current = null;
+      recordingStartedAtRef.current = null;
+      setRecordingStartedAt(null);
+      setRecordingElapsedMs(0);
+      recordingStatusRef.current = "ready";
+      setRecordingStatus("ready");
+
+      if (mode === "region") {
+        if (screenshotModeRef.current !== "record") {
+          setScreenshotMode("record");
+          screenshotModeRef.current = "record";
+          setCurrentRect(EMPTY_RECT, true);
+          setSelection(false);
+          message.info("请重新框选红色录制区域");
+          renderNeededRef.current = true;
+          return;
+        }
+        if (!hasSelectedRef.current) {
+          message.info("请框选红色录制区域");
+          renderNeededRef.current = true;
+          return;
+        }
+      } else if (mode === "window") {
+        const target = targets.windows.find((item) => item.id === selectedWindowTargetId) || targets.windows[0];
+        if (!target) throw new Error("未检测到可录制窗口");
+        setSelectedWindowTargetId(target.id);
+        await applyRecordingTarget(target);
+      } else {
+        const target = targets.displays.find((item) => item.id === selectedDisplayTargetId) || targets.displays[0];
+        if (!target) throw new Error("未检测到显示器");
+        setSelectedDisplayTargetId(target.id);
+        await applyRecordingTarget(target);
+      }
+      renderNeededRef.current = true;
+    } catch (error: any) {
+      recordingStatusRef.current = "idle";
+      setRecordingStatus("idle");
+      message.error(`进入录制模式失败：${error?.message || error}`);
+    }
+  };
+
+  const selectRecordingTarget = async (mode: "window" | "display", targetId: string) => {
+    const list = mode === "window" ? recordingTargets.windows : recordingTargets.displays;
+    const target = list.find((item) => item.id === targetId);
+    if (!target) return;
+    if (mode === "window") setSelectedWindowTargetId(targetId);
+    if (mode === "display") setSelectedDisplayTargetId(targetId);
+    await applyRecordingTarget(target);
+  };
+
+  const buildRecordingOptions = async () => {
+    const devices = getRecordingDevices();
+    if ((recordingAudioMode === "system" || recordingAudioMode === "system_mic") && !devices.system) throw new Error("当前未检测到系统声音设备");
+    if ((recordingAudioMode === "mic" || recordingAudioMode === "system_mic") && !devices.mic) throw new Error("当前未检测到麦克风设备");
+    const region = recordingModeRef.current === "region" ? await getCurrentAbsoluteSelection() : recordingRegionRef.current;
+    if (!region || region.w <= 0 || region.h <= 0) throw new Error("请先选择有效录制区域");
+    return {
+      fps: recordingFps,
+      resolution: recordingResolution,
+      audio_mode: recordingAudioMode,
+      mic_device: devices.mic,
+      system_audio_device: devices.system,
+      output_dir: null,
+      region_x: Math.round(region.x),
+      region_y: Math.round(region.y),
+      region_w: Math.round(region.w),
+      region_h: Math.round(region.h),
+    };
+  };
+
+  const startRecording = async () => {
+    if (isRecordingBusyRef.current || recordingStatusRef.current === "recording") return;
+    try {
+      setIsRecordingBusy(true);
+      const options = await buildRecordingOptions();
+      const region = { x: options.region_x, y: options.region_y, w: options.region_w, h: options.region_h };
+      recordingStatusRef.current = "recording";
+      setRecordingStatus("recording");
+      await openRecordingWindows({
+        options,
+        countdownSeconds: recordingCountdownSeconds,
+      }, region);
+      const win = getCurrentWindow();
+      await win.setAlwaysOnTop(false).catch(() => {});
+      await win.hide().catch(() => {});
+    } catch (error: any) {
+      recordingStatusRef.current = "ready";
+      setRecordingStatus("ready");
+      message.error("启动录制失败：" + (error?.message || error));
+    } finally {
+      setIsRecordingBusy(false);
+    }
+  };
+
+  const finishRecording = async () => {
+    if (recordingStatusRef.current === "ready") {
+      await startRecording();
+      return;
+    }
+    if (isRecordingBusyRef.current || recordingStatusRef.current === "idle") return;
+    try {
+      setIsRecordingBusy(true);
+      if (recordingStatusRef.current === "recording") await invoke("stop_recording");
+      const segments = [...recordingSegmentsRef.current];
+      if (segments.length === 0) throw new Error("没有可保存的录屏片段");
+      const win = getCurrentWindow();
+      await win.setAlwaysOnTop(false).catch(() => {});
+      await win.hide().catch(() => {});
+      const savedPath = await invoke<string>("concat_recording_segments", { segmentPaths: segments });
+      await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
+      recordingSegmentsRef.current = [];
+      recordingStartedAtRef.current = null;
+      setRecordingStartedAt(null);
+      setRecordingElapsedMs(0);
+      recordingStatusRef.current = "idle";
+      setRecordingStatus("idle");
+      resetScreenshotState();
+      await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
+      message.success(`录屏已保存：${savedPath}`);
+      renderNeededRef.current = true;
+    } catch (error: any) {
+      message.error("完成录屏失败：" + (error?.message || error));
+      if (recordingStatusRef.current !== "idle") {
+        recordingStatusRef.current = "recording";
+        setRecordingStatus("recording");
+      }
+      await getCurrentWindow().show().catch(() => {});
+    } finally {
+      setIsRecordingBusy(false);
+    }
+  };
+
+  const cancelRecording = async () => {
+    if (recordingStatusRef.current === "idle" && recordingSegmentsRef.current.length === 0) return;
+    const segments = [...recordingSegmentsRef.current];
+    try {
+      setIsRecordingBusy(true);
+      await invoke("stop_recording").catch(() => {});
+      await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
+      message.info("已取消录屏并清理临时片段");
+    } finally {
+      recordingSegmentsRef.current = [];
+      recordingStartedAtRef.current = null;
+      setRecordingStartedAt(null);
+      setRecordingElapsedMs(0);
+      recordingStatusRef.current = "idle";
+      setRecordingStatus("idle");
+      setIsRecordingBusy(false);
+      resetScreenshotState();
+      await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
+      renderNeededRef.current = true;
+    }
+  };
+
+  const captureManualScrollFrame = async () => {
+    if (isScrollFramePendingRef.current || scrollCaptureModeRef.current !== "capturing") return;
     const selection = getCurrentPhysicalSelection();
     if (selection.w <= 0 || selection.h <= 0) return;
-    const centerX = Math.round(selection.x + selection.w / 2);
-    const centerY = Math.round(selection.y + selection.h / 2);
     const win = getCurrentWindow();
-    const frames: string[] = [];
     try {
-      setIsScrollCapturing(true);
-      message.loading({ content: "正在滚动截图...", key: "scroll-shot", duration: 0 });
+      isScrollFramePendingRef.current = true;
       await win.hide();
-      await sleep(180);
-      for (let index = 0; index < 5; index += 1) {
-        frames.push(await invoke<string>("capture_live_region", {
-          x: Math.round(selection.x),
-          y: Math.round(selection.y),
-          w: Math.round(selection.w),
-          h: Math.round(selection.h),
-        }));
-        if (index < 4) {
-          await invoke("scroll_mouse_at", { x: centerX, y: centerY, delta: -720 });
-          await sleep(450);
-        }
+      await sleep(80);
+      const frame = await invoke<string>("capture_live_region", {
+        x: Math.round(selection.x),
+        y: Math.round(selection.y),
+        w: Math.round(selection.w),
+        h: Math.round(selection.h),
+      });
+      await win.show().catch(() => {});
+      const frames = scrollFramesRef.current;
+      if (frames.length === 0) {
+        scrollFramesRef.current = [frame];
+      } else {
+        const [prev, next] = await Promise.all([loadPngImage(frames[frames.length - 1]), loadPngImage(frame)]);
+        const diff = sampledRegionDiff(getImageDataFromImage(prev), getImageDataFromImage(next), 0, 0, Math.min(prev.height, next.height), 24, 18);
+        if (diff > 1.2) scrollFramesRef.current = [...frames, frame];
       }
-      const stitched = await stitchScrollFrames(frames);
-      await invoke("copy_image_to_clipboard", { imageBase64: stitched });
-      await emit("screenshot-captured", stitched);
-      message.destroy("scroll-shot");
-      await invoke("cancel_screenshot", { label: win.label }).catch(() => {});
-      resetScreenshotState();
+      message.loading({ content: `手动滚动采集中，已采集 ${scrollFramesRef.current.length} 帧`, key: "scroll-shot", duration: 0 });
+      if (scrollFramesRef.current.length >= 30) await finishManualScrollCapture();
     } catch (error: any) {
       await win.show().catch(() => {});
-      await win.setFocus().catch(() => {});
+      message.error({ content: `采集滚动帧失败：${error?.message || error}`, key: "scroll-shot", duration: 3 });
+    } finally {
+      isScrollFramePendingRef.current = false;
+    }
+  };
+
+  const handleScrollCapture = () => {
+    if (!hasSelectedRef.current || isScrollCapturingRef.current || isTranslatingRef.current || isOCRingRef.current || recordingStatusRef.current !== "idle") return;
+    scrollCaptureModeRef.current = "ready";
+    setScrollCaptureMode("ready");
+    message.info("已进入滚动截图模式，请点击“开始采集”后手动滚动目标窗口。 ");
+    renderNeededRef.current = true;
+  };
+
+  const startManualScrollCapture = async () => {
+    if (scrollCaptureModeRef.current !== "ready") return;
+    scrollFramesRef.current = [];
+    scrollCaptureModeRef.current = "capturing";
+    setScrollCaptureMode("capturing");
+    setIsScrollCapturing(true);
+    message.loading({ content: "手动滚动采集中，请自己滚动目标窗口...", key: "scroll-shot", duration: 0 });
+    await captureManualScrollFrame();
+    scrollTimerRef.current = window.setInterval(captureManualScrollFrame, 850);
+    renderNeededRef.current = true;
+  };
+
+  const finishManualScrollCapture = async () => {
+    if (scrollTimerRef.current) {
+      window.clearInterval(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+    try {
+      const frames = [...scrollFramesRef.current];
+      if (frames.length === 0) throw new Error("还没有采集到滚动截图帧");
+      const stitched = frames.length === 1 ? frames[0] : await stitchScrollFrames(frames);
+      await invoke("copy_image_to_clipboard", { imageBase64: stitched });
+      await emit("screenshot-captured", stitched);
+      message.success({ content: `滚动截图已复制，共 ${frames.length} 帧`, key: "scroll-shot", duration: 3 });
+    } catch (error: any) {
       message.error({ content: `滚动截图失败：${error?.message || error}`, key: "scroll-shot", duration: 4 });
     } finally {
+      scrollFramesRef.current = [];
       setIsScrollCapturing(false);
+      scrollCaptureModeRef.current = "idle";
+      setScrollCaptureMode("idle");
+      renderNeededRef.current = true;
     }
+  };
+
+  const cancelManualScrollCapture = () => {
+    if (scrollTimerRef.current) {
+      window.clearInterval(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+    scrollFramesRef.current = [];
+    setIsScrollCapturing(false);
+    scrollCaptureModeRef.current = "idle";
+    setScrollCaptureMode("idle");
+    message.destroy("scroll-shot");
+    message.info("已取消滚动截图");
+    renderNeededRef.current = true;
   };
 
   const resetScreenshotState = () => {
@@ -1333,6 +1755,18 @@ export default function ScreenshotPage() {
     setSelectedAnnotationIndex(null);
     setEditingTextDraft(null);
     setAnnotationDraft(null);
+    if (scrollTimerRef.current) {
+      window.clearInterval(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+    scrollFramesRef.current = [];
+    scrollCaptureModeRef.current = "idle";
+    setScrollCaptureMode("idle");
+    recordingSegmentsRef.current = [];
+    recordingRegionRef.current = null;
+    recordingStatusRef.current = "idle";
+    setRecordingStatus("idle");
+    setIsRecordingBusy(false);
     windowRectsRef.current = [];
     setWindowRects([]);
     setHoverCandidate(null);
@@ -1340,6 +1774,8 @@ export default function ScreenshotPage() {
     setIsTranslating(false);
     setIsOCRing(false);
     setIsScrollCapturing(false);
+    setScreenshotMode("normal");
+    screenshotModeRef.current = "normal";
     setScreenshotState("initializing");
     setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
@@ -1355,6 +1791,9 @@ export default function ScreenshotPage() {
 
   const forceCloseScreenshots = async () => {
     message.destroy();
+    const segments = [...recordingSegmentsRef.current];
+    await invoke("stop_recording").catch(() => {});
+    if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
     resetScreenshotState();
     await invoke("force_close_screenshots").catch(() => {});
   };
@@ -1384,6 +1823,16 @@ export default function ScreenshotPage() {
     }
   };
 
+  const currentToolbarStyle = getActionToolbarStyle({ rect, toolbarSize: actionToolbarSize, fallbackSize: recordingStatus !== "idle" || scrollCaptureMode !== "idle" ? RECORDING_TOOLBAR_FALLBACK_SIZE : ACTION_TOOLBAR_FALLBACK_SIZE, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, margin: FLOATING_PANEL_MARGIN, gap: FLOATING_PANEL_GAP });
+  const currentOverlayToolbarStyle: React.CSSProperties = { ...currentToolbarStyle, padding: 0, border: "none", boxShadow: "none", background: "transparent" };
+  const currentRecordingDevices = getRecordingDevices();
+  const audioOptions = [
+    { label: "静音", value: "none" },
+    { label: currentRecordingDevices.mic ? `麦克风：${formatAudioDeviceLabel(currentRecordingDevices.mic)}` : "麦克风（未检测到）", value: "mic", disabled: !currentRecordingDevices.mic },
+    { label: currentRecordingDevices.system ? formatAudioDeviceLabel(currentRecordingDevices.system) : "系统声音（未检测到）", value: "system", disabled: !currentRecordingDevices.system },
+    { label: "系统声音 + 麦克风", value: "system_mic", disabled: !currentRecordingDevices.system || !currentRecordingDevices.mic },
+  ];
+
   return (
     <div style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: hasSelected ? "default" : "crosshair" }}>
       {overlayVisible && !hasSelected && (
@@ -1403,10 +1852,48 @@ export default function ScreenshotPage() {
 
       <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }} />
 
-      {overlayVisible && hasSelected && !isSelecting && (
+      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "ready" && (
+        <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>
+          <RecordingPrepToolbar
+            mode={recordingMode}
+            windowTargets={recordingTargets.windows}
+            displayTargets={recordingTargets.displays}
+            selectedWindowTargetId={selectedWindowTargetId}
+            selectedDisplayTargetId={selectedDisplayTargetId}
+            fps={recordingFps}
+            resolution={recordingResolution}
+            audioMode={recordingAudioMode}
+            countdownSeconds={recordingCountdownSeconds}
+            audioOptions={audioOptions}
+            busy={isRecordingBusy}
+            onSelectWindowTarget={(value) => selectRecordingTarget("window", value)}
+            onSelectDisplayTarget={(value) => selectRecordingTarget("display", value)}
+            onFpsChange={setRecordingFps}
+            onResolutionChange={setRecordingResolution}
+            onAudioModeChange={setRecordingAudioMode}
+            onCountdownChange={setRecordingCountdownSeconds}
+            onStart={startRecording}
+            onCancel={cancelRecording}
+          />
+        </div>
+      )}
+
+      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && scrollCaptureMode !== "idle" && (
+        <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>
+          <Space size={[8, 8]} wrap style={{ maxWidth: "100%", padding: "8px 10px", borderRadius: 16, background: "rgba(255,255,255,0.96)", border: "1px solid rgba(226,232,240,0.95)", boxShadow: "0 12px 32px rgba(15,23,42,0.18)", color: "#111827", boxSizing: "border-box" }}>
+            <span style={{ color: SCROLL_CAPTURE_BORDER_COLOR, fontWeight: 800 }}>手动滚动截图</span>
+            <span style={{ fontSize: 12, color: "#475569" }}>点击开始后自己滚动目标窗口，完成后自动拼接并复制</span>
+            {scrollCaptureMode === "ready" && <Button size="small" type="primary" onClick={startManualScrollCapture}>开始采集</Button>}
+            {scrollCaptureMode === "capturing" && <Button size="small" type="primary" onClick={finishManualScrollCapture}>完成</Button>}
+            <Button size="small" onClick={cancelManualScrollCapture}>取消</Button>
+          </Space>
+        </div>
+      )}
+
+      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && scrollCaptureMode === "idle" && (
         <ScreenshotToolbar
           containerRef={actionToolbarRef}
-          style={getActionToolbarStyle({ rect, toolbarSize: actionToolbarSize, fallbackSize: ACTION_TOOLBAR_FALLBACK_SIZE, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, margin: FLOATING_PANEL_MARGIN, gap: FLOATING_PANEL_GAP })}
+          style={currentToolbarStyle}
           annotationTool={annotationTool}
           annotationColor={annotationColor}
           annotationSize={annotationSize}
@@ -1425,6 +1912,7 @@ export default function ScreenshotPage() {
           canShowTranslateResult={Boolean(translatePairs && translatePairs.length > 0)}
           onOCR={handleOCR}
           onScrollCapture={handleScrollCapture}
+          onRecording={enterRecordingMode}
           onPin={handlePin}
           onUndo={undoAnnotation}
           onRedo={redoAnnotation}

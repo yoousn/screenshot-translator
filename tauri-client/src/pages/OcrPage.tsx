@@ -63,7 +63,7 @@ export default function OcrPage() {
     window.addEventListener("mousemove", focusWindow);
     const handleContextMenu = (event: MouseEvent) => {
       event.preventDefault();
-      setContextMenu({ x: event.clientX, y: event.clientY });
+      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 112), y: Math.min(event.clientY, window.innerHeight - 76) });
     };
     const handleClick = () => setContextMenu(null);
 
@@ -159,7 +159,7 @@ export default function OcrPage() {
       </div>
 
       {contextMenu && (
-        <div data-no-drag="true" style={{ position: "absolute", left: contextMenu.x, top: contextMenu.y, zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(event) => event.stopPropagation()}>
+        <div data-no-drag="true" style={{ position: "absolute", left: Math.max(8, contextMenu.x), top: Math.max(8, contextMenu.y), zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(event) => event.stopPropagation()}>
           <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>复制</button>
           <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>关闭</button>
         </div>

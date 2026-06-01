@@ -1,4 +1,5 @@
 import type { Annotation, Point, Rect } from "../types/screenshot";
+
 const drawSharpArrow = (ctx: CanvasRenderingContext2D, start: Point, end: Point, color: string, lineWidth: number) => {
   const angle = Math.atan2(end.y - start.y, end.x - start.x);
   const headLength = Math.max(14, lineWidth * 4.5);
@@ -26,6 +27,37 @@ const drawSharpArrow = (ctx: CanvasRenderingContext2D, start: Point, end: Point,
   ctx.closePath();
   ctx.fill();
   ctx.lineCap = "butt";
+};
+
+const pixelateBlock = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number) => {
+  const sourceX = Math.max(0, Math.round(x - size / 2));
+  const sourceY = Math.max(0, Math.round(y - size / 2));
+  const sourceW = Math.max(1, Math.min(Math.round(size), ctx.canvas.width - sourceX));
+  const sourceH = Math.max(1, Math.min(Math.round(size), ctx.canvas.height - sourceY));
+  if (sourceW <= 0 || sourceH <= 0) return;
+  const temp = document.createElement("canvas");
+  temp.width = 1;
+  temp.height = 1;
+  const tempCtx = temp.getContext("2d");
+  if (!tempCtx) return;
+  tempCtx.imageSmoothingEnabled = false;
+  tempCtx.drawImage(ctx.canvas, sourceX, sourceY, sourceW, sourceH, 0, 0, 1, 1);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(temp, 0, 0, 1, 1, sourceX, sourceY, sourceW, sourceH);
+  ctx.imageSmoothingEnabled = true;
+};
+
+const drawMosaic = (ctx: CanvasRenderingContext2D, annotation: Annotation, fallbackSize: number) => {
+  const blockSize = Math.max(8, Math.round((annotation.size || fallbackSize) * 1.6));
+  const points = annotation.points || [];
+  if (points.length > 0) {
+    points.forEach((point) => pixelateBlock(ctx, point.x, point.y, blockSize));
+    return;
+  }
+  const { x, y, w, h } = annotation.rect;
+  for (let py = y; py <= y + h; py += blockSize) {
+    for (let px = x; px <= x + w; px += blockSize) pixelateBlock(ctx, px, py, blockSize);
+  }
 };
 
 export const drawAnnotation = (
@@ -81,21 +113,7 @@ export const drawAnnotation = (
   if (w <= 0 || h <= 0) return;
 
   if (annotation.type === "mosaic") {
-    const block = 10;
-    const temp = document.createElement("canvas");
-    temp.width = Math.max(1, Math.ceil(w / block));
-    temp.height = Math.max(1, Math.ceil(h / block));
-    const tempCtx = temp.getContext("2d");
-    if (tempCtx) {
-      tempCtx.imageSmoothingEnabled = false;
-      tempCtx.drawImage(ctx.canvas, x, y, w, h, 0, 0, temp.width, temp.height);
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(temp, 0, 0, temp.width, temp.height, x, y, w, h);
-      ctx.imageSmoothingEnabled = true;
-    }
-    ctx.strokeStyle = "rgba(250, 84, 28, 0.85)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x, y, w, h);
+    drawMosaic(ctx, annotation, size);
     return;
   }
 
@@ -108,6 +126,15 @@ export const drawAnnotation = (
     ctx.stroke();
   } else {
     ctx.strokeRect(x, y, w, h);
+  }
+
+  if (options.index !== undefined && options.selectedIndex === options.index) {
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = "#1677ff";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 4, y - 4, w + 8, h + 8);
+    ctx.restore();
   }
 };
 
@@ -126,7 +153,6 @@ type RenderExportAnnotationsOptions = {
 
 export const renderExportAnnotations = ({
   ctx,
-  cropCanvas,
   annotations,
   selection,
   canvasWidth,
@@ -181,18 +207,7 @@ export const renderExportAnnotations = ({
       ctx.fillStyle = color;
       ctx.fillText(annotation.text, ax + 7, ay + fontSize + 2);
     } else if (annotation.type === "mosaic") {
-      const block = 10;
-      const temp = document.createElement("canvas");
-      temp.width = Math.max(1, Math.ceil(aw / block));
-      temp.height = Math.max(1, Math.ceil(ah / block));
-      const tempCtx = temp.getContext("2d");
-      if (tempCtx) {
-        tempCtx.imageSmoothingEnabled = false;
-        tempCtx.drawImage(cropCanvas, ax, ay, aw, ah, 0, 0, temp.width, temp.height);
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(temp, 0, 0, temp.width, temp.height, ax, ay, aw, ah);
-        ctx.imageSmoothingEnabled = true;
-      }
+      drawMosaic(ctx, { ...annotation, rect: { x: ax, y: ay, w: aw, h: ah }, points: annotation.points?.map(mapPoint), size: scaleStroke(annotation) }, fallbackSize);
     } else {
       ctx.strokeStyle = color;
       ctx.lineWidth = scaleStroke(annotation);

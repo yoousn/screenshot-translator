@@ -7,14 +7,12 @@ import {
   InfoCircleOutlined,
   DashboardOutlined,
   FileTextOutlined,
-  VideoCameraOutlined,
 } from "@ant-design/icons";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import History from "./pages/History";
 import About from "./pages/About";
 import OcrConfig from "./pages/OcrConfig";
-import Recording from "./pages/Recording";
 import AppLayout from "./components/app/AppLayout";
 import useServerStatus from "./hooks/useServerStatus";
 
@@ -68,7 +66,6 @@ function AppContent() {
     { key: "dashboard", icon: <DashboardOutlined />, label: "首页" },
     { key: "settings", icon: <SettingOutlined />, label: "系统设置" },
     { key: "ocr-config", icon: <FileTextOutlined />, label: "模型/视频配置" },
-    { key: "recording", icon: <VideoCameraOutlined />, label: "录屏" },
     { key: "history", icon: <HistoryOutlined />, label: "历史记录" },
     { key: "about", icon: <InfoCircleOutlined />, label: "关于" },
   ];
@@ -81,8 +78,6 @@ function AppContent() {
         return <Settings onConfigSaved={fetchServerUrl} />;
       case "ocr-config":
         return <OcrConfig />;
-      case "recording":
-        return <Recording />;
       case "history":
         return <History />;
       case "about":

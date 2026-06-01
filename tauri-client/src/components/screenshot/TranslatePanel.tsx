@@ -12,13 +12,13 @@ interface TranslatePanelProps {
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
 
 export default function TranslatePanel({ rect, pairs, onClose }: TranslatePanelProps) {
-  const panelWidth = 350;
+  const panelWidth = Math.min(350, Math.max(260, window.innerWidth - 16));
   const panelGap = 12;
   const rightLeft = rect.x + rect.w + panelGap;
   const leftLeft = rect.x - panelWidth - panelGap;
   const hasRightSpace = rightLeft + panelWidth <= window.innerWidth - 8;
   const hasLeftSpace = leftLeft >= 8;
-  const left = hasRightSpace ? rightLeft : hasLeftSpace ? leftLeft : clamp(rightLeft, 8, window.innerWidth - panelWidth - 8);
+  const left = hasRightSpace ? rightLeft : hasLeftSpace ? leftLeft : clamp(rightLeft, 8, Math.max(8, window.innerWidth - panelWidth - 8));
 
   return (
     <div

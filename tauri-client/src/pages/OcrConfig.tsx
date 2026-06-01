@@ -47,6 +47,13 @@ type FfmpegProgress = {
   percent: number;
 };
 
+type RecordingInfo = {
+  ffmpegFound: boolean;
+  ffmpegPath?: string;
+  isRecording: boolean;
+  audioDevices: string[];
+};
+
 export default function OcrConfig() {
   const {
     config,
@@ -77,6 +84,8 @@ export default function OcrConfig() {
   const [checkingFfmpeg, setCheckingFfmpeg] = useState(false);
   const [downloadingFfmpeg, setDownloadingFfmpeg] = useState(false);
   const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegProgress | null>(null);
+  const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
+  const [checkingRecordingInfo, setCheckingRecordingInfo] = useState(false);
 
   useEffect(() => {
     const loadFfmpegPath = async () => {
@@ -87,10 +96,22 @@ export default function OcrConfig() {
     };
     loadFfmpegPath();
     const unlisten = listen<FfmpegProgress>("ffmpeg-download-progress", (event) => setFfmpegProgress(event.payload));
+    checkRecordingInfo();
     return () => {
       unlisten.then((dispose) => dispose()).catch(() => undefined);
     };
   }, []);
+
+  const checkRecordingInfo = async () => {
+    try {
+      setCheckingRecordingInfo(true);
+      const next = await invoke<RecordingInfo>("get_recording_info");
+      setRecordingInfo(next);
+      if (next.ffmpegPath) setFfmpegPath(next.ffmpegPath);
+    } finally {
+      setCheckingRecordingInfo(false);
+    }
+  };
 
   const saveFfmpegPath = async (path: string) => {
     const stored = JSON.parse(await invoke<string>("get_config"));
@@ -115,6 +136,7 @@ export default function OcrConfig() {
       setFfmpegRelease(release);
       const result = await invoke<{ path: string; installDir: string; bytes: number }>("download_ffmpeg_release", { url: release.downloadUrl, tag: release.tag });
       await saveFfmpegPath(result.path);
+      await checkRecordingInfo();
     } finally {
       setDownloadingFfmpeg(false);
     }
@@ -196,17 +218,21 @@ export default function OcrConfig() {
 
       <Card title={<span><VideoCameraOutlined style={{ marginRight: 8 }} />FFmpeg 录屏运行包</span>} bordered={false} style={{ borderRadius: 16 }}>
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <Alert type="info" showIcon message="默认查找软件同级 ffmpeg\ffmpeg.exe，也可以从官方 GitHub 下载/更新。" />
-          <Input value={ffmpegPath} placeholder="可留空自动查找软件同级 ffmpeg\ffmpeg.exe" onChange={(event) => setFfmpegPath(event.target.value)} />
+          <Alert type="info" showIcon message="默认查找软件同级 ffmpeg\\ffmpeg.exe，也可以从官方 GitHub 下载/更新。" />
+          <Input value={ffmpegPath} placeholder="可留空自动查找软件同级 ffmpeg\\ffmpeg.exe" onChange={(event) => setFfmpegPath(event.target.value)} />
           <Space wrap>
             <Button icon={<SaveOutlined />} onClick={() => saveFfmpegPath(ffmpegPath)}>保存路径</Button>
             <Button icon={<ReloadOutlined />} loading={checkingFfmpeg} onClick={checkFfmpegRelease}>检查官方版本</Button>
+            <Button icon={<SafetyCertificateOutlined />} loading={checkingRecordingInfo} onClick={checkRecordingInfo}>检查可用状态</Button>
             <Button type="primary" icon={<CloudDownloadOutlined />} loading={downloadingFfmpeg} onClick={downloadFfmpegRelease}>下载/更新 ffmpeg</Button>
             <Button icon={<GithubOutlined />} onClick={() => openUrl("https://github.com/BtbN/FFmpeg-Builds/releases/latest")}>官方 GitHub</Button>
             <Button disabled={!ffmpegPath} onClick={() => ffmpegPath && openPath(ffmpegPath.replace(/[\\/][^\\/]+$/, ""))}>打开目录</Button>
           </Space>
           <Descriptions size="small" column={1} bordered>
             <Descriptions.Item label="当前路径">{ffmpegPath || "自动查找"}</Descriptions.Item>
+            <Descriptions.Item label="可用状态">{recordingInfo?.ffmpegFound ? <Tag color="green">可用</Tag> : <Tag color="red">不可用</Tag>} {recordingInfo?.isRecording && <Tag color="blue">录制中</Tag>}</Descriptions.Item>
+            <Descriptions.Item label="实际使用路径">{recordingInfo?.ffmpegPath || "未检测到"}</Descriptions.Item>
+            <Descriptions.Item label="音频设备">{recordingInfo?.audioDevices?.length ? `${recordingInfo.audioDevices.length} 个` : "未检测到或未检查"}</Descriptions.Item>
             <Descriptions.Item label="官方版本">{ffmpegRelease ? `${ffmpegRelease.tag} / ${ffmpegRelease.assetName}` : "未检查"}</Descriptions.Item>
             <Descriptions.Item label="默认安装目录">{ffmpegRelease?.installDir || "软件同级 ffmpeg 目录"}</Descriptions.Item>
           </Descriptions>

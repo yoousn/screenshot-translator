@@ -17,6 +17,9 @@ type RenderScreenshotCanvasOptions = {
   draftAnnotation: Annotation | null;
   selectedAnnotationIndex: number | null;
   detectionBorderWidth: number;
+  selectionBorderColor?: string;
+  selectionLabelColor?: string;
+  selectionOnly?: boolean;
 };
 
 const getHandlePoints = (x: number, y: number, w: number, h: number) => [
@@ -45,12 +48,16 @@ export const renderScreenshotCanvas = ({
   draftAnnotation,
   selectedAnnotationIndex,
   detectionBorderWidth,
+  selectionBorderColor = "#1677ff",
+  selectionLabelColor = selectionBorderColor,
+  selectionOnly = false,
 }: RenderScreenshotCanvasOptions) => {
   if (!canvas || !image) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  if (maskedCanvas) ctx.drawImage(maskedCanvas, 0, 0);
+  if (selectionOnly) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  else if (maskedCanvas) ctx.drawImage(maskedCanvas, 0, 0);
   else {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
@@ -87,27 +94,27 @@ export const renderScreenshotCanvas = ({
 
   const { x, y, w, h } = selection;
   if (w > 0 && h > 0) {
-    ctx.clearRect(x, y, w, h);
+    if (!selectionOnly) ctx.clearRect(x, y, w, h);
     const activeImg = overrideTranslatedImg || translatedImg;
-    if (activeImg) ctx.drawImage(activeImg, x, y, w, h);
-    else {
+    if (!selectionOnly && activeImg) ctx.drawImage(activeImg, x, y, w, h);
+    else if (!selectionOnly) {
       const scaleX = image.naturalWidth / canvas.width;
       const scaleY = image.naturalHeight / canvas.height;
       ctx.drawImage(image, x * scaleX, y * scaleY, w * scaleX, h * scaleY, x, y, w, h);
     }
-    [...annotations, ...(draftAnnotation ? [draftAnnotation] : [])].forEach((annotation, index) => drawAnnotation(ctx, annotation, { index, selectedIndex: selectedAnnotationIndex }));
-    ctx.strokeStyle = "#1677ff";
+    if (!selectionOnly) [...annotations, ...(draftAnnotation ? [draftAnnotation] : [])].forEach((annotation, index) => drawAnnotation(ctx, annotation, { index, selectedIndex: selectedAnnotationIndex }));
+    ctx.strokeStyle = selectionBorderColor;
     ctx.lineWidth = clamp(detectionBorderWidth || 2, 1, 6);
     ctx.strokeRect(x, y, w, h);
     ctx.fillStyle = "#ffffff";
-    ctx.strokeStyle = "#1677ff";
+    ctx.strokeStyle = selectionBorderColor;
     const hs = 6;
     const halfHs = 3;
     for (const point of getHandlePoints(x, y, w, h)) {
       ctx.fillRect(point.x - halfHs, point.y - halfHs, hs, hs);
       ctx.strokeRect(point.x - halfHs, point.y - halfHs, hs, hs);
     }
-    ctx.fillStyle = "rgba(22, 119, 255, 0.85)";
+    ctx.fillStyle = selectionLabelColor;
     ctx.font = "12px sans-serif";
     const text = `${Math.round(w)} x ${Math.round(h)}`;
     const textWidth = ctx.measureText(text).width;
