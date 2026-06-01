@@ -15,6 +15,20 @@ const formatRecordingTime = (ms: number) => {
   return `${minutes}:${seconds}`;
 };
 
+const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> => {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<null>((resolve) => {
+        timeoutId = window.setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+};
+
 function RecordingControlContent() {
   const winRef = useRef(getCurrentWindow());
   const allowCloseRef = useRef(false);
@@ -45,15 +59,21 @@ function RecordingControlContent() {
   const closeOverlay = async () => {
     cancelledRef.current = true;
     allowCloseRef.current = true;
-    await invoke("hide_recording_overlay").catch(() => {});
-    await emit("recording-ended").catch(() => {});
-    await winRef.current.close().catch(() => {});
+    await withTimeout(invoke("hide_recording_overlay").catch(() => {}), 250);
+    await withTimeout(emit("recording-ended").catch(() => {}), 250);
+    await withTimeout(winRef.current.close().catch(() => {}), 500);
+    await winRef.current.hide().catch(() => {});
   };
 
   const startSegment = async () => {
     const current = sessionRef.current;
     if (!current) return;
     const path = await invoke<string>("start_recording", { options: current.options });
+    if (cancelledRef.current) {
+      await withTimeout(invoke("cancel_recording_process").catch(() => {}), 800);
+      await invoke("cleanup_recording_files", { paths: [path] }).catch(() => {});
+      return;
+    }
     segmentsRef.current = [...segmentsRef.current, path];
     activeStartedAtRef.current = Date.now();
     setOverlayStatus("recording");
@@ -65,7 +85,8 @@ function RecordingControlContent() {
       activeStartedAtRef.current = null;
       setElapsedMs(accumulatedMsRef.current);
     }
-    await invoke(fastCancel ? "cancel_recording_process" : "stop_recording").catch(() => {});
+    const command = fastCancel ? "cancel_recording_process" : "stop_recording";
+    await withTimeout(invoke(command).catch(() => {}), fastCancel ? 800 : 1800);
   };
 
   const runCountdownAndStart = async (seconds: number) => {
@@ -140,7 +161,7 @@ function RecordingControlContent() {
   };
 
   const cancelRecording = async () => {
-    if (cancelledRef.current || statusRef.current === "saving") return;
+    if (cancelledRef.current) return;
     cancelledRef.current = true;
     setOverlayBusy(true);
     setOverlayStatus("saving");
