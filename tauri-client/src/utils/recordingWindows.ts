@@ -26,7 +26,8 @@ export type RecordingBorderRect = { x: number; y: number; w: number; h: number }
 
 const closeWindowIfExists = async (label: string) => {
   const win = await WebviewWindow.getByLabel(label).catch(() => null);
-  await win?.close().catch(() => {});
+  if (!win) return;
+  await win.destroy().catch(() => win.close().catch(() => {}));
 };
 
 const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> => {
