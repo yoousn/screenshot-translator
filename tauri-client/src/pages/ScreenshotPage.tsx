@@ -1792,8 +1792,8 @@ export default function ScreenshotPage() {
   const forceCloseScreenshots = async () => {
     message.destroy();
     const segments = [...recordingSegmentsRef.current];
-    await invoke("cancel_recording_process").catch(() => {});
-    if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
+    invoke("cancel_recording_process").catch(() => {});
+    if (segments.length > 0) invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
     resetScreenshotState();
     await invoke("force_close_screenshots").catch(() => {});
   };
