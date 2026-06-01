@@ -28,7 +28,19 @@ function RecordingControlContent() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const statusRef = useRef<OverlayStatus>("countdown");
+  const busyRef = useRef(false);
   const { message } = AntdApp.useApp();
+
+  const setOverlayStatus = (nextStatus: OverlayStatus) => {
+    statusRef.current = nextStatus;
+    setStatus(nextStatus);
+  };
+
+  const setOverlayBusy = (nextBusy: boolean) => {
+    busyRef.current = nextBusy;
+    setBusy(nextBusy);
+  };
 
   const closeOverlay = async () => {
     cancelledRef.current = true;
@@ -44,22 +56,22 @@ function RecordingControlContent() {
     const path = await invoke<string>("start_recording", { options: current.options });
     segmentsRef.current = [...segmentsRef.current, path];
     activeStartedAtRef.current = Date.now();
-    setStatus("recording");
+    setOverlayStatus("recording");
   };
 
-  const stopActiveSegment = async () => {
+  const stopActiveSegment = async (fastCancel = false) => {
     if (activeStartedAtRef.current !== null) {
       accumulatedMsRef.current += Date.now() - activeStartedAtRef.current;
       activeStartedAtRef.current = null;
       setElapsedMs(accumulatedMsRef.current);
     }
-    await invoke("stop_recording").catch(() => {});
+    await invoke(fastCancel ? "cancel_recording_process" : "stop_recording").catch(() => {});
   };
 
   const runCountdownAndStart = async (seconds: number) => {
     try {
       const normalized = Math.max(0, Math.floor(seconds));
-      setStatus("countdown");
+      setOverlayStatus("countdown");
       if (normalized > 0) {
         for (let value = normalized; value > 0; value -= 1) {
           setCountdown(value);
@@ -77,32 +89,35 @@ function RecordingControlContent() {
   };
 
   const pauseRecording = async () => {
-    if (busy || status !== "recording") return;
-    setBusy(true);
+    if (busyRef.current || statusRef.current !== "recording") return;
+    setOverlayBusy(true);
+    setOverlayStatus("paused");
     try {
       await stopActiveSegment();
-      setStatus("paused");
+    } catch (error: any) {
+      setOverlayStatus("recording");
+      message.error(`暂停录制失败：${error?.message || error}`);
     } finally {
-      setBusy(false);
+      setOverlayBusy(false);
     }
   };
 
   const resumeRecording = async () => {
-    if (busy || status !== "paused") return;
-    setBusy(true);
+    if (busyRef.current || statusRef.current !== "paused") return;
+    setOverlayBusy(true);
     try {
       await startSegment();
     } catch (error: any) {
       message.error(`继续录制失败：${error?.message || error}`);
     } finally {
-      setBusy(false);
+      setOverlayBusy(false);
     }
   };
 
   const finishRecording = async () => {
-    if (busy || status === "countdown") return;
-    setBusy(true);
-    setStatus("saving");
+    if (busyRef.current || statusRef.current === "countdown") return;
+    setOverlayBusy(true);
+    setOverlayStatus("saving");
     try {
       if (activeStartedAtRef.current !== null) await stopActiveSegment();
       const segments = [...segmentsRef.current];
@@ -115,26 +130,28 @@ function RecordingControlContent() {
       message.success(`录屏已保存：${savedPath}`);
       await closeOverlay();
     } catch (error: any) {
-      setStatus(activeStartedAtRef.current === null ? "paused" : "recording");
+      setOverlayStatus(activeStartedAtRef.current === null ? "paused" : "recording");
       await winRef.current.show().catch(() => {});
       await winRef.current.setAlwaysOnTop(true).catch(() => {});
       message.error(`保存录制失败：${error?.message || error}`);
     } finally {
-      setBusy(false);
+      setOverlayBusy(false);
     }
   };
 
   const cancelRecording = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (cancelledRef.current || statusRef.current === "saving") return;
+    cancelledRef.current = true;
+    setOverlayBusy(true);
+    setOverlayStatus("saving");
     try {
-      await stopActiveSegment();
+      await stopActiveSegment(true);
       const segments = [...segmentsRef.current];
       if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       segmentsRef.current = [];
       await closeOverlay();
     } finally {
-      setBusy(false);
+      setOverlayBusy(false);
     }
   };
 
@@ -187,7 +204,7 @@ function RecordingControlContent() {
         cancelRecording();
       } else if (event.code === "Space") {
         event.preventDefault();
-        status === "recording" ? pauseRecording() : resumeRecording();
+        statusRef.current === "recording" ? pauseRecording() : resumeRecording();
       }
     };
     window.addEventListener("keydown", handler);

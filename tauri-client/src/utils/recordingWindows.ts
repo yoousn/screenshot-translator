@@ -29,10 +29,26 @@ const closeWindowIfExists = async (label: string) => {
   await win?.close().catch(() => {});
 };
 
+const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> => {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<null>((resolve) => {
+        timeoutId = window.setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+};
+
 export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
-  await invoke("hide_recording_overlay").catch(() => {});
-  await closeWindowIfExists("recording_overlay");
-  await closeWindowIfExists("recording_control");
+  await Promise.all([
+    withTimeout(invoke("hide_recording_overlay").catch(() => {}), 250),
+    withTimeout(closeWindowIfExists("recording_overlay"), 250),
+    withTimeout(closeWindowIfExists("recording_control"), 250),
+  ]);
 };
 
 export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload, "borderLabels">, selection: RecordingBorderRect) => {
@@ -60,12 +76,12 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
     emit("recording-overlay-session", fullPayload).catch(() => {});
   });
 
-  await invoke("show_recording_overlay", {
+  invoke("show_recording_overlay", {
     x: Math.round(selection.x),
     y: Math.round(selection.y),
     w: Math.round(selection.w),
     h: Math.round(selection.h),
-  });
+  }).catch((error) => console.warn("Failed to show recording overlay", error));
 
   const control = new WebviewWindow("recording_control", {
     url: "index.html",

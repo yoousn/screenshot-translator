@@ -213,7 +213,9 @@ fn register_global_shortcuts(
                         if event.state() == ShortcutState::Pressed {
                             let app_h = app.clone();
                             tauri::async_runtime::spawn(async move {
-                                if let Err(e) = start_screenshot(app_h, Some("record".to_string())).await {
+                                if let Err(e) =
+                                    start_screenshot(app_h, Some("record".to_string())).await
+                                {
                                     eprintln!("Failed to start recording selection: {}", e);
                                 }
                             });
@@ -913,7 +915,12 @@ mod win32 {
         pub fn UpdateWindow(hWnd: isize) -> i32;
         pub fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
         pub fn PostQuitMessage(nExitCode: i32);
-        pub fn GetMessageW(lpMsg: *mut MSG, hWnd: isize, wMsgFilterMin: u32, wMsgFilterMax: u32) -> i32;
+        pub fn GetMessageW(
+            lpMsg: *mut MSG,
+            hWnd: isize,
+            wMsgFilterMin: u32,
+            wMsgFilterMax: u32,
+        ) -> i32;
         pub fn TranslateMessage(lpMsg: *const MSG) -> i32;
         pub fn DispatchMessageW(lpMsg: *const MSG) -> isize;
         pub fn BeginPaint(hWnd: isize, lpPaint: *mut PAINTSTRUCT) -> isize;
@@ -921,7 +928,8 @@ mod win32 {
         pub fn FillRect(hDC: isize, lprc: *const RECT, hbr: isize) -> i32;
         pub fn CreateSolidBrush(color: u32) -> isize;
         pub fn DeleteObject(ho: isize) -> i32;
-        pub fn SetLayeredWindowAttributes(hwnd: isize, crKey: u32, bAlpha: u8, dwFlags: u32) -> i32;
+        pub fn SetLayeredWindowAttributes(hwnd: isize, crKey: u32, bAlpha: u8, dwFlags: u32)
+            -> i32;
         pub fn SetWindowDisplayAffinity(hWnd: isize, dwAffinity: u32) -> i32;
         pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
@@ -968,7 +976,11 @@ fn set_window_capture_excluded(
             .get_webview_window(&label)
             .ok_or_else(|| format!("window not found: {}", label))?;
         let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
-        let affinity = if excluded { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+        let affinity = if excluded {
+            WDA_EXCLUDEFROMCAPTURE
+        } else {
+            WDA_NONE
+        };
         let ok = unsafe { win32::SetWindowDisplayAffinity(hwnd, affinity) };
         if ok == 0 {
             return Err("SetWindowDisplayAffinity failed".to_string());
@@ -1066,7 +1078,12 @@ unsafe extern "system" fn recording_overlay_wnd_proc(
             let mut ps = win32::PAINTSTRUCT {
                 hdc: 0,
                 f_erase: 0,
-                rc_paint: win32::RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                rc_paint: win32::RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
                 f_restore: 0,
                 f_inc_update: 0,
                 rgb_reserved: [0; 32],
@@ -1076,11 +1093,36 @@ unsafe extern "system" fn recording_overlay_wnd_proc(
             let height = ps.rc_paint.bottom.max(1);
             let transparent_brush = win32::CreateSolidBrush(TRANSPARENT_COLOR_KEY);
             let red_brush = win32::CreateSolidBrush(RECORDING_BORDER_COLORREF);
-            let full = win32::RECT { left: 0, top: 0, right: width, bottom: height };
-            let top = win32::RECT { left: 0, top: 0, right: width, bottom: RECORDING_BORDER_THICKNESS.min(height) };
-            let bottom = win32::RECT { left: 0, top: (height - RECORDING_BORDER_THICKNESS).max(0), right: width, bottom: height };
-            let left = win32::RECT { left: 0, top: 0, right: RECORDING_BORDER_THICKNESS.min(width), bottom: height };
-            let right = win32::RECT { left: (width - RECORDING_BORDER_THICKNESS).max(0), top: 0, right: width, bottom: height };
+            let full = win32::RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+            let top = win32::RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: RECORDING_BORDER_THICKNESS.min(height),
+            };
+            let bottom = win32::RECT {
+                left: 0,
+                top: (height - RECORDING_BORDER_THICKNESS).max(0),
+                right: width,
+                bottom: height,
+            };
+            let left = win32::RECT {
+                left: 0,
+                top: 0,
+                right: RECORDING_BORDER_THICKNESS.min(width),
+                bottom: height,
+            };
+            let right = win32::RECT {
+                left: (width - RECORDING_BORDER_THICKNESS).max(0),
+                top: 0,
+                right: width,
+                bottom: height,
+            };
             win32::FillRect(hdc, &full, transparent_brush);
             win32::FillRect(hdc, &top, red_brush);
             win32::FillRect(hdc, &bottom, red_brush);
@@ -1105,7 +1147,10 @@ unsafe extern "system" fn recording_overlay_wnd_proc(
 
 #[cfg(target_os = "windows")]
 fn hide_recording_overlay_internal() {
-    let overlay = get_recording_overlay().lock().ok().and_then(|mut guard| guard.take());
+    let overlay = get_recording_overlay()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
     if let Some(overlay) = overlay {
         unsafe {
             let _ = win32::PostMessageW(overlay.hwnd, WM_CLOSE, 0, 0);
@@ -1166,7 +1211,12 @@ fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> 
                 if hwnd == 0 {
                     Err("创建原生录制边框失败".to_string())
                 } else {
-                    let _ = win32::SetLayeredWindowAttributes(hwnd, TRANSPARENT_COLOR_KEY, 255, LWA_COLORKEY);
+                    let _ = win32::SetLayeredWindowAttributes(
+                        hwnd,
+                        TRANSPARENT_COLOR_KEY,
+                        255,
+                        LWA_COLORKEY,
+                    );
                     let _ = win32::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                     let _ = win32::UpdateWindow(hwnd);
                     Ok(hwnd)
@@ -1202,8 +1252,11 @@ fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> 
                 }
             }
         });
-        let hwnd = rx.recv_timeout(std::time::Duration::from_millis(1000)).map_err(|_| "创建原生录制边框超时".to_string())??;
-        *get_recording_overlay().lock().map_err(|e| e.to_string())? = Some(NativeRecordingOverlay { hwnd });
+        let hwnd = rx
+            .recv_timeout(std::time::Duration::from_millis(1000))
+            .map_err(|_| "创建原生录制边框超时".to_string())??;
+        *get_recording_overlay().lock().map_err(|e| e.to_string())? =
+            Some(NativeRecordingOverlay { hwnd });
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -1961,7 +2014,11 @@ fn cleanup_finished_recording_process() -> Result<bool, String> {
 fn find_ffmpeg_executable(app: &tauri::AppHandle) -> Option<PathBuf> {
     for candidate in ffmpeg_candidates(app) {
         if candidate.to_string_lossy().eq_ignore_ascii_case("ffmpeg") {
-            if hidden_ffmpeg_command(Path::new("ffmpeg")).arg("-version").output().is_ok() {
+            if hidden_ffmpeg_command(Path::new("ffmpeg"))
+                .arg("-version")
+                .output()
+                .is_ok()
+            {
                 return Some(candidate);
             }
         } else if candidate.is_file() {
@@ -2083,7 +2140,6 @@ fn collect_ffmpeg_audio_devices(ffmpeg_path: &Path) -> Vec<String> {
     devices
 }
 
-
 #[cfg(target_os = "windows")]
 struct RecordingWindowListContext {
     excluded_hwnds: Vec<isize>,
@@ -2101,7 +2157,9 @@ fn window_title(hwnd: isize) -> String {
     if copied <= 0 {
         return String::new();
     }
-    String::from_utf16_lossy(&buffer[..copied as usize]).trim().to_string()
+    String::from_utf16_lossy(&buffer[..copied as usize])
+        .trim()
+        .to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -2526,7 +2584,7 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to start ffmpeg recording: {}", e))?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(120));
     if let Some(status) = child
         .try_wait()
         .map_err(|e| format!("Failed to inspect ffmpeg recording process: {}", e))?
@@ -2546,7 +2604,7 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
         }
         let attempts = (grace_ms / 100).max(1);
         let mut exited = false;
-        for _ in 0..attempts {
+        for attempt in 0..attempts {
             if child
                 .try_wait()
                 .map_err(|e| format!("Failed to stop recording process: {}", e))?
@@ -2555,7 +2613,9 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
                 exited = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            if attempt + 1 < attempts {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
         if !exited {
             let _ = child.kill();
@@ -2566,7 +2626,12 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
 }
 #[tauri::command]
 fn stop_recording() -> Result<(), String> {
-    stop_recording_internal(3000)
+    stop_recording_internal(1200)
+}
+
+#[tauri::command]
+fn cancel_recording_process() -> Result<(), String> {
+    stop_recording_internal(250)
 }
 
 fn default_recording_file_name() -> String {
@@ -2578,11 +2643,16 @@ fn default_recording_file_name() -> String {
 }
 
 fn escape_concat_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/").replace('\'', "'\\''")
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "'\\''")
 }
 
 #[tauri::command]
-fn concat_recording_segments(app: tauri::AppHandle, segment_paths: Vec<String>) -> Result<String, String> {
+fn concat_recording_segments(
+    app: tauri::AppHandle,
+    segment_paths: Vec<String>,
+) -> Result<String, String> {
     if segment_paths.is_empty() {
         return Err("没有可合并的录屏片段".to_string());
     }
@@ -2604,12 +2674,12 @@ fn concat_recording_segments(app: tauri::AppHandle, segment_paths: Vec<String>) 
         .ok_or_else(|| "用户取消了保存".to_string())?;
 
     if existing_segments.len() == 1 {
-        fs::copy(&existing_segments[0], &save_path)
-            .map_err(|e| format!("保存录屏失败：{}", e))?;
+        fs::copy(&existing_segments[0], &save_path).map_err(|e| format!("保存录屏失败：{}", e))?;
         return Ok(save_path.to_string_lossy().to_string());
     }
 
-    let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| "未找到 ffmpeg.exe，无法合并录屏片段".to_string())?;
+    let ffmpeg = find_ffmpeg_executable(&app)
+        .ok_or_else(|| "未找到 ffmpeg.exe，无法合并录屏片段".to_string())?;
     let mut list_path = app_data_dir();
     list_path.push("recordings");
     fs::create_dir_all(&list_path).map_err(|e| format!("创建录屏临时目录失败：{}", e))?;
@@ -3304,6 +3374,7 @@ pub fn run() {
             choose_recording_output_dir,
             start_recording,
             stop_recording,
+            cancel_recording_process,
             set_window_capture_excluded,
             show_recording_overlay,
             hide_recording_overlay,
@@ -3437,7 +3508,9 @@ pub fn run() {
                     CAPTURING.store(false, Ordering::SeqCst);
                 }
             } else if label == "recording_border" || label.starts_with("recording_border_") {
-                if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
+                if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed =
+                    event
+                {
                     let _ = window.set_always_on_top(false);
                 }
             } else if label == "main" {

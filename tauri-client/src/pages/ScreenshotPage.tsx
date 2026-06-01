@@ -1620,7 +1620,7 @@ export default function ScreenshotPage() {
     const segments = [...recordingSegmentsRef.current];
     try {
       setIsRecordingBusy(true);
-      await invoke("stop_recording").catch(() => {});
+      await invoke("cancel_recording_process").catch(() => {});
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       message.info("已取消录屏并清理临时片段");
     } finally {
@@ -1792,7 +1792,7 @@ export default function ScreenshotPage() {
   const forceCloseScreenshots = async () => {
     message.destroy();
     const segments = [...recordingSegmentsRef.current];
-    await invoke("stop_recording").catch(() => {});
+    await invoke("cancel_recording_process").catch(() => {});
     if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
     resetScreenshotState();
     await invoke("force_close_screenshots").catch(() => {});
