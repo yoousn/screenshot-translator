@@ -185,7 +185,7 @@
 | 项目 | 默认值 |
 |---|---|
 | 默认 OCR | YSN OCR Runtime / ONNX Runtime 主线 |
-| 备用 OCR | PaddleOCR-json 兼容模式 |
+| 备用 OCR | 暂无外部 exe 主路径；低置信度 fallback 后续接入自有 ONNX/VLM 路径 |
 | 源语言 | 自动识别 |
 | 默认目标语言 | 简体中文 |
 | 录制 FPS | 30 FPS |
@@ -216,7 +216,7 @@
 - 诊断报告能帮助定位 OCR、录制、翻译、依赖、权限问题。
 - 真实 Windows 设备验收有记录，有失败项就继续修。
 
-## 6. 当前风险登记（2026-06-02，Chapter 98 后）
+## 6. 当前风险登记（2026-06-02，Chapter 103 后）
 
 > 本节用于无人连续开发时快速判断“哪些已经真实验证，哪些仍然不能对用户承诺”。如果实现或验证状态变化，必须同步更新本节，禁止用 UI 文案假装能力已完成。
 
@@ -225,13 +225,20 @@
 - 长期文档已收敛为两份：`docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md` 负责方向、验收和闭环，`docs/IMPLEMENTATION_CHAPTERS.md` 负责施工日志；Chapter 93 已明确不再保留五六份分散计划。
 - 根目录 `AGENTS.md` 已写入商业级产品标准、OCR 战略方向、UI/UX 标准、代码组织标准、无人执行标准和实现质量红线。
 - 商业级检查入口已统一为根目录 `check_commercial.ps1`。
-- `npm run check:i18n` 已作为 i18n 门禁，当前 `446 zh-CN keys match 446 en-US keys`。
+- `npm run check:i18n` 已作为 i18n 门禁，当前 `491 zh-CN keys match 491 en-US keys`。
 - `npm run check:ocr-processing` 已作为 OCR/翻译处理链路门禁。
 - `npm run build` 前端生产构建已通过。
 - `cargo check` Rust 检查已通过。
 - `cargo test` Rust 测试已通过，当前商业检查结果为 `91 passed; 0 failed`。
 - OCR Runtime 已具备 managed source、model pack、active model health、readiness steps、routing plan、preprocess、ONNX adapter scaffold、decode/postprocess、dictionary artifact contract、dictionary loader、dictionary download plan、model/dictionary artifact download activation、model/dictionary active health、配置中心 artifact 展示，Chapter 94 managed source index 对 model/dictionary artifact 元数据的导入、模板和 dry-run 支持，以及 Chapter 95 本地 managed source fixture 从 dry-run download plan 到 SHA 校验与 active artifact 激活的 smoke 覆盖，以及 Chapter 96 下载器 artifact size 校验与失败清理，以及 Chapter 97 active artifact size/SHA issue 进入 self-test/readiness blocker，以及 Chapter 98 ONNX session readiness probe 缺失/损坏模型结构化 blocker，但仍不能视为真实生产 OCR。
 - Snow Shot 风格录制控制条、自动保存、边框状态色、打开目录、复制视频和取消清理已有核心实现与测试基础。
+
+### 6.1.1 当前用户使用路径
+
+- 模型和大文件只允许放在项目根目录对应目录，当前 OCR 模型根目录是 `models/ocr`。
+- 用户打开 `.exe` 后，进入“识字模型 / 视频录制”只需要看 PP-OCRv5 模型包状态；普通用户不再选择 OCR 运行时目录。
+- 截图 OCR / 翻译使用 `Ctrl+D` 框选文字区域；结果窗必须显示识别文本、截图预览或明确错误，不允许白屏。
+- 如果出现 `failed to parse OCR manifest ...`，错误信息必须带 manifest 绝对路径；优先检查项目根目录 `models/ocr/manifest.json`，而不是 C 盘 appdata。
 
 ### 6.2 当前高风险区
 
@@ -245,11 +252,33 @@
 
 ### 6.3 下一轮优先级
 
-1. Chapter 99：真实 ONNX inference probe 与 decode/postprocess 接线。
-2. 打通真实 OCR Runtime 端到端：真实模型源、下载校验、ONNX session、preprocess、decode、postprocess、fallback 和 self-test。
-3. 补齐 OCR/翻译质量 fixture：真实 GitHub 列表、技术文本、多语言 UI 文案、translation payload 与重绘对比。
-4. 建立 Windows 人工验收清单：截图、OCR、翻译、录制、复制、保存、取消、打开目录和异常恢复。
-5. 发布闭环：release build、smoke launch、安装包、模型托管、签名、升级、回滚。
+1. Chapter 101：当前优先级改为“截图 OCR / 翻译主流程可验证闭环”，不再继续扩大配置页地基。
+2. 已在项目根目录安装 PP-OCRv5 ONNX 验证模型包到 `models/ocr/active`，并同步 `models/ocr/manifest.json` 的 SHA256、size、license 与 installed 状态；以后所有模型和大文件默认放项目根目录对应文件夹，不再默认占用 C 盘 appdata。
+3. 产品配置页和截图 OCR 主流程不再提供 `PaddleOCR-json` 入口；截图 OCR 必须优先进入项目根目录 `models/ocr` 下的 `YSN OCR Runtime / ONNX`，模型缺失或 manifest 损坏时显示明确恢复提示，不再打开莫名其妙的浏览文件窗口。
+4. 已修 `Ctrl+D` 白屏兜底：OCR 成功、失败、模型缺失、payload 未送达时都必须显示产品级结果窗、截图预览、错误原因和下一步。
+5. 已接入最小真实端到端 pipeline：detector → crop → recognizer → dictionary decode → OCR blocks；后续继续做多模型路由、低置信度 fallback 和真实样例调参，未完整验收前 `runtimeInferenceReady=false` 不能改。
+6. 后续再补托管 CDN、签名 source index、模型自动更新、低置信度 fallback 和完整 Windows 人工验收。
+
+### 6.4 两小时执行目标（当前）
+
+目标：让当前截图翻译从“只有配置地基”转成“能验证真实 OCR/翻译主流程”的状态。
+
+时间盒：约 2 小时。只做用户现在能验证的链路，不再新增开发者调试面板。
+
+必须完成：
+
+- PP-OCRv5 基础模型包已下载、安装、校验，并让配置页能识别 installed 状态。
+- `Ctrl+D` OCR 结果窗不再白屏；没有识别结果也必须显示失败原因和截图预览。
+- `run_local_ocr` 或截图 OCR 调用路径优先尝试项目根目录 `models/ocr` 的 `YSN OCR Runtime / ONNX`；普通产品路径不再调用外部 OCR exe。
+- 翻译链路继续保护技术词：`ONNX`、`PP-OCRv5`、`.exe`、路径、命令、包名。
+- 验证要从用户视角描述：打开 exe → 截图 → OCR/翻译 → 看结果，而不是只看 Probe。
+
+两小时非目标：
+
+- 不承诺完整生产 ready。
+- 不把 `runtimeInferenceReady` 改成 `true`。
+- 不继续扩展 JSON source index、Probe 面板或开发者调试入口。
+- 不做发布签名、自动更新、CDN 托管和完整商业发布闭环。
 
 ## 7. 当前原则总结
 
@@ -258,7 +287,4 @@
 - 源语言自动识别是硬要求，目标语言默认简体中文并可选。
 - 任何 ready 状态必须由真实端到端验证证明。
 - 文档只保留主计划和章节日志，代码每章结束必须留下可恢复现场。
-
-
-
 

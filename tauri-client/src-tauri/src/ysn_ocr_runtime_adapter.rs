@@ -1,7 +1,42 @@
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
+
+static ONNX_SESSION_CACHE: OnceLock<Mutex<HashMap<PathBuf, ort::session::Session>>> =
+    OnceLock::new();
+
+fn cached_sessions() -> &'static Mutex<HashMap<PathBuf, ort::session::Session>> {
+    ONNX_SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn with_cached_session<T>(
+    model_path: &Path,
+    run: impl FnOnce(&mut ort::session::Session) -> Result<T, String>,
+) -> Result<T, String> {
+    let canonical_path = model_path.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve ONNX model path {}: {error}",
+            model_path.display()
+        )
+    })?;
+    let mut sessions = cached_sessions()
+        .lock()
+        .map_err(|_| "ONNX session cache lock poisoned".to_string())?;
+    if !sessions.contains_key(&canonical_path) {
+        let session = ort::session::Session::builder()
+            .map_err(|error| format!("failed to create ONNX session builder: {error}"))?
+            .commit_from_file(&canonical_path)
+            .map_err(|error| format!("failed to load ONNX model session: {error}"))?;
+        sessions.insert(canonical_path.clone(), session);
+    }
+    let session = sessions
+        .get_mut(&canonical_path)
+        .ok_or_else(|| "ONNX session cache did not return loaded session".to_string())?;
+    run(session)
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OnnxIoProbe {
@@ -41,6 +76,13 @@ pub struct OnnxF32TensorSummary {
     pub mean: f32,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct OnnxF32TensorOutput {
+    pub name: String,
+    pub shape: Vec<usize>,
+    pub data: Vec<f32>,
+}
 #[derive(Debug, Serialize)]
 pub struct OnnxInferenceProbe {
     pub ok: bool,
@@ -346,6 +388,75 @@ fn validate_ocr_tensor_scaffold(
     Ok(())
 }
 
+pub fn prewarm_onnx_session(model_path: &Path) -> Result<(), String> {
+    with_cached_session(model_path, |_| Ok(()))
+}
+
+pub fn run_onnx_nchw_f32_outputs(
+    model_path: &Path,
+    tensor: &crate::ysn_ocr_preprocess::OcrTensorInput,
+) -> Result<Vec<OnnxF32TensorOutput>, String> {
+    if !model_path.exists() {
+        return Err(format!(
+            "ONNX model file does not exist: {}",
+            model_path.to_string_lossy()
+        ));
+    }
+    validate_ocr_tensor_scaffold(tensor)?;
+
+    with_cached_session(model_path, |session| {
+        let first_input = session
+            .inputs()
+            .first()
+            .ok_or_else(|| "ONNX model has no inputs.".to_string())?;
+        let binding_plan =
+            build_nchw_f32_input_binding_plan(&[outlet_probe("input", first_input)], tensor);
+        if !binding_plan.ok {
+            return Err(format!(
+                "ONNX input binding plan is blocked: {}",
+                binding_plan.blockers.join("; ")
+            ));
+        }
+        validate_tensor_against_input(first_input, tensor)?;
+        let input_name = first_input.name().to_string();
+        let array =
+            ndarray::Array::from_shape_vec(ndarray::IxDyn(&tensor.shape), tensor.data.clone())
+                .map_err(|error| format!("failed to create OCR input tensor: {error}"))?;
+        let input_tensor = ort::value::Tensor::from_array(array)
+            .map_err(|error| format!("failed to create ONNX input tensor: {error}"))?;
+        let outputs = session
+            .run(ort::inputs![input_name.as_str() => input_tensor])
+            .map_err(|error| format!("ONNX inference failed: {error}"))?;
+
+        let mut tensors = Vec::new();
+        for name in outputs
+            .keys()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+        {
+            let Some(value) = outputs.get(&name) else {
+                continue;
+            };
+            let (shape, data) = value
+                .try_extract_tensor::<f32>()
+                .map_err(|error| format!("failed to extract ONNX f32 output {name}: {error}"))?;
+            let shape = shape_to_usize(shape)?;
+            let expected_len: usize = shape.iter().product();
+            if expected_len != data.len() {
+                return Err(format!(
+                    "ONNX f32 output tensor length mismatch for {name}: expected {expected_len}, got {}",
+                    data.len()
+                ));
+            }
+            tensors.push(OnnxF32TensorOutput {
+                name,
+                shape,
+                data: data.to_vec(),
+            });
+        }
+        Ok(tensors)
+    })
+}
 pub fn run_onnx_nchw_f32_probe(
     model_path: &Path,
     tensor: &crate::ysn_ocr_preprocess::OcrTensorInput,

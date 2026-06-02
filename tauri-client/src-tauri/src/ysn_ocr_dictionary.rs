@@ -20,7 +20,18 @@ pub fn load_dictionary_from_utf8_lines(
     content: &str,
     blank_token_id: usize,
 ) -> Result<Vec<String>, String> {
-    let tokens: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    let mut tokens: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    if blank_token_id == 0
+        && tokens
+            .first()
+            .map(|token| !token.is_empty())
+            .unwrap_or(false)
+    {
+        tokens.insert(0, String::new());
+    }
+    if !tokens.iter().any(|token| token == " ") {
+        tokens.push(" ".to_string());
+    }
     validate_dictionary_tokens(&tokens, blank_token_id)?;
     Ok(tokens)
 }
@@ -125,10 +136,19 @@ mod tests {
     }
 
     #[test]
+    fn load_dictionary_from_utf8_lines_inserts_missing_ctc_blank() {
+        let tokens = super::load_dictionary_from_utf8_lines("A\nB\n", 0).unwrap();
+        assert_eq!(tokens[0], "");
+        assert_eq!(tokens[1], "A");
+        assert!(tokens.iter().any(|token| token == " "));
+    }
+
+    #[test]
     fn load_dictionary_from_utf8_lines_keeps_blank_token() {
         let tokens = super::load_dictionary_from_utf8_lines("\nA\nB\n", 0).unwrap();
 
-        assert_eq!(tokens, vec!["", "A", "B"]);
+        assert_eq!(&tokens[..3], &["", "A", "B"]);
+        assert!(tokens.iter().any(|token| token == " "));
     }
 
     #[test]
@@ -166,7 +186,7 @@ mod tests {
         let dictionary = super::load_dictionary_from_contract(&root, &contract).unwrap();
 
         assert_eq!(dictionary.script, "latin");
-        assert_eq!(dictionary.token_count, 3);
+        assert_eq!(dictionary.token_count, 4);
         assert_eq!(dictionary.tokens[1], "A");
         let _ = fs::remove_dir_all(root);
     }

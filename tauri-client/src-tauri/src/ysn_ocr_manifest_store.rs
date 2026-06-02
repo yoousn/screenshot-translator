@@ -9,17 +9,47 @@ fn default_manifest() -> Value {
     crate::ysn_ocr_model_index::default_manifest(RUNTIME_VERSION, MODEL_SET_VERSION)
 }
 
+fn parse_manifest_content(content: &str) -> Result<Value, serde_json::Error> {
+    serde_json::from_str(content.trim_start_matches('\u{feff}'))
+}
+
 pub(crate) fn read_manifest(app: &AppHandle) -> Result<Value, String> {
     let manifest_path = model_root(app)?.join("manifest.json");
     if !manifest_path.exists() {
         return Ok(default_manifest());
     }
-    let content = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("failed to read OCR manifest: {e}"))?;
-    let mut manifest: Value =
-        serde_json::from_str(&content).map_err(|e| format!("failed to parse OCR manifest: {e}"))?;
-    normalize_manifest_schema(&mut manifest);
-    Ok(manifest)
+    let content = fs::read_to_string(&manifest_path).map_err(|e| {
+        format!(
+            "failed to read OCR manifest {}: {e}",
+            manifest_path.display()
+        )
+    })?;
+    if content.trim_start_matches('\u{feff}').trim().is_empty() {
+        let manifest = default_manifest();
+        write_manifest(app, &manifest)?;
+        return Ok(manifest);
+    }
+    match parse_manifest_content(&content) {
+        Ok(mut manifest) => {
+            normalize_manifest_schema(&mut manifest);
+            Ok(manifest)
+        }
+        Err(error) => {
+            let backup_path = manifest_path.with_extension(format!(
+                "json.broken-{}",
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            ));
+            fs::copy(&manifest_path, &backup_path).map_err(|copy_error| {
+                format!(
+                    "failed to parse OCR manifest {}: {error}; failed to backup broken manifest: {copy_error}",
+                    manifest_path.display()
+                )
+            })?;
+            let manifest = default_manifest();
+            write_manifest(app, &manifest)?;
+            Ok(manifest)
+        }
+    }
 }
 
 pub(crate) fn manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -370,6 +400,15 @@ pub(crate) fn set_installed_pack_self_test_time(manifest: &mut Value, tested_at:
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn parse_manifest_content_accepts_utf8_bom() {
+        let manifest = super::parse_manifest_content(
+            "\u{feff}{\"kind\":\"ysn-ocr-runtime-manifest\",\"packs\":[],\"models\":[]}",
+        )
+        .unwrap();
+        assert_eq!(manifest["kind"].as_str(), Some("ysn-ocr-runtime-manifest"));
+    }
 
     #[test]
     fn normalize_manifest_schema_upgrades_legacy_manifest() {

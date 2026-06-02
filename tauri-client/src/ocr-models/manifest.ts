@@ -13,8 +13,8 @@ export const defaultOcrModelManifest: OcrModelManifest = {
     {
       id: "auto-multilingual-balanced",
       name: {
-        "zh-CN": "自动多语言 OCR 推荐包",
-        "en-US": "Auto Multilingual OCR Pack",
+        "zh-CN": "PP-OCRv5 基础模型包",
+        "en-US": "PP-OCRv5 Base OCR Pack",
       },
       profile: "balanced",
       required: true,
@@ -27,8 +27,8 @@ export const defaultOcrModelManifest: OcrModelManifest = {
     {
       id: "accurate-extension",
       name: {
-        "zh-CN": "高精度 OCR 扩展包",
-        "en-US": "Accurate OCR Extension Pack",
+        "zh-CN": "高精度扩展包（待开放）",
+        "en-US": "Accurate Extension Pack (coming soon)",
       },
       profile: "accurate",
       required: false,
@@ -41,3 +41,4 @@ export const defaultOcrModelManifest: OcrModelManifest = {
   ],
   models: [],
 };
+

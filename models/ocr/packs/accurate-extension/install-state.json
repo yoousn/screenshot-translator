@@ -1,0 +1,8 @@
+{
+  "message": "Trusted model sources are not ready: OCR model pack has no model IDs to install.",
+  "operationId": "ysn-ocr-install-accurate-extension-1780382542139",
+  "packId": "accurate-extension",
+  "schemaVersion": 1,
+  "status": "download-failed",
+  "updatedAt": "2026-06-02T14:42:22.140836600+08:00"
+}

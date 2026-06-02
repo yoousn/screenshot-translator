@@ -38,10 +38,10 @@ const block = (text: string, confidence: number, x: number, y: number, width = 4
   box_coords: [[x, y], [x + width, y], [x + width, y + height], [x, y + height]],
 });
 
-const collapsed = "AddthemissingPATHfallbackbesidePaddleOCR-json.exepathsetting";
+const collapsed = "AddthemissingPATHfallbackbesideLocalModel.exepathsetting";
 const restored = restoreCollapsedUiTextSpacing(collapsed);
 assert(
-  restored === "Add the missing PATH fallback beside PaddleOCR-json.exe path setting",
+  restored === "Add the missing PATH fallback beside Local Model.exe path setting",
   "collapsed UI spacing was not restored: " + restored,
 );
 
@@ -57,13 +57,13 @@ assert(usefulBlocks.every((item) => item.text !== "O" && item.text !== "○"), "
 const virtualLines = buildVirtualOcrLines([
   block("AddthemissingPATH", 0.96, 10, 10, 132, 14),
   block("fallbackbeside", 0.95, 150, 11, 100, 14),
-  block("PaddleOCR-json.exepathsetting", 0.94, 260, 10, 220, 14),
+  block("LocalModel.exepathsetting", 0.94, 260, 10, 220, 14),
   block("download", 0.96, 12, 42, 72, 14),
   block("runtime", 0.96, 90, 43, 64, 14),
 ]);
 assert(virtualLines.length === 2, "expected 2 virtual OCR lines, got " + virtualLines.length);
 assert(
-  virtualLines[0].text === "Add the missing PATH fallback beside PaddleOCR-json.exe path setting",
+  virtualLines[0].text === "Add the missing PATH fallback beside Local Model.exe path setting",
   "first virtual line text mismatch: " + virtualLines[0].text,
 );
 assert(virtualLines[1].text === "download runtime", "second virtual line text mismatch: " + virtualLines[1].text);
@@ -73,7 +73,7 @@ const normalization = await buildOcrNormalizationReport([
   block("O", 0.7, 0, 0, 10, 12),
   block("AddthemissingPATH", 0.96, 10, 10, 132, 14),
   block("fallbackbeside", 0.95, 150, 11, 100, 14),
-  block("PaddleOCR-json.exepathsetting", 0.94, 260, 10, 220, 14),
+  block("LocalModel.exepathsetting", 0.94, 260, 10, 220, 14),
   block("download", 0.96, 12, 42, 72, 14),
   block("runtime", 0.96, 90, 43, 64, 14),
 ]);
@@ -82,7 +82,7 @@ assert(normalization.usefulCount === 5, "normalization useful count mismatch");
 assert(normalization.droppedCount === 1, "normalization dropped count mismatch");
 assert(normalization.virtualLineCount === 2, "normalization virtual line count mismatch");
 assert(
-  normalization.text === "Add the missing PATH fallback beside PaddleOCR-json.exe path setting\ndownload runtime",
+  normalization.text === "Add the missing PATH fallback beside Local Model.exe path setting\ndownload runtime",
   "normalization text should be newline-joined virtual lines: " + normalization.text,
 );
 
@@ -92,7 +92,7 @@ assert(zhPolicy.targetLanguage === "zh-CN", "translation target language mismatc
 assert(zhPolicy.preserveLineCount, "translation policy must preserve line count");
 assert(zhPolicy.preserveOrder, "translation policy must preserve order");
 assert(zhPolicy.translateShortUiText, "translation policy must translate short UI text");
-for (const term of ["PATH", "Windows", "PaddleOCR-json.exe", "RapidOCR", "ONNX", "Ctrl+D"]) {
+for (const term of ["PATH", "Windows", "LocalModel.exe", "LocalModel", "ONNX", "Ctrl+D"]) {
   assert(zhPolicy.protectedTerms.includes(term), "translation policy missing protected term: " + term);
 }
 

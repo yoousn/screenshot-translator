@@ -1,8 +1,4 @@
 ﻿export const protectedTechnicalTerms = [
-  "PaddleOCR-json",
-  "PaddleOCR-json.exe",
-  "PaddleOCR",
-  "RapidOCR",
   "Windows",
   "PATH",
   "OCR",

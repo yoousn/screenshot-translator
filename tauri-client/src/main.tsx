@@ -6,6 +6,7 @@ import ScreenshotPage from "./pages/ScreenshotPage";
 import PinPage from "./pages/PinPage";
 import OcrPage from "./pages/OcrPage";
 import RecordingControlPage from "./pages/RecordingControlPage";
+import { I18nProvider } from "./i18n";
 import "./index.css";
 
 const label = getCurrentWindow().label;
@@ -19,12 +20,14 @@ if (label === "screenshot" || label === "recording_control") {
 }
 
 let Component: React.ComponentType;
+let needsI18nProvider = false;
 if (label === "screenshot") {
   Component = ScreenshotPage;
 } else if (label.startsWith("pin_")) {
   Component = PinPage;
 } else if (label.startsWith("ocr_")) {
   Component = OcrPage;
+  needsI18nProvider = true;
 } else if (label === "recording_control") {
   Component = RecordingControlPage;
 } else {
@@ -33,6 +36,12 @@ if (label === "screenshot") {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Component />
+    {needsI18nProvider ? (
+      <I18nProvider>
+        <Component />
+      </I18nProvider>
+    ) : (
+      <Component />
+    )}
   </React.StrictMode>,
 );

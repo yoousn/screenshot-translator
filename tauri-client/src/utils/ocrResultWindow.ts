@@ -60,6 +60,8 @@ const getOcrWindowPosition = async (
 export const openOcrResultWindow = async ({ selection, text, previewBase64, margin, gap, windowSize, title, normalizationSummary }: OcrResultWindowOptions) => {
   const label = `ocr_${Date.now()}`;
   const payload = JSON.stringify({ text, previewBase64, title, normalizationSummary });
+  const payloadKey = `ysn-ocr-result-${label}`;
+  window.localStorage.setItem(payloadKey, payload);
   const position = await getOcrWindowPosition(selection, margin, gap, windowSize);
   let isPayloadDelivered = false;
   let resolvePayload: () => void = () => {};
@@ -102,6 +104,7 @@ export const openOcrResultWindow = async ({ selection, text, previewBase64, marg
       setTimeout(sendPayload, 500);
     });
     win.once("tauri://destroyed", () => {
+      window.localStorage.removeItem(payloadKey);
       if (!isPayloadDelivered) {
         isPayloadDelivered = true;
         resolvePayload();

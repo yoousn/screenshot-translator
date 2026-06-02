@@ -25,7 +25,6 @@ interface Config {
   clientToken?: string;
   useLocalOcr?: boolean;
   fallbackToRemoteOcr?: boolean;
-  localOcrExecutablePath?: string;
   localOcrTimeoutMs?: number;
   targetLang?: string;
   channel?: string;
@@ -1336,13 +1335,29 @@ export default function ScreenshotPage() {
   };
 
   
+
+  const normalizeScreenshotTranslateError = (error: any) => {
+    const raw = error?.message || error?.toString?.() || String(error || "");
+    if (/\u672a\u8bc6\u522b\u5230\u6587\u5b57|did not recognize text|recognized no text|no text/i.test(raw)) {
+      return "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
+    }
+    return raw
+      .replace(/YSN OCR Runtime/gi, "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1")
+      .replace(/PP-OCRv5\s*ONNX\s*OCR/gi, "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1")
+      .replace(/PP-OCRv5/gi, "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1")
+      .replace(/ONNX/gi, "\u672c\u5730\u6a21\u578b")
+      .trim() || "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u6846\u9009\u6587\u5b57\u533a\u57df\u540e\u518d\u8bd5\u3002";
+  };
+
+
   const handleTranslate = async () => {
     if (isTranslatingRef.current || isOCRingRef.current) return;
     const startTime = performance.now();
+    let base64 = "";
     try {
       setIsTranslating(true);
-      message.loading({ content: "正在请求翻译重绘...", key: "translate", duration: 0 });
-      const base64 = await captureRegionBase64();
+      message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u5e76\u7ffb\u8bd1...", key: "translate", duration: 0 });
+      base64 = await captureRegionBase64();
 
       let resultBase64 = "";
       let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
@@ -1355,7 +1370,7 @@ export default function ScreenshotPage() {
         setTranslatePairs(result.pairs);
         setTranslateResultPreviewBase64(resultBase64);
       } catch (localErr: any) {
-        console.warn("[Local OCR Flow] 本地 OCR 或文本翻译失败", localErr);
+        console.warn("[Local Translate Flow] failed", localErr);
         throw localErr;
       }
 
@@ -1363,7 +1378,7 @@ export default function ScreenshotPage() {
       translatedImgRef.current = overlayImg;
       draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
       setTranslatedResult(resultBase64);
-      message.success({ content: "翻译完成", key: "translate" });
+      message.success({ content: "\u7ffb\u8bd1\u5b8c\u6210", key: "translate" });
 
       try {
         const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
@@ -1383,8 +1398,20 @@ export default function ScreenshotPage() {
       renderNeededRef.current = true;
       setIsTranslating(false);
     } catch (e: any) {
-      message.error({ content: `翻译失败：${e.message || e}`, key: "translate" });
+      const msg = normalizeScreenshotTranslateError(e);
+      message.error({ content: `\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "translate", duration: 4 });
       setIsTranslating(false);
+      if (base64) {
+        await openOcrResultWindow({
+          selection: rectRef.current,
+          text: `\u7ffb\u8bd1\u6682\u4e0d\u53ef\u7528\u3002\n\n${msg}\n\n\u5f53\u524d\u5df2\u4f7f\u7528\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6a21\u578b\u8bc6\u522b\uff1b\u5982\u679c\u9884\u89c8\u662f\u767d\u56fe\uff0c\u8bf7\u91cd\u65b0\u6846\u9009\u771f\u5b9e\u6587\u5b57\u533a\u57df\u3002`,
+          previewBase64: base64,
+          margin: FLOATING_PANEL_MARGIN,
+          gap: FLOATING_PANEL_GAP,
+          windowSize: OCR_WINDOW_SIZE,
+          title: "\u7ffb\u8bd1\u72b6\u6001",
+        });
+      }
     }
   };
 
@@ -1407,18 +1434,19 @@ export default function ScreenshotPage() {
 
   const handleOCR = async () => {
     if (isOCRingRef.current || isTranslatingRef.current) return;
+    let base64 = "";
     try {
       setIsOCRing(true);
-      message.loading({ content: "正在使用本地 OCR 识别文字...", key: "ocr", duration: 0 });
+      message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u6587\u5b57...", key: "ocr", duration: 0 });
 
-      const base64 = await captureRegionBase64();
+      base64 = await captureRegionBase64();
       const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
         imageBase64: base64,
-        executablePath: configRef.current.localOcrExecutablePath || null,
+        executablePath: null,
         timeoutMs: configRef.current.localOcrTimeoutMs || 15000
       });
       const normalization = await buildOcrNormalizationReport(ocrBlocks || []);
-      const texts = normalization.text;
+      const texts = normalization.text || "\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\n\n\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
 
       message.destroy();
       setIsOCRing(false);
@@ -1447,12 +1475,24 @@ export default function ScreenshotPage() {
       resetScreenshotState();
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
     } catch (e: any) {
-      const msg = e?.message || e?.toString?.() || String(e);
-      message.error({ content: `本地 OCR 失败：${msg}`, key: "ocr", duration: 3 });
+      const msg = normalizeScreenshotTranslateError(e);
+      message.error({ content: `\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "ocr", duration: 3 });
       setIsOCRing(false);
+      if (base64) {
+        await openOcrResultWindow({
+          selection: rectRef.current,
+          text: `\u8bc6\u522b\u6682\u4e0d\u53ef\u7528\u3002\n\n${msg}\n\n\u5f53\u524d\u5df2\u7ecf\u68c0\u67e5\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6a21\u578b\u3002`,
+          previewBase64: base64,
+          margin: FLOATING_PANEL_MARGIN,
+          gap: FLOATING_PANEL_GAP,
+          windowSize: OCR_WINDOW_SIZE,
+          title: "\u8bc6\u522b\u72b6\u6001",
+        });
+        resetScreenshotState();
+        await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
+      }
     }
   };
-
   const isLikelySystemAudioDevice = (device: string) => /wasapi:|stereo mix|立体声|混音|loopback|virtual audio|output|speaker|扬声器/i.test(device);
   const isLikelyMicrophoneDevice = (device: string) => !isLikelySystemAudioDevice(device);
 
@@ -1920,3 +1960,4 @@ export default function ScreenshotPage() {
     </div>
   );
 }
+

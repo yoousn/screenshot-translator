@@ -5,12 +5,10 @@ import { useI18n } from "../../i18n";
 import ConfigRecoveryChecklist from "./ConfigRecoveryChecklist";
 import type { RecordingInfo } from "./types";
 import type { YsnOcrRuntimeStatus } from "../../ocr-models";
-import type { StatusResult } from "../../utils/ocrConfigHelpers";
 
 const { Text } = Typography;
 
 type ConfigReadinessOverviewProps = {
-  compatibilityStatus: StatusResult | null;
   runtimeStatus: YsnOcrRuntimeStatus | null;
   recordingInfo: RecordingInfo | null;
   targetLang: string;
@@ -43,7 +41,7 @@ function ReadinessTile({ item }: { item: ReadinessItem }) {
   );
 }
 
-export default function ConfigReadinessOverview({ compatibilityStatus, runtimeStatus, recordingInfo, targetLang }: ConfigReadinessOverviewProps) {
+export default function ConfigReadinessOverview({ runtimeStatus, recordingInfo, targetLang }: ConfigReadinessOverviewProps) {
   const { text } = useI18n();
   const labels = text.config;
   const modelPackActionLabel = runtimeStatus?.sourceReadiness && !runtimeStatus.sourceReadiness.ready ? labels.overviewModelSourcesAction : labels.overviewModelPacksAction;
@@ -109,7 +107,6 @@ export default function ConfigReadinessOverview({ compatibilityStatus, runtimeSt
             </Col>
           ))}
         </Row>
-        {compatibilityStatus?.runtimeManifest?.name && <Text type="secondary" style={{ fontSize: 12 }}>{labels.overviewCompatibilityFallback}: {compatibilityStatus.runtimeManifest.name}</Text>}
         <ConfigRecoveryChecklist runtimeStatus={runtimeStatus} recordingInfo={recordingInfo} />
       </Space>
     </Card>

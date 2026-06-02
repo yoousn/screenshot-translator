@@ -154,8 +154,8 @@ pub fn default_model_index(model_set_version: &str) -> Value {
             {
                 "id": "auto-multilingual-balanced",
                 "name": {
-                    "zh-CN": "Auto Multilingual OCR Pack",
-                    "en-US": "Auto Multilingual OCR Pack"
+                    "zh-CN": "PP-OCRv5 基础模型包",
+                    "en-US": "PP-OCRv5 Base OCR Pack"
                 },
                 "profile": "balanced",
                 "required": true,
@@ -167,8 +167,8 @@ pub fn default_model_index(model_set_version: &str) -> Value {
             {
                 "id": "accurate-extension",
                 "name": {
-                    "zh-CN": "Accurate OCR Extension Pack",
-                    "en-US": "Accurate OCR Extension Pack"
+                    "zh-CN": "高精度扩展包（待开放）",
+                    "en-US": "Accurate Extension Pack (coming soon)"
                 },
                 "profile": "accurate",
                 "required": false,

@@ -1,0 +1,128 @@
+[
+    {
+        "kind":  "model",
+        "id":  "det-default",
+        "relativePath":  "models/det-default.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/detection/v5/det.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  88030804,
+        "sha256":  "61824840edf6e74581898930b8091b1b2318f4b2705a2e8a40ad3de7ac480133"
+    },
+    {
+        "kind":  "model",
+        "id":  "cls-default",
+        "relativePath":  "models/cls-default.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/preprocessing/textline-orientation/PP-LCNet_x1_0_textline_ori.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  6774157,
+        "sha256":  "34ec07c0bcd591da2ae6651924a1d8fb85f7ca60ac9a58ac417ecf12a5fc1e1a"
+    },
+    {
+        "kind":  "model",
+        "id":  "rec-cjk",
+        "relativePath":  "models/rec-cjk.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/chinese/rec.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  84468836,
+        "sha256":  "26fa4f47060f58e25962b9af6beaee05c8182b90e026c4ecc6db165d9dfdc38a"
+    },
+    {
+        "kind":  "model",
+        "id":  "rec-latin",
+        "relativePath":  "models/rec-latin.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/latin/rec.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  7862832,
+        "sha256":  "614ffc2d6d3902d360fad7f1b0dd455ee45e877069d14c4e51a99dc4ef144409"
+    },
+    {
+        "kind":  "model",
+        "id":  "rec-korean",
+        "relativePath":  "models/rec-korean.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/korean/rec.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  13401252,
+        "sha256":  "322f140154c820fcb83c3d24cfe42c9ec70dd1a1834163306a7338136e4f1eaa"
+    },
+    {
+        "kind":  "model",
+        "id":  "rec-cyrillic",
+        "relativePath":  "models/rec-cyrillic.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/eslav/rec.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  7870092,
+        "sha256":  "dc6bf0e855247decce214ba6dae5bc135fa0ad725a5918a7fcfb59fad6c9cdee"
+    },
+    {
+        "kind":  "model",
+        "id":  "rec-arabic",
+        "relativePath":  "models/rec-arabic.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/arabic/rec.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  8978664,
+        "sha256":  "7982d371612785238fd99080cff36354deaec84fdc6ff7da9c82af4243fa0c9a"
+    },
+    {
+        "kind":  "model",
+        "id":  "rec-thai",
+        "relativePath":  "models/rec-thai.onnx",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/thai/rec.onnx",
+        "license":  "Apache-2.0-reviewed",
+        "size":  7873480,
+        "sha256":  "2b6e56b1872200349e227574c25aeb0e0f9af9b8356e9ff5f75ac543a535669a"
+    },
+    {
+        "kind":  "dictionary",
+        "id":  "rec-cjk",
+        "relativePath":  "dictionaries/cjk.txt",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/chinese/dict.txt",
+        "license":  "Apache-2.0-reviewed",
+        "size":  74012,
+        "sha256":  "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b"
+    },
+    {
+        "kind":  "dictionary",
+        "id":  "rec-latin",
+        "relativePath":  "dictionaries/latin.txt",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/latin/dict.txt",
+        "license":  "Apache-2.0-reviewed",
+        "size":  1634,
+        "sha256":  "3c0a8a79b612653c25f765271714f71281e4e955962c153e272b7b8c1d2b13ff"
+    },
+    {
+        "kind":  "dictionary",
+        "id":  "rec-korean",
+        "relativePath":  "dictionaries/korean.txt",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/korean/dict.txt",
+        "license":  "Apache-2.0-reviewed",
+        "size":  47451,
+        "sha256":  "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7"
+    },
+    {
+        "kind":  "dictionary",
+        "id":  "rec-cyrillic",
+        "relativePath":  "dictionaries/cyrillic.txt",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/eslav/dict.txt",
+        "license":  "Apache-2.0-reviewed",
+        "size":  1663,
+        "sha256":  "3e95f1581557162870cacdba5af91a4c6be2890710d395b0c3c7578e7ee5e6eb"
+    },
+    {
+        "kind":  "dictionary",
+        "id":  "rec-arabic",
+        "relativePath":  "dictionaries/arabic.txt",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/arabic/dict.txt",
+        "license":  "Apache-2.0-reviewed",
+        "size":  405,
+        "sha256":  "637c27c88512c22089bef927b34ada08f748dc132ac70facd68d8202384c2726"
+    },
+    {
+        "kind":  "dictionary",
+        "id":  "rec-thai",
+        "relativePath":  "dictionaries/thai.txt",
+        "url":  "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/thai/dict.txt",
+        "license":  "Apache-2.0-reviewed",
+        "size":  1767,
+        "sha256":  "57f5406f94bb6688fb7077f7be65f08bbd71cecf48c01ea26c522cb5c4836b7a"
+    }
+]

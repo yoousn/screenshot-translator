@@ -2,7 +2,7 @@
 import { Button, List, Space, Tag, Tooltip, Typography } from "antd";
 import { CheckCircleOutlined, CloudDownloadOutlined, ExperimentOutlined, ToolOutlined } from "@ant-design/icons";
 import { getPackStatusColor, summarizeOcrModelHealth } from "../../ocr-models";
-import type { OcrModelManifest, OcrModelSourceReadiness } from "../../ocr-models";
+import type { OcrModelManifest, OcrModelPack, OcrModelSourceReadiness } from "../../ocr-models";
 import { useI18n } from "../../i18n";
 
 const { Text } = Typography;
@@ -18,6 +18,7 @@ interface ModelPackStatusListProps {
 }
 
 const isBrokenStatus = (status: string) => status.includes("failed") || status === "broken";
+const visibleProductPacks = (packs: OcrModelPack[]) => packs.filter((pack) => pack.required || pack.modelIds.length > 0);
 
 export default function ModelPackStatusList({
   manifest,
@@ -30,11 +31,12 @@ export default function ModelPackStatusList({
 }: ModelPackStatusListProps) {
   const { text } = useI18n();
   const labels = text.config;
-  const health = summarizeOcrModelHealth(manifest);
+  const productPacks = visibleProductPacks(manifest.packs);
+  const health = summarizeOcrModelHealth({ ...manifest, packs: productPacks });
   const pendingSourceModelIds = new Set(sourceReadiness?.pendingModelIds || []);
 
   const hasPendingSources = (packId: string) => {
-    const pack = manifest.packs.find((item) => item.id === packId);
+    const pack = productPacks.find((item) => item.id === packId);
     return Boolean(pack?.modelIds.some((modelId) => pendingSourceModelIds.has(modelId)));
   };
 
@@ -66,12 +68,12 @@ export default function ModelPackStatusList({
       </Space>
       <List
         size="small"
-        dataSource={manifest.packs}
+        dataSource={productPacks}
         renderItem={(pack) => (
           <List.Item actions={[renderAction(pack.id, pack.status)]}>
             <List.Item.Meta
               title={<Space wrap><Text strong>{pack.name["zh-CN"]}</Text><Tag color={getPackStatusColor(pack.status)}>{pack.status}</Tag>{pack.required && <Tag color="red">{labels.required}</Tag>}{hasPendingSources(pack.id) && <Tag color="orange">{labels.trustedSourcesPending}</Tag>}</Space>}
-              description={`${pack.name["en-US"]} · ${pack.profile} · ${pack.languages.join(", ")}`}
+              description={`${labels.ppocrv5BasePackDesc} · ${pack.languages.length} ${labels.supportedLanguagesCount}`}
             />
           </List.Item>
         )}

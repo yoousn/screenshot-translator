@@ -1,17 +1,66 @@
 use serde_json::{json, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub(crate) const RUNTIME_VERSION: &str = "0.1.0-planned";
 pub(crate) const MODEL_SET_VERSION: &str = "2026.06.ocr.v1";
 
 pub(crate) fn model_root(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    Ok(base.join("models").join("ocr"))
+    if let Ok(root) = std::env::var("YSN_OCR_MODEL_ROOT") {
+        let trimmed = root.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    for base in local_model_base_candidates(app) {
+        if looks_like_project_root(&base) || base.join("models").join("ocr").exists() {
+            return Ok(base.join("models").join("ocr"));
+        }
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+        .ok_or_else(|| "failed to resolve executable directory for OCR models".to_string())?;
+    Ok(exe_dir.join("models").join("ocr"))
+}
+
+fn local_model_base_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(project_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .map(|path| path.to_path_buf())
+    {
+        push_ancestors(&mut candidates, &project_root);
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_ancestors(&mut candidates, &current_dir);
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            push_ancestors(&mut candidates, exe_dir);
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_ancestors(&mut candidates, &resource_dir);
+    }
+    candidates
+}
+
+fn push_ancestors(candidates: &mut Vec<PathBuf>, start: &Path) {
+    for ancestor in start.ancestors() {
+        let path = ancestor.to_path_buf();
+        if !candidates.iter().any(|item| item == &path) {
+            candidates.push(path);
+        }
+    }
+}
+
+fn looks_like_project_root(path: &Path) -> bool {
+    path.join("AGENTS.md").is_file() && path.join("tauri-client").is_dir()
 }
 
 fn default_model_index() -> Value {
@@ -749,15 +798,152 @@ pub fn run_ysn_ocr_model_inference_probe(
         model, width, height,
     )?;
     let tensor = crate::ysn_ocr_preprocess::image_bytes_to_nchw_rgb_tensor(&image_bytes, &config)?;
-    let probe = crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_probe(&model_path, &tensor)?;
+    let active_root = crate::ysn_ocr_model_downloader::active_dir(&app)?;
+    let probe = match crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_probe(&model_path, &tensor)
+    {
+        Ok(probe) => probe,
+        Err(error) => {
+            return Ok(json!({
+                "ok": false,
+                "runtimeInferenceReady": false,
+                "inferenceExecuted": false,
+                "modelId": model_id,
+                "imagePath": image_path.to_string_lossy().to_string(),
+                "modelPath": model_path.to_string_lossy().to_string(),
+                "preprocess": tensor,
+                "blockers": [error],
+                "nextAction": "repair-model-input-or-active-onnx-artifact",
+                "status": "real-inference-probe-blocked"
+            }));
+        }
+    };
+    let pipeline_plan = crate::ysn_ocr_pipeline::build_decode_pipeline_plan(model, &probe.outputs);
+    let dictionary_readiness = build_probe_dictionary_readiness(&active_root, model);
+    let ctc_bridge_plan = build_probe_ctc_bridge_plan(model, &probe.outputs, &dictionary_readiness);
+    let blockers =
+        collect_inference_probe_blockers(&pipeline_plan, &dictionary_readiness, &ctc_bridge_plan);
+    let decode_pipeline_ready = blockers.is_empty();
     Ok(json!({
-        "ok": probe.ok,
+        "ok": probe.ok && decode_pipeline_ready,
+        "runtimeInferenceReady": false,
+        "inferenceExecuted": probe.ok,
+        "decodePipelineReady": decode_pipeline_ready,
         "modelId": model_id,
+        "modelType": model["type"].as_str().unwrap_or("unknown"),
         "imagePath": image_path.to_string_lossy().to_string(),
+        "modelPath": model_path.to_string_lossy().to_string(),
         "preprocess": tensor,
         "probe": probe,
-        "status": "inference-scaffold-executed; OCR detection/recognition postprocessing is not implemented yet"
+        "pipelinePlan": pipeline_plan,
+        "dictionaryReadiness": dictionary_readiness,
+        "ctcBridgePlan": ctc_bridge_plan,
+        "postprocessReadiness": {
+            "ok": decode_pipeline_ready,
+            "runtimeInferenceReady": false,
+            "blockers": blockers,
+            "message": "Real ONNX inference executed and outputs were matched to decode/postprocess contracts. Full OCR self-test remains disabled until detector/recognizer chaining and fallback pass."
+        },
+        "nextAction": if decode_pipeline_ready { "wire-end-to-end-ocr-self-test" } else { "repair-decode-postprocess-contract" },
+        "status": if decode_pipeline_ready { "real-inference-probe-executed" } else { "real-inference-probe-executed-with-decode-blockers" }
     }))
+}
+
+fn build_probe_dictionary_readiness(active_root: &std::path::Path, model: &Value) -> Value {
+    if model["contract"]["decoder"]["type"].as_str() != Some("ctc-text-recognizer") {
+        return json!({
+            "required": false,
+            "ok": true,
+            "dictionary": null,
+            "blockers": []
+        });
+    }
+    match crate::ysn_ocr_dictionary::load_dictionary_from_contract(active_root, &model["contract"])
+    {
+        Ok(dictionary) => json!({
+            "required": true,
+            "ok": true,
+            "dictionary": dictionary,
+            "blockers": []
+        }),
+        Err(error) => json!({
+            "required": true,
+            "ok": false,
+            "dictionary": null,
+            "blockers": [error]
+        }),
+    }
+}
+
+fn build_probe_ctc_bridge_plan(
+    model: &Value,
+    outputs: &[crate::ysn_ocr_runtime_adapter::OnnxOutputProbe],
+    dictionary_readiness: &Value,
+) -> Value {
+    if model["contract"]["decoder"]["type"].as_str() != Some("ctc-text-recognizer") {
+        return json!({
+            "required": false,
+            "ok": true,
+            "blockers": []
+        });
+    }
+    if dictionary_readiness["ok"].as_bool() != Some(true) {
+        return json!({
+            "required": true,
+            "ok": false,
+            "blockers": ["CTC bridge requires an active verified dictionary."],
+        });
+    }
+    let Some(output) = outputs
+        .iter()
+        .find(|output| output.shape.len() == 3 && output.f32_tensor.is_some())
+    else {
+        return json!({
+            "required": true,
+            "ok": false,
+            "blockers": ["CTC bridge requires a Float32 logits output with rank 3 [batch,time,class]."],
+        });
+    };
+    let blank_token_id = dictionary_readiness["dictionary"]["blank_token_id"]
+        .as_u64()
+        .unwrap_or(0) as usize;
+    let dictionary_size = dictionary_readiness["dictionary"]["token_count"]
+        .as_u64()
+        .unwrap_or(0) as usize;
+    let placeholder_dictionary = vec![String::new(); dictionary_size];
+    let plan = crate::ysn_ocr_decode::build_ctc_logits_bridge_plan(
+        output,
+        &placeholder_dictionary,
+        blank_token_id,
+    );
+    json!({
+        "required": true,
+        "plan": plan,
+        "ok": plan.ok,
+        "blockers": plan.blockers,
+    })
+}
+
+fn collect_inference_probe_blockers(
+    pipeline_plan: &crate::ysn_ocr_pipeline::OcrDecodePipelinePlan,
+    dictionary_readiness: &Value,
+    ctc_bridge_plan: &Value,
+) -> Vec<String> {
+    let mut blockers = pipeline_plan.blockers.clone();
+    if let Some(items) = dictionary_readiness["blockers"].as_array() {
+        blockers.extend(
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string)),
+        );
+    }
+    if let Some(items) = ctc_bridge_plan["blockers"].as_array() {
+        blockers.extend(
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string)),
+        );
+    }
+    blockers
 }
 
 #[tauri::command]
@@ -787,6 +973,26 @@ pub fn get_ysn_ocr_model_index() -> Result<Value, String> {
     })
 }
 
+fn collect_required_broken_pack_ids(packs: &[Value]) -> Vec<String> {
+    packs
+        .iter()
+        .filter(|pack| pack["required"].as_bool().unwrap_or(false))
+        .filter(|pack| {
+            matches!(
+                pack["status"].as_str(),
+                Some(
+                    "download-failed"
+                        | "verify-failed"
+                        | "install-failed"
+                        | "self-test-failed"
+                        | "broken"
+                )
+            )
+        })
+        .filter_map(|pack| pack["id"].as_str().map(|id| id.to_string()))
+        .collect()
+}
+
 fn build_readiness_steps(
     source_readiness: &Value,
     manifest_issues: &[Value],
@@ -797,13 +1003,14 @@ fn build_readiness_steps(
     runtime_inference_ready: bool,
     manifest: &Value,
 ) -> Value {
-    let source_ready = source_readiness["ready"].as_bool().unwrap_or(false);
+    let configured_source_ready = source_readiness["ready"].as_bool().unwrap_or(false);
     let manifest_ready = manifest_issues
         .iter()
         .all(|issue| issue["severity"].as_str() != Some("error"));
     let model_packs_installed =
         required_count > 0 && installed_required == required_count && broken.is_empty();
     let active_models_ready = model_packs_installed && active_model_issues.is_empty();
+    let source_ready = configured_source_ready || active_models_ready;
     let self_test_ready = manifest["lastSelfTestAt"].as_str().is_some()
         && active_models_ready
         && runtime_inference_ready;
@@ -814,7 +1021,7 @@ fn build_readiness_steps(
             "ready": source_ready,
             "severity": if source_ready { "success" } else { "warning" },
             "label": "Trusted model sources",
-            "description": if source_ready { "Production managed model sources are configured." } else { "Managed model source metadata is incomplete." },
+            "description": if source_ready { if active_models_ready { "Local project model pack is installed and verified." } else { "Production managed model sources are configured." } } else { "Managed model source metadata is incomplete." },
             "nextAction": if source_ready { "install-or-update-model-packs" } else { source_readiness["nextAction"].as_str().unwrap_or("configure-managed-model-sources") }
         },
         {
@@ -878,22 +1085,7 @@ pub fn get_ysn_ocr_status(app: AppHandle) -> Result<Value, String> {
                 && pack["status"].as_str() == Some("installed")
         })
         .count();
-    let broken: Vec<String> = packs
-        .iter()
-        .filter(|pack| {
-            matches!(
-                pack["status"].as_str(),
-                Some(
-                    "download-failed"
-                        | "verify-failed"
-                        | "install-failed"
-                        | "self-test-failed"
-                        | "broken"
-                )
-            )
-        })
-        .filter_map(|pack| pack["id"].as_str().map(|id| id.to_string()))
-        .collect();
+    let broken = collect_required_broken_pack_ids(&packs);
     let active_model_health = crate::ysn_ocr_model_downloader::active_model_health(&app, &manifest);
     let active_model_issues: Vec<Value> = active_model_health
         .iter()
@@ -916,7 +1108,7 @@ pub fn get_ysn_ocr_status(app: AppHandle) -> Result<Value, String> {
         runtime_inference_ready,
         &manifest,
     );
-    let source_ready = source_readiness["ready"].as_bool().unwrap_or(false);
+    let configured_source_ready = source_readiness["ready"].as_bool().unwrap_or(false);
     let manifest_ready = manifest_issues
         .iter()
         .all(|issue| issue["severity"].as_str() != Some("error"));
@@ -924,6 +1116,7 @@ pub fn get_ysn_ocr_status(app: AppHandle) -> Result<Value, String> {
         && installed_required == required_count
         && broken.is_empty()
         && active_model_issues.is_empty();
+    let source_ready = configured_source_ready || active_models_ready;
     let self_test_ready = manifest["lastSelfTestAt"].as_str().is_some()
         && active_models_ready
         && runtime_inference_ready;
@@ -1013,6 +1206,31 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_optional_failed_pack_does_not_block_required_pack_health() {
+        let packs = vec![
+            json!({ "id": "base", "required": true, "status": "installed" }),
+            json!({ "id": "optional", "required": false, "status": "download-failed" }),
+        ];
+        assert!(super::collect_required_broken_pack_ids(&packs).is_empty());
+    }
+
+    fn f32_output(name: &str, shape: Vec<i64>) -> crate::ysn_ocr_runtime_adapter::OnnxOutputProbe {
+        crate::ysn_ocr_runtime_adapter::OnnxOutputProbe {
+            name: name.to_string(),
+            element_type: Some("Float32".to_string()),
+            shape: shape.clone(),
+            f32_tensor: Some(crate::ysn_ocr_runtime_adapter::OnnxF32TensorSummary {
+                shape: shape.iter().map(|dimension| *dimension as usize).collect(),
+                element_count: 1,
+                sample: vec![0.5],
+                min: 0.5,
+                max: 0.5,
+                mean: 0.5,
+            }),
+        }
+    }
+
+    #[test]
     fn test_readiness_steps_do_not_mark_missing_sources_ready() {
         let source_readiness =
             json!({ "ready": false, "nextAction": "configure-managed-model-sources" });
@@ -1074,5 +1292,81 @@ mod tests {
         assert_eq!(active["ready"].as_bool(), Some(true));
         assert_eq!(runtime["ready"].as_bool(), Some(false));
         assert_eq!(self_test["ready"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_probe_ctc_bridge_plan_reports_missing_dictionary() {
+        let model = json!({
+            "id": "rec-latin",
+            "type": "recognition",
+            "contract": { "decoder": { "type": "ctc-text-recognizer" } }
+        });
+        let dictionary_readiness = json!({
+            "required": true,
+            "ok": false,
+            "dictionary": null,
+            "blockers": ["dictionary missing"]
+        });
+        let plan = super::build_probe_ctc_bridge_plan(
+            &model,
+            &[f32_output("softmax_2.tmp_0", vec![1, 8, 4])],
+            &dictionary_readiness,
+        );
+
+        assert_eq!(plan["required"].as_bool(), Some(true));
+        assert_eq!(plan["ok"].as_bool(), Some(false));
+        assert!(plan["blockers"][0].as_str().unwrap().contains("dictionary"));
+    }
+
+    #[test]
+    fn test_probe_ctc_bridge_plan_accepts_real_inference_summary_shape() {
+        let model = json!({
+            "id": "rec-latin",
+            "type": "recognition",
+            "contract": { "decoder": { "type": "ctc-text-recognizer" } }
+        });
+        let dictionary_readiness = json!({
+            "required": true,
+            "ok": true,
+            "dictionary": {
+                "blank_token_id": 0,
+                "token_count": 8
+            },
+            "blockers": []
+        });
+        let plan = super::build_probe_ctc_bridge_plan(
+            &model,
+            &[f32_output("softmax_2.tmp_0", vec![1, 8, 8])],
+            &dictionary_readiness,
+        );
+
+        assert_eq!(plan["required"].as_bool(), Some(true));
+        assert_eq!(plan["ok"].as_bool(), Some(true));
+        assert_eq!(plan["plan"]["time_steps"].as_u64(), Some(8));
+        assert_eq!(plan["plan"]["dictionary_size"].as_u64(), Some(8));
+    }
+
+    #[test]
+    fn test_collect_inference_probe_blockers_merges_pipeline_dictionary_and_bridge() {
+        let model = json!({
+            "id": "rec-latin",
+            "type": "recognition",
+            "contract": { "decoder": { "type": "ctc-text-recognizer" } }
+        });
+        let pipeline_plan = crate::ysn_ocr_pipeline::build_decode_pipeline_plan(&model, &[]);
+        let dictionary_readiness = json!({ "blockers": ["dictionary missing"] });
+        let ctc_bridge_plan = json!({ "blockers": ["bridge blocked"] });
+
+        let blockers = super::collect_inference_probe_blockers(
+            &pipeline_plan,
+            &dictionary_readiness,
+            &ctc_bridge_plan,
+        );
+
+        assert!(blockers.iter().any(|blocker| blocker.contains("CTC")));
+        assert!(blockers
+            .iter()
+            .any(|blocker| blocker == "dictionary missing"));
+        assert!(blockers.iter().any(|blocker| blocker == "bridge blocked"));
     }
 }

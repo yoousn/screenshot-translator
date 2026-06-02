@@ -26,6 +26,7 @@ function AppContent() {
 
   useEffect(() => {
     checkShortcutStatus();
+    invoke("prewarm_local_ocr_models").catch((error) => console.warn("Local OCR model prewarm failed", error));
   }, []);
 
   const checkShortcutStatus = async () => {

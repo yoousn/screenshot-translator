@@ -364,491 +364,6 @@ fn sanitize_tag(tag: &str) -> String {
     }
 }
 
-fn find_paddleocr_json_exe(dir: &std::path::Path) -> Option<PathBuf> {
-    if !dir.exists() {
-        return None;
-    }
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe"))
-                .unwrap_or(false)
-        {
-            return Some(path);
-        }
-        if path.is_dir() {
-            if let Some(found) = find_paddleocr_json_exe(&path) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-fn find_rapidocr_exe(dir: &std::path::Path) -> Option<PathBuf> {
-    if !dir.exists() {
-        return None;
-    }
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            let matches = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| {
-                    let lower = name.to_ascii_lowercase();
-                    lower == "rapidocr-json.exe"
-                        || lower == "rapidocr_onnx.exe"
-                        || lower == "rapidocr.exe"
-                        || lower == "rapidocr-cli.exe"
-                })
-                .unwrap_or(false);
-            if matches {
-                return Some(path);
-            }
-        }
-        if path.is_dir() {
-            if let Some(found) = find_rapidocr_exe(&path) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-fn portable_ocr_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    Some(dir.join("ocr"))
-}
-
-fn default_ocr_install_dir() -> PathBuf {
-    if let Some(dir) = portable_ocr_dir() {
-        return dir;
-    }
-    let mut dir = app_data_dir();
-    dir.push("ocr");
-    dir.push("runtime");
-    dir
-}
-fn ocr_runtime_manifest_path(exe_path: &std::path::Path) -> Option<PathBuf> {
-    exe_path.parent().map(|dir| dir.join("ocr-runtime.json"))
-}
-
-fn read_ocr_runtime_manifest(exe_path: &std::path::Path) -> Option<serde_json::Value> {
-    let manifest_path = ocr_runtime_manifest_path(exe_path)?;
-    let content = fs::read_to_string(manifest_path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-fn resolve_manifest_entry_from_dir(dir: &std::path::Path) -> Option<PathBuf> {
-    let manifest_path = dir.join("ocr-runtime.json");
-    let content = fs::read_to_string(manifest_path).ok()?;
-    let manifest = serde_json::from_str::<serde_json::Value>(&content).ok()?;
-    let entry = manifest
-        .get("entry")
-        .and_then(|value| value.as_str())?
-        .trim();
-    if entry.is_empty() {
-        return None;
-    }
-    let entry_path = dir.join(entry);
-    if entry_path.is_file() {
-        Some(entry_path)
-    } else {
-        None
-    }
-}
-
-fn resolve_ocr_executable_from_path(path: &std::path::Path) -> Option<PathBuf> {
-    if path.is_file() {
-        return Some(path.to_path_buf());
-    }
-    if path.is_dir() {
-        return resolve_manifest_entry_from_dir(path)
-            .or_else(|| find_rapidocr_exe(path))
-            .or_else(|| find_paddleocr_json_exe(path));
-    }
-    None
-}
-
-fn ocr_runtime_protocol(exe_path: &std::path::Path) -> String {
-    read_ocr_runtime_manifest(exe_path)
-        .and_then(|manifest| {
-            manifest
-                .get("protocol")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string())
-        })
-        .unwrap_or_else(|| {
-            let name = exe_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if name.contains("rapidocr") {
-                "cli-json-file".to_string()
-            } else {
-                "paddleocr-json-stdin".to_string()
-            }
-        })
-}
-
-fn write_paddleocr_runtime_manifest(
-    install_dir: &std::path::Path,
-    tag: &str,
-    exe_path: &std::path::Path,
-) -> Result<(), String> {
-    let entry = exe_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("PaddleOCR-json.exe");
-    let manifest = serde_json::json!({
-        "id": "paddleocr-json",
-        "name": "PaddleOCR-json",
-        "engine": "paddleocr-json",
-        "version": tag,
-        "entry": entry,
-        "protocol": "paddleocr-json-stdin",
-        "languages": ["zh", "en", "ja", "ko"],
-        "outputAdapter": "paddleocr-json"
-    });
-    let manifest_path = install_dir.join("ocr-runtime.json");
-    let content = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("Failed to build OCR runtime manifest: {}", e))?;
-    fs::write(&manifest_path, content)
-        .map_err(|e| format!("Failed to write OCR runtime manifest: {}", e))
-}
-
-fn resolve_local_ocr_executable(
-    app: &tauri::AppHandle,
-    executable_path: Option<String>,
-) -> Result<PathBuf, String> {
-    use tauri::path::BaseDirectory;
-
-    if let Some(path) = executable_path.filter(|path| !path.trim().is_empty()) {
-        let raw_path = PathBuf::from(path.trim());
-        return resolve_ocr_executable_from_path(&raw_path).ok_or_else(|| {
-            format!(
-                "No OCR runtime entry found at selected path: {}",
-                raw_path.to_string_lossy()
-            )
-        });
-    }
-
-    if let Some(portable_dir) = portable_ocr_dir() {
-        if let Some(path) = resolve_manifest_entry_from_dir(&portable_dir)
-            .or_else(|| find_rapidocr_exe(&portable_dir))
-            .or_else(|| find_paddleocr_json_exe(&portable_dir))
-        {
-            return Ok(path);
-        }
-    }
-
-    let install_dir = default_ocr_install_dir();
-    if let Some(path) = resolve_manifest_entry_from_dir(&install_dir)
-        .or_else(|| find_rapidocr_exe(&install_dir))
-        .or_else(|| find_paddleocr_json_exe(&install_dir))
-    {
-        return Ok(path);
-    }
-
-    let resource_path = app
-        .path()
-        .resolve("resources/ocr/PaddleOCR-json.exe", BaseDirectory::Resource)
-        .map_err(|e| format!("Resolve OCR resource path failed: {}", e))?;
-    if resource_path.is_file() {
-        return Ok(resource_path);
-    }
-
-    Err("OCR runtime not found. Put a RapidOCR ONNX runtime with ocr-runtime.json in the app ocr directory, or choose a runtime directory in settings.".to_string())
-}
-
-fn emit_ocr_progress(
-    app: &tauri::AppHandle,
-    phase: &str,
-    downloaded: u64,
-    total: Option<u64>,
-    percent: u8,
-) {
-    let _ = app.emit(
-        "ocr-download-progress",
-        serde_json::json!({
-            "phase": phase,
-            "downloaded": downloaded,
-            "total": total,
-            "percent": percent,
-        }),
-    );
-}
-
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| {
-        format!(
-            "\u{521b}\u{5efa}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })?;
-    for entry in fs::read_dir(src).map_err(|e| {
-        format!(
-            "\u{8bfb}\u{53d6}\u{76ee}\u{5f55}\u{5931}\u{8d25}\u{ff1a}{}",
-            e
-        )
-    })? {
-        let entry = entry.map_err(|e| {
-            format!(
-                "\u{8bfb}\u{53d6}\u{76ee}\u{5f55}\u{9879}\u{5931}\u{8d25}\u{ff1a}{}",
-                e
-            )
-        })?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path).map_err(|e| {
-                format!(
-                    "\u{590d}\u{5236}\u{6587}\u{4ef6}\u{5931}\u{8d25}\u{ff1a}{}",
-                    e
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn stop_ocr_process() {
-    let manager = get_ocr_manager();
-    if let Ok(mut guard) = manager.lock() {
-        if let Some(mut proc) = guard.process.take() {
-            let _ = proc.child.kill();
-        }
-    };
-}
-
-#[tauri::command]
-async fn download_paddleocr_release(
-    app: tauri::AppHandle,
-    url: String,
-    tag: String,
-    install_dir: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let lower_url = url.to_ascii_lowercase();
-    let allowed = [
-        "https://github.com/hiroi-sora/PaddleOCR-json/releases/download/",
-        "https://objects.githubusercontent.com/github-production-release-asset-",
-    ];
-    if !allowed.iter().any(|prefix| url.starts_with(prefix)) || !lower_url.ends_with(".7z") {
-        return Err("Please choose an official Windows .7z OCR runtime release".to_string());
-    }
-
-    stop_ocr_process();
-    emit_ocr_progress(&app, "Preparing", 0, None, 1);
-
-    let safe_tag = sanitize_tag(&tag);
-    let filename = format!("PaddleOCR-json-{}.7z", safe_tag);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .user_agent("ScreenshotTranslator/1.0")
-        .build()
-        .map_err(|e| format!("failed to create download client: {}", e))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("failed to download OCR runtime: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!(
-            "failed to download OCR runtime: HTTP {}",
-            resp.status()
-        ));
-    }
-
-    let total = resp.content_length();
-    let mut stream = resp.bytes_stream();
-    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
-    let mut downloaded: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("failed to read OCR runtime download: {}", e))?;
-        downloaded += chunk.len() as u64;
-        bytes.extend_from_slice(&chunk);
-        let percent = total
-            .map(|value| ((downloaded as f64 / value.max(1) as f64) * 70.0).round() as u8)
-            .unwrap_or(10)
-            .clamp(1, 70);
-        emit_ocr_progress(&app, "Downloading", downloaded, total, percent);
-    }
-
-    let mut download_dir = app_data_dir();
-    download_dir.push("ocr");
-    download_dir.push("downloads");
-    fs::create_dir_all(&download_dir)
-        .map_err(|e| format!("failed to create OCR download directory: {}", e))?;
-    let archive_path = download_dir.join(filename);
-    fs::write(&archive_path, &bytes).map_err(|e| format!("failed to save OCR archive: {}", e))?;
-
-    emit_ocr_progress(&app, "Extracting", downloaded, total, 75);
-    let install_dir = install_dir
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ensure_writable_dir(default_ocr_install_dir()));
-    if install_dir.exists() {
-        fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("failed to clean OCR install directory: {}", e))?;
-    }
-    fs::create_dir_all(&install_dir)
-        .map_err(|e| format!("failed to create OCR install directory: {}", e))?;
-    sevenz_rust::decompress_file(&archive_path, &install_dir)
-        .map_err(|e| format!("failed to extract OCR runtime: {}", e))?;
-    let _ = fs::remove_file(&archive_path);
-    emit_ocr_progress(&app, "Checking", downloaded, total, 95);
-
-    let exe_path = find_paddleocr_json_exe(&install_dir)
-        .ok_or_else(|| "PaddleOCR-json.exe was not found after extraction".to_string())?;
-    write_paddleocr_runtime_manifest(&install_dir, &tag, &exe_path)?;
-    emit_ocr_progress(&app, "Done", downloaded, total, 100);
-
-    Ok(serde_json::json!({
-        "path": exe_path.to_string_lossy().to_string(),
-        "installDir": install_dir.to_string_lossy().to_string(),
-        "bytes": bytes.len(),
-    }))
-}
-
-#[tauri::command]
-fn choose_ocr_install_dir() -> Result<Option<String>, String> {
-    Ok(rfd::FileDialog::new()
-        .set_title("\u{9009}\u{62e9} OCR \u{5b89}\u{88c5}\u{76ee}\u{5f55}")
-        .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
-}
-
-#[tauri::command]
-fn choose_ocr_runtime_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new().set_title("Choose OCR runtime directory");
-    if let Some(dir) = current_dir {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            if path.is_dir() {
-                dialog = dialog.set_directory(path);
-            } else if let Some(parent) = path.parent() {
-                dialog = dialog.set_directory(parent);
-            }
-        }
-    }
-    Ok(dialog
-        .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
-}
-
-#[tauri::command]
-fn choose_ysn_ocr_managed_source_index_file(
-    current_path: Option<String>,
-) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new()
-        .set_title("Choose YSN OCR managed source index")
-        .add_filter("JSON", &["json"]);
-    if let Some(path) = current_path {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            if path.is_file() {
-                if let Some(parent) = path.parent() {
-                    dialog = dialog.set_directory(parent);
-                }
-            } else if path.is_dir() {
-                dialog = dialog.set_directory(path);
-            }
-        }
-    }
-    Ok(dialog
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string()))
-}
-
-#[tauri::command]
-fn move_ocr_runtime(
-    target_dir: String,
-    executable_path: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let target_dir = PathBuf::from(target_dir);
-    if target_dir.as_os_str().is_empty() {
-        return Err("Please choose a target OCR directory".to_string());
-    }
-    stop_ocr_process();
-
-    let source_exe = executable_path
-        .filter(|path| !path.trim().is_empty())
-        .and_then(|path| resolve_ocr_executable_from_path(&PathBuf::from(path.trim())))
-        .or_else(|| portable_ocr_dir().and_then(|dir| resolve_ocr_executable_from_path(&dir)))
-        .or_else(|| resolve_ocr_executable_from_path(&default_ocr_install_dir()))
-        .ok_or_else(|| "No OCR runtime found. Choose or install a runtime first.".to_string())?;
-    let source_dir = source_exe
-        .parent()
-        .ok_or_else(|| "Failed to resolve OCR runtime directory".to_string())?
-        .to_path_buf();
-
-    let source_canon = fs::canonicalize(&source_dir)
-        .map_err(|e| format!("failed to read OCR directory: {}", e))?;
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("failed to create target OCR directory: {}", e))?;
-    let target_canon = fs::canonicalize(&target_dir)
-        .map_err(|e| format!("failed to resolve target OCR directory: {}", e))?;
-    if source_canon == target_canon {
-        return Ok(serde_json::json!({
-            "path": source_exe.to_string_lossy().to_string(),
-            "installDir": source_dir.to_string_lossy().to_string(),
-        }));
-    }
-
-    copy_dir_recursive(&source_dir, &target_dir)?;
-    let exe_path = resolve_ocr_executable_from_path(&target_dir)
-        .ok_or_else(|| "No OCR runtime entry found after moving directory".to_string())?;
-    if !target_dir.join("ocr-runtime.json").exists()
-        && exe_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe"))
-            .unwrap_or(false)
-    {
-        let _ = write_paddleocr_runtime_manifest(&target_dir, "custom", &exe_path);
-    }
-
-    if !target_canon.starts_with(&source_canon) && !source_canon.starts_with(&target_canon) {
-        let _ = fs::remove_dir_all(&source_dir);
-    }
-
-    Ok(serde_json::json!({
-        "path": exe_path.to_string_lossy().to_string(),
-        "installDir": target_dir.to_string_lossy().to_string(),
-    }))
-}
-
-#[tauri::command]
-fn check_local_ocr_status(
-    app: tauri::AppHandle,
-    executable_path: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let exe_path = resolve_local_ocr_executable(&app, executable_path)?;
-    let exists = exe_path.exists();
-    let is_file = exe_path.is_file();
-    let parent_exists = exe_path.parent().map(|path| path.exists()).unwrap_or(false);
-    Ok(serde_json::json!({
-        "ok": exists && is_file,
-        "path": exe_path.to_string_lossy().to_string(),
-        "exists": exists,
-        "isFile": is_file,
-        "parentExists": parent_exists,
-        "runtimeManifest": read_ocr_runtime_manifest(&exe_path),
-    }))
-}
-
 #[tauri::command]
 fn is_autostart_enabled() -> bool {
     let output = Command::new("reg")
@@ -2436,8 +1951,8 @@ fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, St
             "severity": "error",
             "module": "ocrRuntime",
             "code": "ocr-runtime-not-ready",
-            "message": "YSN OCR Runtime is not fully ready.",
-            "nextAction": "Open OCR model center, check trusted model sources, model pack health, and ONNX runtime self-test."
+            "message": "Local screenshot translation is not fully ready.",
+            "nextAction": "Open the local screenshot translation settings and run the model check."
         }));
     }
     if !ocr_runtime["sourceReadiness"]["ready"]
@@ -3164,9 +2679,8 @@ fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
 }
 
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Stdio};
-use std::sync::Arc;
+use std::io::Write;
+use std::process::{Child, Stdio};
 use std::time::Instant;
 
 static RECORDING_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
@@ -3181,353 +2695,24 @@ pub struct OcrBlock {
     pub box_coords: Vec<Vec<i32>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct PaddleOcrOutput {
-    code: i32,
-    data: Option<serde_json::Value>,
-    msg: Option<String>,
-}
-
-struct LocalOcrProcess {
-    child: Child,
-    stdin: ChildStdin,
-    reader: BufReader<std::process::ChildStdout>,
-    config_key: String,
-}
-
-struct OcrManagerState {
-    process: Option<LocalOcrProcess>,
-    last_used: Instant,
-}
-
-static OCR_MANAGER: OnceLock<Arc<Mutex<OcrManagerState>>> = OnceLock::new();
-
-fn get_ocr_manager() -> Arc<Mutex<OcrManagerState>> {
-    OCR_MANAGER
-        .get_or_init(|| {
-            let state = Arc::new(Mutex::new(OcrManagerState {
-                process: None,
-                last_used: Instant::now(),
-            }));
-
-            let state_clone = state.clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                    let mut guard = state_clone.lock().unwrap();
-                    let should_kill = if guard.process.is_some() {
-                        guard.last_used.elapsed() > Duration::from_secs(300)
-                    } else {
-                        false
-                    };
-                    if should_kill {
-                        println!("PaddleOCR-json idle timeout reached. Terminating process...");
-                        if let Some(mut proc) = guard.process.take() {
-                            let _ = proc.child.kill();
-                        }
-                    }
-                }
-            });
-
-            state
-        })
-        .clone()
-}
-
-fn start_ocr_process(
-    exe_path: &std::path::Path,
-    config_key: &str,
-) -> Result<LocalOcrProcess, String> {
-    if !exe_path.is_file() {
-        return Err(format!(
-            "Local OCR executable is invalid: {}",
-            exe_path.to_string_lossy()
-        ));
-    }
-
-    let exe_dir = exe_path
-        .parent()
-        .ok_or_else(|| "Failed to get OCR executable directory".to_string())?;
-
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let mut cmd = Command::new(exe_path);
-    cmd.current_dir(exe_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if !config_key.is_empty() {
-        let config_path = format!("models/config_{}.txt", config_key);
-        if exe_dir.join(&config_path).exists() {
-            cmd.arg(format!("--config_path={}", config_path));
+#[tauri::command]
+async fn prewarm_local_ocr_models(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = crate::ysn_ocr_manifest_store::read_manifest(&app)?;
+        let mut warmed = Vec::new();
+        for model_id in ["det-default", "rec-cjk", "rec-latin"] {
+            let model = find_ysn_model(&manifest, model_id)?;
+            let path = crate::ysn_ocr_model_downloader::safe_active_model_path(
+                &app,
+                model["path"].as_str().unwrap_or(""),
+            )?;
+            crate::ysn_ocr_runtime_adapter::prewarm_onnx_session(&path)?;
+            warmed.push(model_id.to_string());
         }
-    }
-
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Start OCR process failed: {}", e))?;
-
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or("Failed to open stdin pipe".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to open stdout pipe".to_string())?;
-    let mut reader = BufReader::new(stdout);
-
-    // Wait for OCR initialization marker: "OCR init completed."
-    let mut init_line = String::new();
-    loop {
-        init_line.clear();
-        match reader.read_line(&mut init_line) {
-            Ok(0) => return Err("OCR process closed before initialization completed".to_string()),
-            Ok(_) => {
-                if init_line.contains("OCR init completed.") {
-                    break;
-                }
-            }
-            Err(e) => return Err(format!("Read OCR initialization output failed: {}", e)),
-        }
-    }
-
-    Ok(LocalOcrProcess {
-        child,
-        stdin,
-        reader,
-        config_key: config_key.to_string(),
+        Ok(warmed)
     })
-}
-
-fn request_ocr_with_config(
-    guard: &mut OcrManagerState,
-    exe_path: &std::path::Path,
-    image_path: &str,
-    config_key: &str,
-) -> Result<String, String> {
-    let needs_restart = guard
-        .process
-        .as_ref()
-        .map(|process| process.config_key.as_str() != config_key)
-        .unwrap_or(true);
-    if needs_restart {
-        if let Some(mut proc) = guard.process.take() {
-            let _ = proc.child.kill();
-        }
-        guard.process = Some(start_ocr_process(exe_path, config_key)?);
-    }
-
-    guard.last_used = Instant::now();
-    let proc = guard.process.as_mut().unwrap();
-    let req_payload = serde_json::json!({ "image_path": image_path });
-    let req_line = format!("{}\n", req_payload.to_string());
-
-    if let Err(e) = proc.stdin.write_all(req_line.as_bytes()) {
-        guard.process = None;
-        return Err(format!(
-            "\u{5199}\u{5165} PaddleOCR-json \u{7ba1}\u{9053}\u{5931}\u{8d25}: {}",
-            e
-        ));
-    }
-    if let Err(e) = proc.stdin.flush() {
-        guard.process = None;
-        return Err(format!(
-            "\u{5237}\u{65b0} PaddleOCR-json \u{7ba1}\u{9053}\u{5931}\u{8d25}: {}",
-            e
-        ));
-    }
-
-    let mut resp_line = String::new();
-    match proc.reader.read_line(&mut resp_line) {
-        Ok(0) => {
-            guard.process = None;
-            Err(
-                "PaddleOCR \u{8fdb}\u{7a0b}\u{5f02}\u{5e38}\u{4e2d}\u{65ad}\u{9000}\u{51fa}"
-                    .to_string(),
-            )
-        }
-        Ok(_) => Ok(resp_line),
-        Err(e) => {
-            guard.process = None;
-            Err(format!("\u{4ece} PaddleOCR \u{7ba1}\u{9053}\u{8bfb}\u{53d6}\u{6570}\u{636e}\u{53d1}\u{751f}\u{9519}\u{8bef}: {}", e))
-        }
-    }
-}
-
-fn parse_box_coords(item: &serde_json::Value) -> Vec<Vec<i32>> {
-    let candidate = item
-        .get("box")
-        .or_else(|| item.get("box_coords"))
-        .or_else(|| item.get("points"))
-        .or_else(|| item.get("dt_boxes"));
-    let mut box_coords = Vec::new();
-    if let Some(arr) = candidate.and_then(|value| value.as_array()) {
-        for point in arr {
-            if let Some(pt) = point.as_array() {
-                let x = pt
-                    .get(0)
-                    .and_then(|value| value.as_f64())
-                    .unwrap_or(0.0)
-                    .round() as i32;
-                let y = pt
-                    .get(1)
-                    .and_then(|value| value.as_f64())
-                    .unwrap_or(0.0)
-                    .round() as i32;
-                box_coords.push(vec![x, y]);
-            }
-        }
-    }
-    box_coords
-}
-
-fn parse_generic_ocr_blocks(value: &serde_json::Value) -> Vec<OcrBlock> {
-    let array = value
-        .as_array()
-        .or_else(|| value.get("data").and_then(|data| data.as_array()))
-        .or_else(|| value.get("result").and_then(|data| data.as_array()))
-        .or_else(|| value.get("blocks").and_then(|data| data.as_array()))
-        .or_else(|| value.get("results").and_then(|data| data.as_array()));
-    let mut blocks = Vec::new();
-    if let Some(items) = array {
-        for item in items {
-            let text = item
-                .get("text")
-                .or_else(|| item.get("txt"))
-                .or_else(|| item.get("content"))
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if text.is_empty() {
-                continue;
-            }
-            let confidence = item
-                .get("score")
-                .or_else(|| item.get("confidence"))
-                .or_else(|| item.get("conf"))
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0);
-            blocks.push(OcrBlock {
-                text,
-                confidence,
-                box_coords: parse_box_coords(item),
-            });
-        }
-    }
-    blocks
-}
-
-fn parse_cli_json_ocr_response(output: &str) -> Result<Vec<OcrBlock>, String> {
-    let trimmed = output.trim();
-    if trimmed.is_empty() {
-        return Err("OCR CLI returned empty output".to_string());
-    }
-    let parsed: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
-        format!(
-            "Failed to parse OCR CLI JSON output: {} (Raw: {})",
-            e, trimmed
-        )
-    })?;
-    let blocks = parse_generic_ocr_blocks(&parsed);
-    Ok(blocks)
-}
-
-fn run_cli_json_file_ocr(
-    exe_path: &std::path::Path,
-    image_path: &str,
-    manifest: Option<serde_json::Value>,
-) -> Result<Vec<OcrBlock>, String> {
-    let exe_dir = exe_path
-        .parent()
-        .ok_or_else(|| "Cannot resolve OCR runtime directory".to_string())?;
-    let mut cmd = Command::new(exe_path);
-    cmd.current_dir(exe_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let args = manifest
-        .as_ref()
-        .and_then(|manifest| manifest.get("args"))
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_else(|| vec![serde_json::Value::String("{image}".to_string())]);
-    for arg in args {
-        if let Some(text) = arg.as_str() {
-            cmd.arg(text.replace("{image}", image_path));
-        }
-    }
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to run OCR CLI runtime: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "OCR CLI runtime exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_cli_json_ocr_response(&stdout)
-}
-
-fn parse_ocr_response(resp_line: &str, language_label: &str) -> Result<Vec<OcrBlock>, String> {
-    let parsed: PaddleOcrOutput = serde_json::from_str(resp_line)
-        .map_err(|e| format!("\u{89e3}\u{6790} PaddleOCR \u{8fd4}\u{56de}\u{7684} JSON \u{5931}\u{8d25}: {} (Raw: {})", e, resp_line))?;
-
-    if parsed.code != 100 {
-        let detail = parsed
-            .msg
-            .or_else(|| {
-                parsed
-                    .data
-                    .as_ref()
-                    .and_then(|value| value.as_str().map(|s| s.to_string()))
-            })
-            .unwrap_or_else(|| "\u{65e0}\u{8be6}\u{7ec6}\u{9519}\u{8bef}".to_string());
-        return Err(format!("OCR \u{8bc6}\u{522b}\u{5931}\u{8d25}: PaddleOCR-json \u{8fd4}\u{56de} code={}, msg={}, \u{6a21}\u{578b}={}\u{3002}\u{5982}\u{679c}\u{6b63}\u{5728}\u{8bc6}\u{522b}\u{97e9}\u{6587}\u{ff0c}\u{7a0b}\u{5e8f}\u{4f1a}\u{81ea}\u{52a8}\u{5c1d}\u{8bd5}\u{97e9}\u{6587}\u{6a21}\u{578b}; \u{5426}\u{5219}\u{8bf7}\u{5728} OCR \u{914d}\u{7f6e}\u{9875}\u{66f4}\u{65b0}\u{8fd0}\u{884c}\u{5305}\u{6216}\u{66f4}\u{6362}\u{5bf9}\u{5e94}\u{8bed}\u{8a00}\u{6a21}\u{578b}\u{3002}", parsed.code, detail, language_label));
-    }
-
-    let mut ocr_blocks = Vec::new();
-    if let Some(data) = parsed.data {
-        if let Some(arr) = data.as_array() {
-            for item in arr {
-                let text = item
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let confidence = item.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-                let mut box_coords = Vec::new();
-                if let Some(box_val) = item.get("box") {
-                    if let Some(box_arr) = box_val.as_array() {
-                        for point in box_arr {
-                            if let Some(pt) = point.as_array() {
-                                let x = pt.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                let y = pt.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                box_coords.push(vec![x, y]);
-                            }
-                        }
-                    }
-                }
-                ocr_blocks.push(OcrBlock {
-                    text,
-                    confidence,
-                    box_coords,
-                });
-            }
-        }
-    }
-    Ok(ocr_blocks)
+    .await
+    .map_err(|error| format!("prewarm OCR model task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3542,98 +2727,295 @@ async fn run_local_ocr(
         tokio::task::spawn_blocking(move || run_local_ocr_sync(app, image_base64, executable_path));
     match tokio::time::timeout(timeout, task).await {
         Ok(joined) => joined.map_err(|e| format!("Local OCR task failed: {}", e))?,
-        Err(_) => {
-            let manager = get_ocr_manager();
-            if let Ok(mut guard) = manager.try_lock() {
-                if let Some(mut proc) = guard.process.take() {
-                    let _ = proc.child.kill();
-                }
-            }
-            Err(format!("Local OCR timed out ({} ms)", timeout.as_millis()))
-        }
+        Err(_) => Err(format!("Local OCR timed out ({} ms)", timeout.as_millis())),
     }
 }
 
 fn run_local_ocr_sync(
     app: tauri::AppHandle,
     image_base64: String,
-    executable_path: Option<String>,
+    _executable_path: Option<String>,
 ) -> Result<Vec<OcrBlock>, String> {
-    let resolved_exe = resolve_local_ocr_executable(&app, executable_path)?;
+    match run_ysn_ocr_onnx_sync(&app, &image_base64) {
+        Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
+        Ok(_) => {
+            return Err(
+                "\u{672c}\u{5730}\u{622a}\u{56fe}\u{7ffb}\u{8bd1}\u{672a}\u{8bc6}\u{522b}\u{5230}\u{6587}\u{5b57}\u{3002}\u{8bf7}\u{91cd}\u{65b0}\u{6846}\u{9009}\u{66f4}\u{6e05}\u{6670}\u{3001}\u{66f4}\u{5b8c}\u{6574}\u{7684}\u{6587}\u{5b57}\u{533a}\u{57df}\u{3002}".to_string(),
+            );
+        }
+        Err(error) => return Err(error),
+    }
+}
 
-    if !resolved_exe.is_file() {
+fn run_ysn_ocr_onnx_sync(
+    app: &tauri::AppHandle,
+    image_base64: &str,
+) -> Result<Vec<OcrBlock>, String> {
+    let total_started = Instant::now();
+    let image_bytes = BASE64_STANDARD
+        .decode(image_base64)
+        .map_err(|error| format!("Decode OCR image failed: {error}"))?;
+    let decoded_at = Instant::now();
+    let manifest = crate::ysn_ocr_manifest_store::read_manifest(app)?;
+    let model_root = crate::ysn_ocr_runtime::model_root(app)?;
+    let active_dir = crate::ysn_ocr_model_downloader::active_dir(app)?;
+    let missing = crate::ysn_ocr_model_downloader::active_model_missing(app, &manifest);
+    if !missing.is_empty() {
         return Err(format!(
-            "Local OCR executable does not exist: {}",
-            resolved_exe.display()
+            "\u{672c}\u{5730}\u{622a}\u{56fe}\u{7ffb}\u{8bd1}\u{6a21}\u{578b}\u{6587}\u{4ef6}\u{7f3a}\u{5931}\u{6216}\u{6821}\u{9a8c}\u{5931}\u{8d25}\u{ff1a}{}\u{3002}\u{6a21}\u{578b}\u{76ee}\u{5f55}\u{ff1a}{}\u{3002}\u{8bf7}\u{91cd}\u{65b0}\u{8fd0}\u{884c} scripts/install_ppocrv5_onnx_models.ps1\u{3002}",
+            missing.join(", "),
+            model_root.display()
         ));
     }
 
-    // Save the image to a unique temporary file for OCR.
-    let bytes = BASE64_STANDARD
-        .decode(&image_base64)
-        .map_err(|e| format!("Decode image failed: {}", e))?;
+    let det_model = find_ysn_model(&manifest, "det-default")?;
+    let rec_model = find_ysn_model(&manifest, "rec-cjk")?;
+    let latin_rec_model = find_ysn_model(&manifest, "rec-latin")?;
+    let det_path = crate::ysn_ocr_model_downloader::safe_active_model_path(
+        app,
+        det_model["path"]
+            .as_str()
+            .unwrap_or("models/det-default.onnx"),
+    )?;
+    let rec_path = crate::ysn_ocr_model_downloader::safe_active_model_path(
+        app,
+        rec_model["path"].as_str().unwrap_or("models/rec-cjk.onnx"),
+    )?;
+    let latin_rec_path = crate::ysn_ocr_model_downloader::safe_active_model_path(
+        app,
+        latin_rec_model["path"]
+            .as_str()
+            .unwrap_or("models/rec-latin.onnx"),
+    )?;
+    let manifest_ready_at = Instant::now();
 
-    let rand_suffix: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
+    let det_config = crate::ysn_ocr_preprocess::OcrTensorPreprocessConfig::for_model_descriptor(
+        &det_model, None, None,
+    )?;
+    let det_tensor =
+        crate::ysn_ocr_preprocess::image_bytes_to_nchw_rgb_tensor(&image_bytes, &det_config)?;
+    let det_preprocessed_at = Instant::now();
+    let det_outputs =
+        crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_outputs(&det_path, &det_tensor)?;
+    let det_inferred_at = Instant::now();
+    let mut detections = decode_ysn_detection_outputs(&det_outputs, &det_tensor)?;
+    let det_decoded_at = Instant::now();
+    if detections.is_empty() {
+        detections = vec![whole_image_detection(
+            det_tensor.original_width,
+            det_tensor.original_height,
+        )];
+    }
+    if detections.len() > 12 {
+        detections.truncate(12);
+    }
 
-    let mut ocr_temp_path = std::env::temp_dir();
-    ocr_temp_path.push(format!("ocr-{}.png", rand_suffix));
-    fs::write(&ocr_temp_path, &bytes)
-        .map_err(|e| format!("Save temporary OCR image failed: {}", e))?;
-
-    let abs_image_path = ocr_temp_path.to_string_lossy().to_string();
-
-    let manifest = read_ocr_runtime_manifest(&resolved_exe);
-    let protocol = ocr_runtime_protocol(&resolved_exe);
-    let result = if protocol == "cli-json-file" {
-        run_cli_json_file_ocr(&resolved_exe, &abs_image_path, manifest)
-    } else if protocol == "paddleocr-json-stdin" {
-        let manager = get_ocr_manager();
-        let mut guard = manager.lock().unwrap();
-        let default_resp = request_ocr_with_config(&mut guard, &resolved_exe, &abs_image_path, "")?;
-        let first_result = match parse_ocr_response(&default_resp, "default") {
-            Ok(blocks) if !blocks.is_empty() => Ok(blocks),
-            Ok(_) => Err("OCR default model recognized no text".to_string()),
-            Err(error) => Err(error),
-        };
-        match first_result {
-            Ok(blocks) => Ok(blocks),
-            Err(first_error) => {
-                let korean_config = resolved_exe
-                    .parent()
-                    .map(|dir| dir.join("models").join("config_korean.txt"))
-                    .filter(|path| path.exists());
-                if korean_config.is_some() {
-                    match request_ocr_with_config(
-                        &mut guard,
-                        &resolved_exe,
-                        &abs_image_path,
-                        "korean",
-                    )
-                    .and_then(|resp| parse_ocr_response(&resp, "korean"))
-                    {
-                        Ok(blocks) if !blocks.is_empty() => Ok(blocks),
-                        Ok(_) => Err(first_error),
-                        Err(korean_error) => Err(format!(
-                            "{}; Korean model retry failed: {}",
-                            first_error, korean_error
-                        )),
-                    }
-                } else {
-                    Err(first_error)
-                }
-            }
-        }
-    } else {
-        Err(format!("Unsupported OCR runtime protocol: {}", protocol))
+    let crop_config = crate::ysn_ocr_crop::OcrCropPlanConfig {
+        image_width: det_tensor.original_width,
+        image_height: det_tensor.original_height,
+        padding: 4,
+        minimum_width: 4,
+        minimum_height: 4,
     };
+    let crop_plan = crate::ysn_ocr_crop::build_line_crop_plan(&detections, &crop_config)?;
+    let cropped_lines = crate::ysn_ocr_crop::crop_line_images_from_bytes(&image_bytes, &crop_plan)?;
+    let cropped_at = Instant::now();
+    let dictionary = crate::ysn_ocr_dictionary::load_dictionary_from_contract(
+        &active_dir,
+        &rec_model["contract"],
+    )?;
+    let latin_dictionary = crate::ysn_ocr_dictionary::load_dictionary_from_contract(
+        &active_dir,
+        &latin_rec_model["contract"],
+    )?;
+    let dictionaries_loaded_at = Instant::now();
+    let rec_config = crate::ysn_ocr_preprocess::OcrTensorPreprocessConfig::for_model_descriptor(
+        &rec_model,
+        Some(320),
+        Some(48),
+    )?;
+    let latin_rec_config =
+        crate::ysn_ocr_preprocess::OcrTensorPreprocessConfig::for_model_descriptor(
+            &latin_rec_model,
+            Some(320),
+            Some(48),
+        )?;
+    let mut recognitions = Vec::new();
+    let mut cjk_fallbacks = 0usize;
+    for crop in cropped_lines.iter() {
+        let latin_tensor = crate::ysn_ocr_preprocess::cropped_line_to_nchw_rgb_tensor(
+            crop,
+            &latin_rec_config,
+        )?;
+        let latin_outputs = crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_outputs(
+            &latin_rec_path,
+            &latin_tensor,
+        )?;
+        let latin_recognition =
+            decode_ysn_recognition_outputs(&latin_outputs, &latin_dictionary)?;
+        if is_poor_ysn_recognition(&latin_recognition) {
+            let tensor =
+                crate::ysn_ocr_preprocess::cropped_line_to_nchw_rgb_tensor(crop, &rec_config)?;
+            let outputs =
+                crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_outputs(&rec_path, &tensor)?;
+            let recognition = decode_ysn_recognition_outputs(&outputs, &dictionary)?;
+            if is_better_ysn_recognition(&recognition, &latin_recognition) {
+                cjk_fallbacks += 1;
+                recognitions.push(recognition);
+            } else {
+                recognitions.push(latin_recognition);
+            }
+        } else {
+            recognitions.push(latin_recognition);
+        }
+    }
+    let recognized_at = Instant::now();
 
-    let _ = fs::remove_file(&ocr_temp_path);
-    result
+    let runtime_blocks = crate::ysn_ocr_postprocess::align_detections_with_recognitions(
+        &detections,
+        &recognitions,
+        &crate::ysn_ocr_postprocess::OcrPostprocessConfig {
+            minimum_confidence: 0.05,
+            default_script: "cjk".to_string(),
+            default_language: "auto".to_string(),
+            model_id: "rec-cjk".to_string(),
+        },
+    );
+    eprintln!(
+        "[local-screenshot-translate] ocr timings total={}ms decode={}ms manifest={}ms det_pre={}ms det={}ms det_decode={}ms crop={}ms dict={}ms rec={}ms detections={} crops={} cjk_fallbacks={} blocks={}",
+        total_started.elapsed().as_millis(),
+        decoded_at.duration_since(total_started).as_millis(),
+        manifest_ready_at.duration_since(decoded_at).as_millis(),
+        det_preprocessed_at.duration_since(manifest_ready_at).as_millis(),
+        det_inferred_at.duration_since(det_preprocessed_at).as_millis(),
+        det_decoded_at.duration_since(det_inferred_at).as_millis(),
+        cropped_at.duration_since(det_decoded_at).as_millis(),
+        dictionaries_loaded_at.duration_since(cropped_at).as_millis(),
+        recognized_at.duration_since(dictionaries_loaded_at).as_millis(),
+        detections.len(),
+        cropped_lines.len(),
+        cjk_fallbacks,
+        runtime_blocks.len()
+    );
+    Ok(runtime_blocks
+        .into_iter()
+        .map(|block| OcrBlock {
+            text: block.text,
+            confidence: block.confidence as f64,
+            box_coords: block.box_coords,
+        })
+        .collect())
 }
 
+fn is_poor_ysn_recognition(line: &crate::ysn_ocr_decode::OcrRecognitionLine) -> bool {
+    line.text.trim().is_empty() || line.confidence < 0.15 || line.token_count == 0
+}
+
+fn is_better_ysn_recognition(
+    candidate: &crate::ysn_ocr_decode::OcrRecognitionLine,
+    current: &crate::ysn_ocr_decode::OcrRecognitionLine,
+) -> bool {
+    let candidate_text = candidate.text.trim();
+    if candidate_text.is_empty() {
+        return false;
+    }
+    let current_text = current.text.trim();
+    if current_text.is_empty() {
+        return true;
+    }
+    candidate.confidence > current.confidence + 0.05
+        || (candidate.token_count > current.token_count
+            && candidate.confidence >= current.confidence)
+}
+
+fn find_ysn_model(
+    manifest: &serde_json::Value,
+    model_id: &str,
+) -> Result<serde_json::Value, String> {
+    manifest["models"]
+        .as_array()
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|model| model["id"].as_str() == Some(model_id))
+        })
+        .cloned()
+        .ok_or_else(|| format!("YSN OCR model descriptor not found: {model_id}"))
+}
+
+fn decode_ysn_detection_outputs(
+    outputs: &[crate::ysn_ocr_runtime_adapter::OnnxF32TensorOutput],
+    tensor: &crate::ysn_ocr_preprocess::OcrTensorInput,
+) -> Result<Vec<crate::ysn_ocr_decode::OcrDetectionBox>, String> {
+    let output = outputs
+        .iter()
+        .find(|output| output.shape.len() == 4)
+        .ok_or_else(|| "YSN OCR detector did not return a rank-4 probability map.".to_string())?;
+    let height = *output
+        .shape
+        .get(2)
+        .ok_or_else(|| "YSN OCR detector output missing height.".to_string())?;
+    let width = *output
+        .shape
+        .get(3)
+        .ok_or_else(|| "YSN OCR detector output missing width.".to_string())?;
+    let mut probabilities = output.data.clone();
+    let needs_sigmoid = probabilities
+        .iter()
+        .any(|value| *value < 0.0 || *value > 1.0);
+    if needs_sigmoid {
+        for value in probabilities.iter_mut() {
+            *value = 1.0 / (1.0 + (-*value).exp());
+        }
+    }
+    crate::ysn_ocr_decode::decode_db_probability_map(
+        &probabilities,
+        width,
+        height,
+        &crate::ysn_ocr_decode::DbTextDetectorConfig {
+            probability_threshold: 0.35,
+            minimum_area: 16,
+            original_width: tensor.original_width,
+            original_height: tensor.original_height,
+        },
+    )
+}
+
+fn whole_image_detection(width: u32, height: u32) -> crate::ysn_ocr_decode::OcrDetectionBox {
+    crate::ysn_ocr_decode::OcrDetectionBox {
+        box_coords: vec![
+            vec![0, 0],
+            vec![width as i32, 0],
+            vec![width as i32, height as i32],
+            vec![0, height as i32],
+        ],
+        confidence: 0.5,
+    }
+}
+
+fn decode_ysn_recognition_outputs(
+    outputs: &[crate::ysn_ocr_runtime_adapter::OnnxF32TensorOutput],
+    dictionary: &crate::ysn_ocr_dictionary::LoadedOcrDictionary,
+) -> Result<crate::ysn_ocr_decode::OcrRecognitionLine, String> {
+    let output = outputs
+        .iter()
+        .find(|output| output.shape.len() == 3)
+        .ok_or_else(|| "YSN OCR recognizer did not return rank-3 CTC logits.".to_string())?;
+    let time_steps = output.shape[1];
+    let class_count = output.shape[2];
+    let mut tokens = Vec::with_capacity(class_count);
+    tokens.extend(dictionary.tokens.iter().cloned());
+    while tokens.len() < class_count {
+        tokens.push(String::new());
+    }
+    crate::ysn_ocr_decode::decode_ctc_logits(
+        &output.data,
+        time_steps,
+        class_count,
+        &tokens,
+        dictionary.blank_token_id,
+    )
+}
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryRecord {
     pub id: String,
@@ -3815,12 +3197,6 @@ pub fn run() {
             cleanup_recording_files,
             copy_file_to_clipboard,
             save_config,
-            download_paddleocr_release,
-            choose_ocr_install_dir,
-            choose_ocr_runtime_dir,
-            choose_ysn_ocr_managed_source_index_file,
-            move_ocr_runtime,
-            check_local_ocr_status,
             is_autostart_enabled,
             set_autostart_enabled,
             start_screenshot,
@@ -3836,6 +3212,7 @@ pub fn run() {
             get_window_rects,
             overlay_ready_to_show,
             run_local_ocr,
+            prewarm_local_ocr_models,
             re_register_shortcut,
             get_diagnostics_report,
             get_startup_diagnostics_probe_path,

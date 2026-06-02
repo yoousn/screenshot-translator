@@ -1,0 +1,746 @@
+{
+  "defaultProfile": "balanced",
+  "defaultSourceLanguage": "auto",
+  "installedAt": "2026-06-02T15:55:00+08:00",
+  "kind": "ysn-ocr-runtime-manifest",
+  "lastSelfTestAt": "2026-06-02T18:51:36.600803400+08:00",
+  "modelSchema": {
+    "artifactPolicy": {
+      "provider": "ysn-managed",
+      "requiresReviewedLicense": true,
+      "requiresSafeRelativePath": true,
+      "requiresSha256": true,
+      "requiresSize": true,
+      "transport": [
+        "https",
+        "localhost-dev"
+      ]
+    },
+    "kind": "ysn-ocr-model-index",
+    "runtimeContract": {
+      "confidenceScale": "0..1",
+      "engine": "onnxruntime",
+      "inputImage": "rgba-screenshot-crop",
+      "lowConfidenceAction": "retry-with-fallback-model-or-report-not-ready",
+      "outputBlock": [
+        "text",
+        "confidence",
+        "box_coords",
+        "script",
+        "language",
+        "modelId"
+      ]
+    },
+    "schemaVersion": 1,
+    "scriptRouting": {
+      "fallbackOrder": [
+        "accurate-extension",
+        "auto-multilingual-balanced",
+        "compatibility-external-ocr"
+      ],
+      "requiresDetectionModel": true,
+      "requiresRecognitionFallback": true,
+      "strategy": "detect-script-confidence-then-recognize",
+      "supportedScripts": [
+        "mixed",
+        "cjk",
+        "latin",
+        "hangul",
+        "cyrillic",
+        "arabic",
+        "thai"
+      ]
+    },
+    "selfTestPolicy": {
+      "protectedTerms": [
+        "PATH",
+        "Windows",
+        "OCR",
+        "ONNX",
+        "RapidOCR",
+        "PaddleOCR-json",
+        ".exe"
+      ],
+      "requiredBeforeReady": true,
+      "sampleKinds": [
+        "latin-ui",
+        "cjk-ui",
+        "technical-text",
+        "mixed-script"
+      ]
+    },
+    "sourceLanguagePolicy": {
+      "default": "auto",
+      "selection": "automatic-only",
+      "supported": [
+        "auto",
+        "zh-Hans",
+        "zh-Hant",
+        "en",
+        "fr",
+        "ja",
+        "de",
+        "es",
+        "pt",
+        "it",
+        "ko",
+        "ru",
+        "ar",
+        "th",
+        "tr"
+      ]
+    },
+    "targetLanguagePolicy": {
+      "default": "zh-Hans",
+      "selection": "user-selectable",
+      "supported": [
+        "zh-Hans",
+        "zh-Hant",
+        "en",
+        "fr",
+        "ja",
+        "de",
+        "es",
+        "pt",
+        "it",
+        "ko",
+        "ru",
+        "ar",
+        "th",
+        "tr"
+      ]
+    }
+  },
+  "modelSetVersion": "2026.06.ocr.v1",
+  "models": [
+    {
+      "contract": {
+        "decoder": {
+          "boxThreshold": 0.5,
+          "polygonOutput": true,
+          "scoreThreshold": 0.3,
+          "type": "db-text-detector"
+        },
+        "postprocess": {
+          "mergeNearbyBoxes": true,
+          "preserveReadingOrder": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "maxSide": 1920,
+          "normalize": "0-1",
+          "profile": "screenshot-text-detection"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "det-default",
+      "languages": [
+        "auto"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/det-default.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "mixed"
+      ],
+      "sha256": "61824840edf6e74581898930b8091b1b2318f4b2705a2e8a40ad3de7ac480133",
+      "size": 88030804,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/detection/v5/det.onnx"
+      },
+      "status": "installed",
+      "type": "detection",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "labels": [
+            "0",
+            "180"
+          ],
+          "type": "angle-classifier"
+        },
+        "postprocess": {
+          "rotateBeforeRecognition": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "height": 48,
+          "profile": "text-line-angle-classification"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "cls-default",
+      "languages": [
+        "auto"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/cls-default.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "mixed"
+      ],
+      "sha256": "34ec07c0bcd591da2ae6651924a1d8fb85f7ca60ac9a58ac417ecf12a5fc1e1a",
+      "size": 6774157,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/preprocessing/textline-orientation/PP-LCNet_x1_0_textline_ori.onnx"
+      },
+      "status": "installed",
+      "type": "classification",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "blankToken": "ctc-blank",
+          "dictionaryScript": "cjk",
+          "type": "ctc-text-recognizer"
+        },
+        "dictionary": {
+          "blankTokenId": 0,
+          "format": "utf8-lines",
+          "path": "dictionaries/cjk.txt",
+          "requiredBeforeReady": true,
+          "reservedTokens": [
+            "ctc-blank"
+          ],
+          "script": "cjk",
+          "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+          "size": 74012,
+          "source": {
+            "license": "Apache-2.0-reviewed",
+            "provider": "ysn-managed",
+            "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/chinese/dict.txt"
+          }
+        },
+        "postprocess": {
+          "normalizeWhitespace": true,
+          "preserveTechnicalTokens": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "dynamicWidth": true,
+          "height": 48,
+          "profile": "text-line-recognition"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "rec-cjk",
+      "languages": [
+        "zh-Hans",
+        "zh-Hant",
+        "ja"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/rec-cjk.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "cjk"
+      ],
+      "sha256": "26fa4f47060f58e25962b9af6beaee05c8182b90e026c4ecc6db165d9dfdc38a",
+      "size": 84468836,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/chinese/rec.onnx"
+      },
+      "status": "installed",
+      "type": "recognition",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "blankToken": "ctc-blank",
+          "dictionaryScript": "latin",
+          "type": "ctc-text-recognizer"
+        },
+        "dictionary": {
+          "blankTokenId": 0,
+          "format": "utf8-lines",
+          "path": "dictionaries/latin.txt",
+          "requiredBeforeReady": true,
+          "reservedTokens": [
+            "ctc-blank"
+          ],
+          "script": "latin",
+          "sha256": "3c0a8a79b612653c25f765271714f71281e4e955962c153e272b7b8c1d2b13ff",
+          "size": 1634,
+          "source": {
+            "license": "Apache-2.0-reviewed",
+            "provider": "ysn-managed",
+            "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/latin/dict.txt"
+          }
+        },
+        "postprocess": {
+          "normalizeWhitespace": true,
+          "preserveTechnicalTokens": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "dynamicWidth": true,
+          "height": 48,
+          "profile": "text-line-recognition"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "rec-latin",
+      "languages": [
+        "en",
+        "fr",
+        "de",
+        "es",
+        "pt",
+        "it",
+        "tr"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/rec-latin.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "latin"
+      ],
+      "sha256": "614ffc2d6d3902d360fad7f1b0dd455ee45e877069d14c4e51a99dc4ef144409",
+      "size": 7862832,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/latin/rec.onnx"
+      },
+      "status": "installed",
+      "type": "recognition",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "blankToken": "ctc-blank",
+          "dictionaryScript": "hangul",
+          "type": "ctc-text-recognizer"
+        },
+        "dictionary": {
+          "blankTokenId": 0,
+          "format": "utf8-lines",
+          "path": "dictionaries/korean.txt",
+          "requiredBeforeReady": true,
+          "reservedTokens": [
+            "ctc-blank"
+          ],
+          "script": "hangul",
+          "sha256": "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7",
+          "size": 47451,
+          "source": {
+            "license": "Apache-2.0-reviewed",
+            "provider": "ysn-managed",
+            "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/korean/dict.txt"
+          }
+        },
+        "postprocess": {
+          "normalizeWhitespace": true,
+          "preserveTechnicalTokens": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "dynamicWidth": true,
+          "height": 48,
+          "profile": "text-line-recognition"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "rec-korean",
+      "languages": [
+        "ko"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/rec-korean.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "hangul"
+      ],
+      "sha256": "322f140154c820fcb83c3d24cfe42c9ec70dd1a1834163306a7338136e4f1eaa",
+      "size": 13401252,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/korean/rec.onnx"
+      },
+      "status": "installed",
+      "type": "recognition",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "blankToken": "ctc-blank",
+          "dictionaryScript": "cyrillic",
+          "type": "ctc-text-recognizer"
+        },
+        "dictionary": {
+          "blankTokenId": 0,
+          "format": "utf8-lines",
+          "path": "dictionaries/cyrillic.txt",
+          "requiredBeforeReady": true,
+          "reservedTokens": [
+            "ctc-blank"
+          ],
+          "script": "cyrillic",
+          "sha256": "3e95f1581557162870cacdba5af91a4c6be2890710d395b0c3c7578e7ee5e6eb",
+          "size": 1663,
+          "source": {
+            "license": "Apache-2.0-reviewed",
+            "provider": "ysn-managed",
+            "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/eslav/dict.txt"
+          }
+        },
+        "postprocess": {
+          "normalizeWhitespace": true,
+          "preserveTechnicalTokens": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "dynamicWidth": true,
+          "height": 48,
+          "profile": "text-line-recognition"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "rec-cyrillic",
+      "languages": [
+        "ru"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/rec-cyrillic.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "cyrillic"
+      ],
+      "sha256": "dc6bf0e855247decce214ba6dae5bc135fa0ad725a5918a7fcfb59fad6c9cdee",
+      "size": 7870092,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/eslav/rec.onnx"
+      },
+      "status": "installed",
+      "type": "recognition",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "blankToken": "ctc-blank",
+          "dictionaryScript": "arabic",
+          "type": "ctc-text-recognizer"
+        },
+        "dictionary": {
+          "blankTokenId": 0,
+          "format": "utf8-lines",
+          "path": "dictionaries/arabic.txt",
+          "requiredBeforeReady": true,
+          "reservedTokens": [
+            "ctc-blank"
+          ],
+          "script": "arabic",
+          "sha256": "637c27c88512c22089bef927b34ada08f748dc132ac70facd68d8202384c2726",
+          "size": 405,
+          "source": {
+            "license": "Apache-2.0-reviewed",
+            "provider": "ysn-managed",
+            "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/arabic/dict.txt"
+          }
+        },
+        "postprocess": {
+          "normalizeWhitespace": true,
+          "preserveTechnicalTokens": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "dynamicWidth": true,
+          "height": 48,
+          "profile": "text-line-recognition"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "rec-arabic",
+      "languages": [
+        "ar"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/rec-arabic.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "arabic"
+      ],
+      "sha256": "7982d371612785238fd99080cff36354deaec84fdc6ff7da9c82af4243fa0c9a",
+      "size": 8978664,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/arabic/rec.onnx"
+      },
+      "status": "installed",
+      "type": "recognition",
+      "version": "2026.06.ocr.v1"
+    },
+    {
+      "contract": {
+        "decoder": {
+          "blankToken": "ctc-blank",
+          "dictionaryScript": "thai",
+          "type": "ctc-text-recognizer"
+        },
+        "dictionary": {
+          "blankTokenId": 0,
+          "format": "utf8-lines",
+          "path": "dictionaries/thai.txt",
+          "requiredBeforeReady": true,
+          "reservedTokens": [
+            "ctc-blank"
+          ],
+          "script": "thai",
+          "sha256": "57f5406f94bb6688fb7077f7be65f08bbd71cecf48c01ea26c522cb5c4836b7a",
+          "size": 1767,
+          "source": {
+            "license": "Apache-2.0-reviewed",
+            "provider": "ysn-managed",
+            "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/thai/dict.txt"
+          }
+        },
+        "postprocess": {
+          "normalizeWhitespace": true,
+          "preserveTechnicalTokens": true
+        },
+        "preprocess": {
+          "color": "rgb",
+          "dynamicWidth": true,
+          "height": 48,
+          "profile": "text-line-recognition"
+        }
+      },
+      "engine": "onnxruntime",
+      "id": "rec-thai",
+      "languages": [
+        "th"
+      ],
+      "packId": "auto-multilingual-balanced",
+      "path": "models/rec-thai.onnx",
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "thai"
+      ],
+      "sha256": "2b6e56b1872200349e227574c25aeb0e0f9af9b8356e9ff5f75ac543a535669a",
+      "size": 7873480,
+      "source": {
+        "license": "Apache-2.0-reviewed",
+        "provider": "ysn-managed",
+        "url": "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/thai/rec.onnx"
+      },
+      "status": "installed",
+      "type": "recognition",
+      "version": "2026.06.ocr.v1"
+    }
+  ],
+  "packs": [
+    {
+      "id": "auto-multilingual-balanced",
+      "languages": [
+        "zh-Hans",
+        "zh-Hant",
+        "en",
+        "fr",
+        "ja",
+        "de",
+        "es",
+        "pt",
+        "it",
+        "ko",
+        "ru",
+        "ar",
+        "th",
+        "tr"
+      ],
+      "lastSelfTestAt": "2026-06-02T18:51:36.600803400+08:00",
+      "modelIds": [
+        "det-default",
+        "cls-default",
+        "rec-cjk",
+        "rec-latin",
+        "rec-korean",
+        "rec-cyrillic",
+        "rec-arabic",
+        "rec-thai"
+      ],
+      "name": {
+        "en-US": "Auto Multilingual OCR Pack",
+        "zh-CN": "Auto Multilingual OCR Pack"
+      },
+      "profile": "balanced",
+      "required": true,
+      "scripts": [
+        "cjk",
+        "latin",
+        "hangul",
+        "cyrillic",
+        "arabic",
+        "thai"
+      ],
+      "status": "installed"
+    },
+    {
+      "error": "Trusted model sources are not ready: OCR model pack has no model IDs to install.",
+      "id": "accurate-extension",
+      "languages": [
+        "zh-Hans",
+        "zh-Hant",
+        "en",
+        "fr",
+        "ja",
+        "de",
+        "es",
+        "pt",
+        "it",
+        "ko",
+        "ru",
+        "ar",
+        "th",
+        "tr"
+      ],
+      "lastTouchedAt": "2026-06-02T14:42:22.141151100+08:00",
+      "modelIds": [],
+      "name": {
+        "en-US": "Accurate OCR Extension Pack",
+        "zh-CN": "Accurate OCR Extension Pack"
+      },
+      "profile": "accurate",
+      "required": false,
+      "scripts": [
+        "cjk",
+        "latin",
+        "hangul",
+        "cyrillic",
+        "arabic",
+        "thai"
+      ],
+      "status": "download-failed"
+    }
+  ],
+  "runtime": "ysn-ocr-runtime",
+  "runtimeVersion": "0.1.0-planned",
+  "schemaVersion": 1,
+  "selfTestSamples": [
+    {
+      "expectedScripts": [
+        "latin"
+      ],
+      "id": "latin-ui-technical-path",
+      "kind": "latin-ui",
+      "minimumConfidence": 0.82,
+      "protectedTerms": [
+        "PATH",
+        "Windows",
+        ".exe"
+      ]
+    },
+    {
+      "expectedScripts": [
+        "cjk"
+      ],
+      "id": "cjk-ui-short-labels",
+      "kind": "cjk-ui",
+      "minimumConfidence": 0.8
+    },
+    {
+      "expectedScripts": [
+        "latin",
+        "cjk"
+      ],
+      "id": "mixed-script-github-list",
+      "kind": "mixed-script",
+      "minimumConfidence": 0.78,
+      "protectedTerms": [
+        "OCR",
+        "ONNX",
+        "PaddleOCR-json"
+      ]
+    }
+  ],
+  "sourcePolicy": {
+    "allowedProviderTiers": [
+      {
+        "description": "Model files are downloaded from a YSN-controlled model index/CDN entry with pinned SHA256 and reviewed license metadata.",
+        "id": "ysn-managed",
+        "label": "YSN managed source",
+        "productionDownloadAllowed": true
+      },
+      {
+        "description": "Official PaddleOCR/RapidOCR or model-hosting reference used for review and reproducible sourcing, not direct runtime download.",
+        "id": "upstream-reference",
+        "label": "Official upstream reference",
+        "productionDownloadAllowed": false
+      },
+      {
+        "description": "Developer-selected local model files for experiments and validation only.",
+        "id": "local-dev",
+        "label": "Local development override",
+        "productionDownloadAllowed": false
+      }
+    ],
+    "policyVersion": "2026.06.trusted-source.v1",
+    "productionDownloadProvider": "ysn-managed",
+    "requiredArtifactFields": [
+      "artifactType",
+      "modelId",
+      "provider",
+      "url",
+      "license",
+      "sha256",
+      "size",
+      "version",
+      "packId",
+      "path"
+    ],
+    "requiredFields": [
+      "provider",
+      "url",
+      "license",
+      "sha256",
+      "size",
+      "version",
+      "packId",
+      "path"
+    ],
+    "rules": [
+      "Runtime code must not scatter third-party model URLs.",
+      "Production downloads must go through the managed model index.",
+      "Every production OCR artifact must have artifactType, modelId, URL, SHA256, size, version, license, packId, and safe relative path metadata.",
+      "Official upstream sources are recorded as review evidence, not automatically trusted production downloads.",
+      "A pack without trusted source metadata is recoverable but not ready."
+    ],
+    "upstreamReferences": [
+      {
+        "provider": "PaddleOCR",
+        "purpose": "PP-OCRv5 model generation and official model lineage review",
+        "status": "reference-only"
+      },
+      {
+        "provider": "RapidOCR",
+        "purpose": "ONNX packaging compatibility and lightweight inference reference",
+        "status": "reference-only"
+      }
+    ]
+  },
+  "updatedAt": "2026-06-02T18:26:00.5721664+08:00"
+}
