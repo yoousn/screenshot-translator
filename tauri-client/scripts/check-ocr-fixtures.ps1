@@ -11,8 +11,10 @@ $ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $clientRoot = Split-Path -Parent $scriptRoot
+$repoRoot = Split-Path -Parent $clientRoot
 $tauriRoot = Join-Path $clientRoot "src-tauri"
 $defaultRunner = Join-Path $tauriRoot "rapidocr\rapidocr_runner.py"
+$modelRoot = Join-Path $repoRoot "models\rapidocr"
 
 if (-not $RunnerPath) {
   $RunnerPath = $defaultRunner
@@ -22,6 +24,9 @@ if (-not $FixtureDir) {
 }
 if (-not (Test-Path -LiteralPath $RunnerPath)) {
   throw "RapidOCR runner is not ready: $RunnerPath"
+}
+if (-not (Test-Path -LiteralPath $modelRoot)) {
+  throw "RapidOCR model root is not ready: $modelRoot"
 }
 
 Add-Type -AssemblyName System.Drawing
@@ -73,9 +78,9 @@ function Invoke-RapidOcrFixture {
   param([Parameter(Mandatory = $true)][string]$ImagePath)
 
   $outputLines = if ($RunnerPath.EndsWith(".py", [System.StringComparison]::OrdinalIgnoreCase)) {
-    & python $RunnerPath --image $ImagePath --model-version v5 --mode auto
+    & python $RunnerPath --image $ImagePath --model-version v5 --mode auto --model-root $modelRoot
   } else {
-    & $RunnerPath --image $ImagePath --model-version v5 --mode auto
+    & $RunnerPath --image $ImagePath --model-version v5 --mode auto --model-root $modelRoot
   }
   if ($LASTEXITCODE -ne 0) {
     throw "RapidOCR runner failed for $ImagePath with exit code $LASTEXITCODE"

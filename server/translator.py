@@ -8,7 +8,8 @@ import logging
 import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from security import normalize_public_base_url, request_public_url
+from security import normalize_public_base_url, normalize_relay_base_url, request_public_url, request_relay_url
+from translation_prompt import DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -418,37 +419,56 @@ class GoogleTranslator(BaseTranslator):
         return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
 class LLMTranslator(BaseTranslator):
-    SEGMENT_MARKER_START = "\uE000"
-    SEGMENT_MARKER_END = "\uE001"
+    SEGMENT_SEPARATOR = "\n%%\n"
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, prompt_template: str = "", translation_domain: str = "", allow_private_base_url: bool = False):
         super().__init__()
-        self.base_url = normalize_public_base_url(base_url)
+        self.allow_private_base_url = allow_private_base_url
+        self.base_url = normalize_relay_base_url(base_url) if allow_private_base_url else normalize_public_base_url(base_url)
         self.api_key = api_key
         self.model = model
+        self.prompt_template = (prompt_template or DEFAULT_LLM_TRANSLATION_PROMPT).strip()
+        self.translation_domain = (translation_domain or DEFAULT_LLM_TRANSLATION_DOMAIN).strip()
 
     def cache_namespace(self) -> str:
         parsed = urllib.parse.urlparse(self.base_url)
         host = parsed.hostname or self.base_url
-        return f"llm:{host}:{self.model}"
+        prompt_hash = hashlib.sha256(f"{self.prompt_template}\n{self.translation_domain}".encode("utf-8")).hexdigest()[:12]
+        return f"llm:{host}:{self.model}:{prompt_hash}"
 
     def _target_language_name(self, target_lang: str) -> str:
         language_names = {
             "zh": "Simplified Chinese",
+            "zh-CN": "Simplified Chinese",
+            "zh-TW": "Traditional Chinese",
             "en": "English",
             "ja": "Japanese",
             "ko": "Korean",
             "fr": "French",
             "de": "German",
             "es": "Spanish",
+            "pt": "Portuguese",
+            "it": "Italian",
+            "ru": "Russian",
+            "ar": "Arabic",
+            "th": "Thai",
+            "tr": "Turkish",
         }
         return language_names.get(target_lang, target_lang or "Simplified Chinese")
 
-    def _segment_marker(self, idx: int) -> str:
-        return f"{self.SEGMENT_MARKER_START}{idx}{self.SEGMENT_MARKER_END}"
+    def _source_language_name(self, source_lang: str) -> str:
+        if not source_lang or source_lang == "auto":
+            return "auto-detected source language"
+        return self._target_language_name(source_lang)
 
-    def _pack_segments(self, texts: list[str]) -> str:
-        return "\n".join([f"{self._segment_marker(idx)}{text}" for idx, text in enumerate(texts)])
+    def _render_prompt(self, source_lang: str, target_lang: str) -> str:
+        prompt = self.prompt_template or DEFAULT_LLM_TRANSLATION_PROMPT
+        return (
+            prompt
+            .replace("{{SOURCE_LANGUAGE}}", self._source_language_name(source_lang))
+            .replace("{{TARGET_LANGUAGE}}", self._target_language_name(target_lang))
+            .replace("{{TRANSLATION_DOMAIN}}", self.translation_domain or DEFAULT_LLM_TRANSLATION_DOMAIN)
+        )
 
     def _strip_markdown_fence(self, content: str) -> str:
         content = (content or "").strip()
@@ -461,24 +481,22 @@ class LLMTranslator(BaseTranslator):
             content = "\n".join(lines).strip()
         return content
 
-    def _parse_segment_response(self, content: str, expected_count: int) -> dict[int, str]:
+    def _pack_percent_segments(self, texts: list[str]) -> str:
+        return self.SEGMENT_SEPARATOR.join(texts)
+
+    def _parse_percent_segments(self, content: str, expected_count: int) -> list[str]:
         content = self._strip_markdown_fence(content)
-        start = re.escape(self.SEGMENT_MARKER_START)
-        end = re.escape(self.SEGMENT_MARKER_END)
-        pattern = re.compile(rf"{start}(\d+){end}\s*(.*?)(?=\s*{start}\d+{end}|$)", re.DOTALL)
-        matches = pattern.findall(content)
-        parsed = {int(idx_str): body.strip() for idx_str, body in matches if body.strip()}
-        expected = set(range(expected_count))
-        if len(matches) != expected_count or set(parsed.keys()) != expected:
+        parts = re.split(r"(?m)^\s*%%\s*$", content)
+        parts = [part.strip() for part in parts]
+        if len(parts) != expected_count:
             logger.warning(
-                "LLM segment response failed validation: expected indexes %s, got indexes %s, match_count=%d",
-                sorted(expected), sorted(parsed.keys()), len(matches)
+                "LLM %% segment response failed validation: expected %d segments, got %d",
+                expected_count, len(parts)
             )
-            return {}
-        return parsed
+            return []
+        return parts
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
-        target_language = self._target_language_name(target_lang)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -486,12 +504,13 @@ class LLMTranslator(BaseTranslator):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": f"You are a translation assistant. Translate the following text into {target_language}. Translate every meaningful English word or phrase, including short UI labels, list items, buttons, and mixed Chinese-English text. Preserve line meaning and do not skip short interface text. Keep product names, commands, package names, file paths, flags, PATH, Windows, OCR, ONNX, RapidOCR, PaddleOCR-json, and .exe identifiers unchanged when they are technical identifiers. Output ONLY the translated text, do not include commentary, explanations, or quotes."},
+                {"role": "system", "content": self._render_prompt(source_lang, target_lang)},
                 {"role": "user", "content": text}
             ],
             "temperature": 0.3
         }
-        res = request_public_url(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        request_fn = request_relay_url if self.allow_private_base_url else request_public_url
+        res = request_fn(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=10)
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"].strip()
         raise Exception(f"LLM translation failed: {res.text}")
@@ -499,25 +518,16 @@ class LLMTranslator(BaseTranslator):
     def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
-        target_language = self._target_language_name(target_lang)
-
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
-        # 1. 使用私有区标记将多行合并成一个文本块，避免与原文/译文中的 <SEG1> 等普通文本冲突
-        packed_input = self._pack_segments(texts)
-        prompt = (
-            f"You are a translation assistant. Translate each segment marked with private-use markers like {self._segment_marker(0)} into {target_language}.\n"
-            "Translate every meaningful English word or phrase, including short UI labels and mixed Chinese-English text. Keep product names, commands, package names, file paths, and flags unchanged when they are technical identifiers.\n"
-            "You MUST keep each exact marker at the start of its translated segment, preserve order, and output the same number of segments as input.\n"
-            "Output ONLY the translated segments with their markers. Do not include any extra descriptions, markdown blocks, formatting or explanations."
-        )
+        packed_input = self._pack_percent_segments(texts)
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": prompt},
+                {"role": "system", "content": self._render_prompt(source_lang, target_lang)},
                 {"role": "user", "content": packed_input}
             ],
             "temperature": 0.2
@@ -525,10 +535,11 @@ class LLMTranslator(BaseTranslator):
 
         parsed = {}
         try:
-            res = request_public_url(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
+            request_fn = request_relay_url if self.allow_private_base_url else request_public_url
+            res = request_fn(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
             if res.status_code == 200:
                 content = res.json()["choices"][0]["message"]["content"].strip()
-                parsed = self._parse_segment_response(content, len(texts))
+                parsed = {idx: value for idx, value in enumerate(self._parse_percent_segments(content, len(texts)))}
         except Exception as e:
             logger.warning("LLM segment-based batch translation failed: %s", e)
 
@@ -618,4 +629,90 @@ class BaiduTranslator(BaseTranslator):
         except Exception as e:
             logger.warning("Baidu batch translation failed: %s", e)
         return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+
+
+class DeepLTranslator(BaseTranslator):
+    def __init__(self, api_key: str, endpoint: str = "https://api-free.deepl.com", formality: str = "default"):
+        super().__init__()
+        self.api_key = api_key
+        self.endpoint = normalize_public_base_url(endpoint or "https://api-free.deepl.com")
+        self.formality = (formality or "default").strip().lower()
+
+    def cache_namespace(self) -> str:
+        parsed = urllib.parse.urlparse(self.endpoint)
+        host = parsed.hostname or self.endpoint
+        return f"deepl:{host}:{self.formality}"
+
+    def _target_lang_code(self, target_lang: str) -> str:
+        mapping = {
+            "zh": "ZH-HANS",
+            "zh-CN": "ZH-HANS",
+            "zh-TW": "ZH-HANT",
+            "en": "EN-US",
+            "ja": "JA",
+            "ko": "KO",
+            "fr": "FR",
+            "de": "DE",
+            "es": "ES",
+            "pt": "PT-PT",
+            "it": "IT",
+            "ru": "RU",
+            "ar": "AR",
+            "tr": "TR",
+        }
+        return mapping.get(target_lang, (target_lang or "ZH-HANS").upper())
+
+    def _source_lang_code(self, source_lang: str) -> str | None:
+        if not source_lang or source_lang == "auto":
+            return None
+        mapping = {
+            "zh": "ZH",
+            "zh-CN": "ZH",
+            "zh-TW": "ZH",
+            "en": "EN",
+            "ja": "JA",
+            "ko": "KO",
+            "fr": "FR",
+            "de": "DE",
+            "es": "ES",
+            "pt": "PT",
+            "it": "IT",
+            "ru": "RU",
+            "ar": "AR",
+            "tr": "TR",
+        }
+        return mapping.get(source_lang, source_lang.upper())
+
+    def _payload_pairs(self, texts: list[str], source_lang: str, target_lang: str) -> list[tuple[str, str]]:
+        pairs = [("text", text) for text in texts]
+        source_code = self._source_lang_code(source_lang)
+        if source_code:
+            pairs.append(("source_lang", source_code))
+        pairs.append(("target_lang", self._target_lang_code(target_lang)))
+        if self.formality in {"default", "more", "less", "prefer_more", "prefer_less"}:
+            pairs.append(("formality", self.formality))
+        return pairs
+
+    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        result = self._do_translate_batch([text], source_lang, target_lang)
+        return result[0] if result else ""
+
+    def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+        if not texts:
+            return []
+        headers = {"Authorization": f"DeepL-Auth-Key {self.api_key}"}
+        res = request_public_url(
+            self.session,
+            "POST",
+            f"{self.endpoint}/v2/translate",
+            headers=headers,
+            data=self._payload_pairs(texts, source_lang, target_lang),
+            timeout=10,
+        )
+        if res.status_code != 200:
+            raise Exception(f"DeepL translation failed: status {res.status_code} {res.text}")
+        items = res.json().get("translations", [])
+        if len(items) != len(texts):
+            raise Exception(f"DeepL returned {len(items)} translations for {len(texts)} texts")
+        return [str(item.get("text", "")) for item in items]
 

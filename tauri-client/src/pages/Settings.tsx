@@ -5,6 +5,7 @@ import TranslationServiceCard from "../components/settings/TranslationServiceCar
 import TranslationChannelCard from "../components/settings/TranslationChannelCard";
 import ScreenshotRecognitionCard from "../components/settings/ScreenshotRecognitionCard";
 import SystemHotkeyCard from "../components/settings/SystemHotkeyCard";
+import { DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT } from "../utils/defaultTranslationPrompt";
 import { DEFAULT_TRANSLATION_SERVICE_URL } from "../utils/translationService";
 
 interface SettingsProps {
@@ -35,6 +36,11 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         preferLanServer: false,
         channel: "google",
         targetLang: "zh",
+        newApiModel: "gemini-3.5-flash",
+        newApiPrompt: DEFAULT_LLM_TRANSLATION_PROMPT,
+        newApiDomain: DEFAULT_LLM_TRANSLATION_DOMAIN,
+        deeplEndpoint: "https://api-free.deepl.com",
+        deeplFormality: "default",
       }}
       onFinish={controller.onFinish}
       onValuesChange={controller.handleFormChange}
@@ -51,6 +57,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           isFetchingModels={controller.isFetchingModels}
           isTestingBaidu={controller.isTestingBaidu}
           isTestingNewApi={controller.isTestingNewApi}
+          isTestingDeepl={controller.isTestingDeepl}
           channelTestStatuses={controller.channelTestStatuses}
           serverChannelStatus={controller.serverChannelStatus}
           fetchModels={controller.fetchModels}

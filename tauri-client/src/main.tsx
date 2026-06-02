@@ -6,6 +6,7 @@ import ScreenshotPage from "./pages/ScreenshotPage";
 import PinPage from "./pages/PinPage";
 import OcrPage from "./pages/OcrPage";
 import RecordingControlPage from "./pages/RecordingControlPage";
+import RecordingNoticePage from "./pages/RecordingNoticePage";
 import { I18nProvider } from "./i18n";
 import "./index.css";
 
@@ -20,7 +21,7 @@ const resolveWindowLabel = () => {
 const label = resolveWindowLabel();
 
 // Set transparent background BEFORE React renders for screenshot windows
-if (label === "screenshot" || label === "recording_control") {
+if (label === "screenshot" || label === "recording_control" || label === "recording_notice") {
   document.body.style.backgroundColor = "transparent";
   document.documentElement.style.backgroundColor = "transparent";
   document.body.classList.add("transparent-window");
@@ -38,6 +39,8 @@ if (label === "screenshot") {
   needsI18nProvider = true;
 } else if (label === "recording_control") {
   Component = RecordingControlPage;
+} else if (label === "recording_notice") {
+  Component = RecordingNoticePage;
 } else {
   Component = App;
 }

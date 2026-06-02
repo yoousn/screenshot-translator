@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { message } from "antd";
 import type { FfmpegProgress, FfmpegReleaseInfo, RecordingInfo } from "../components/config/types";
 import { useI18n } from "../i18n";
@@ -10,10 +10,15 @@ const FFMPEG_RELEASE_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/lates
 
 const openContainingDir = async (path: string) => {
   if (!path) return;
-  await openPath(path.replace(/[\\/][^\\/]+$/, ""));
+  await invoke("open_path_in_file_manager", { path: path.replace(/[\\/][^\\/]+$/, "") });
 };
 
-export default function useRecordingDependencyController() {
+type UseRecordingDependencyControllerOptions = {
+  autoCheck?: boolean;
+};
+
+export default function useRecordingDependencyController(options: UseRecordingDependencyControllerOptions = {}) {
+  const { autoCheck = false } = options;
   const { text } = useI18n();
   const labels = text.config;
   const [ffmpegPath, setFfmpegPath] = useState("");
@@ -35,14 +40,21 @@ export default function useRecordingDependencyController() {
       try {
         setDefaultVideoDir(await invoke<string>("get_default_recording_output_dir"));
       } catch {}
+
+      try {
+        const snapshot = await invoke<any>("get_startup_readiness_snapshot");
+        if (snapshot?.recording) setRecordingInfo(snapshot.recording);
+      } catch {}
     };
 
     loadInitial();
-    checkRecordingInfo();
+    if (autoCheck) {
+      checkRecordingInfo();
+    }
 
     const unlisten = listen<FfmpegProgress>("ffmpeg-download-progress", (event) => setFfmpegProgress(event.payload));
     return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
-  }, []);
+  }, [autoCheck]);
 
   const checkRecordingInfo = async () => {
     try {
@@ -99,7 +111,7 @@ export default function useRecordingDependencyController() {
 
   const openFfmpegRepo = async () => openUrl(FFMPEG_RELEASE_URL);
   const openFfmpegDir = async () => openContainingDir(ffmpegPath);
-  const openVideoDir = async () => { if (defaultVideoDir) await openPath(defaultVideoDir); };
+  const openVideoDir = async () => { if (defaultVideoDir) await invoke("open_path_in_file_manager", { path: defaultVideoDir }); };
 
   return {
     ffmpegPath,

@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $clientRoot = Split-Path -Parent $scriptRoot
+$repoRoot = Split-Path -Parent $clientRoot
 $tauriRoot = Join-Path $clientRoot "src-tauri"
 $runnerScript = Join-Path $tauriRoot "rapidocr\rapidocr_runner.py"
 $requirements = Join-Path $tauriRoot "rapidocr\requirements.txt"
@@ -19,6 +20,7 @@ $specDir = Join-Path $buildRoot "spec"
 $runnerDir = Join-Path $resourceDir "rapidocr-runner"
 $runnerExe = Join-Path $runnerDir "rapidocr-runner.exe"
 $staleOneFileRunnerExe = Join-Path $resourceDir "rapidocr-runner.exe"
+$modelRoot = Join-Path $repoRoot "models\rapidocr"
 
 if (-not (Test-Path -LiteralPath $runnerScript)) {
   throw "RapidOCR runner script not found: $runnerScript"
@@ -86,19 +88,27 @@ if (-not (Test-Path -LiteralPath $runnerExe)) {
   throw "RapidOCR runner build did not create: $runnerExe"
 }
 
-& $runnerExe --warm-models
+New-Item -ItemType Directory -Path $modelRoot -Force | Out-Null
+
+& $runnerExe --warm-models --model-root $modelRoot
 if ($LASTEXITCODE -ne 0) {
   throw "Built rapidocr-runner.exe failed to warm RapidOCR model assets."
 }
 
-& $runnerExe --probe --model-version v5
+& $runnerExe --probe --model-version v5 --model-root $modelRoot
 if ($LASTEXITCODE -ne 0) {
   throw "Built rapidocr-runner.exe failed the V5 probe."
 }
 
-& $runnerExe --probe --model-version v4
+& $runnerExe --probe --model-version v4 --model-root $modelRoot
 if ($LASTEXITCODE -ne 0) {
   throw "Built rapidocr-runner.exe failed the V4 probe."
 }
 
+$bundledModelDir = Join-Path $runnerDir "_internal\rapidocr\models"
+if (Test-Path -LiteralPath $bundledModelDir) {
+  Remove-Item -LiteralPath $bundledModelDir -Recurse -Force
+}
+
 Write-Host "RapidOCR runner built: $runnerExe" -ForegroundColor Green
+Write-Host "RapidOCR models: $modelRoot" -ForegroundColor Green

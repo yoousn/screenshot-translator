@@ -65,7 +65,7 @@ export default function OcrConfig() {
           </div>
           <Collapse
             ghost
-            defaultActiveKey={recording.recordingInfo?.ffmpegFound ? [] : ["recording"]}
+            defaultActiveKey={[]}
             items={[
               {
                 key: "recording",

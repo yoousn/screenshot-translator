@@ -41,11 +41,12 @@ def _rec_lang_enum(LangRec, lang: str):
     return mapping.get(lang, LangRec.CH)
 
 
-def _build_engine(lang: str, version: str):
+def _build_engine(lang: str, version: str, model_root: Path | None = None):
     EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR = _import_rapidocr()
     ocr_version = _version_enum(OCRVersion, version)
     rec_lang = _rec_lang_enum(LangRec, lang)
     params = {
+        "Global.model_root_dir": str(model_root) if model_root else None,
         "Det.engine_type": EngineType.ONNXRUNTIME,
         "Det.lang_type": LangDet.CH,
         "Det.model_type": ModelType.MOBILE,
@@ -59,6 +60,8 @@ def _build_engine(lang: str, version: str):
         "Cls.model_type": ModelType.MOBILE,
         "Cls.ocr_version": ocr_version,
     }
+    if not model_root:
+        params.pop("Global.model_root_dir", None)
     return RapidOCR(params=params)
 
 
@@ -307,9 +310,9 @@ def _should_try_fallback(blocks: list[dict]) -> bool:
     return avg_conf < 0.72 or question_ratio > 0.18 or replacement_ratio > 0.05
 
 
-def _run_candidate(image_path: Path, lang: str, version: str) -> dict:
+def _run_candidate(image_path: Path, lang: str, version: str, model_root: Path | None = None) -> dict:
     started = time.perf_counter()
-    engine = _build_engine(lang, version)
+    engine = _build_engine(lang, version, model_root)
     init_ms = int(round((time.perf_counter() - started) * 1000))
     infer_started = time.perf_counter()
     result = engine(str(image_path))
@@ -335,9 +338,9 @@ def _select_candidates(mode: str) -> list[str]:
     return ["ch"]
 
 
-def run_ocr(image_path: Path, version: str, mode: str) -> dict:
+def run_ocr(image_path: Path, version: str, mode: str, model_root: Path | None = None) -> dict:
     total_started = time.perf_counter()
-    primary = _run_candidate(image_path, "ch", version)
+    primary = _run_candidate(image_path, "ch", version, model_root)
     candidates = [primary]
     fallback_langs: list[str] = []
     if mode == "full":
@@ -350,7 +353,7 @@ def run_ocr(image_path: Path, version: str, mode: str) -> dict:
     if fallback_langs:
         for lang in fallback_langs:
             try:
-                candidates.append(_run_candidate(image_path, lang, version))
+                candidates.append(_run_candidate(image_path, lang, version, model_root))
             except Exception as exc:
                 candidates.append({"lang": lang, "error": str(exc), "blocks": [], "quality": -1000.0})
 
@@ -380,9 +383,9 @@ def run_ocr(image_path: Path, version: str, mode: str) -> dict:
     }
 
 
-def run_probe(version: str) -> dict:
+def run_probe(version: str, model_root: Path | None = None) -> dict:
     started = time.perf_counter()
-    _build_engine("ch", version)
+    _build_engine("ch", version, model_root)
     return {
         "status": "success",
         "engine": "rapidocr",
@@ -392,7 +395,7 @@ def run_probe(version: str) -> dict:
     }
 
 
-def run_warm_models() -> dict:
+def run_warm_models(model_root: Path | None = None) -> dict:
     started = time.perf_counter()
     warmed = []
     errors = []
@@ -403,7 +406,7 @@ def run_warm_models() -> dict:
     for version, langs in warm_plan.items():
         for lang in langs:
             try:
-                _build_engine(lang, version)
+                _build_engine(lang, version, model_root)
                 warmed.append({"version": version, "lang": lang})
             except Exception as exc:
                 errors.append({"version": version, "lang": lang, "error": str(exc)})
@@ -422,13 +425,15 @@ def main() -> int:
     parser.add_argument("--image")
     parser.add_argument("--model-version", choices=["v4", "v5"], default="v5")
     parser.add_argument("--mode", choices=["auto", "full", "latin"], default="auto")
+    parser.add_argument("--model-root")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--warm-models", action="store_true")
     args = parser.parse_args()
+    model_root = Path(args.model_root) if args.model_root else None
 
     if args.warm_models:
         try:
-            payload = run_warm_models()
+            payload = run_warm_models(model_root)
             print(json.dumps(payload, ensure_ascii=False))
             return 0 if payload["status"] == "success" else 1
         except Exception as exc:
@@ -437,7 +442,7 @@ def main() -> int:
 
     if args.probe:
         try:
-            print(json.dumps(run_probe(args.model_version), ensure_ascii=False))
+            print(json.dumps(run_probe(args.model_version, model_root), ensure_ascii=False))
             return 0
         except Exception as exc:
             print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False))
@@ -453,7 +458,7 @@ def main() -> int:
         return 2
 
     try:
-        payload = run_ocr(image_path, args.model_version, args.mode)
+        payload = run_ocr(image_path, args.model_version, args.mode, model_root)
         print(json.dumps(payload, ensure_ascii=False))
         return 0
     except Exception as exc:

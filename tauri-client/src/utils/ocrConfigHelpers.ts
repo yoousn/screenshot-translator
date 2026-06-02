@@ -4,6 +4,8 @@ export interface LocalConfig {
   localOcrTimeoutMs?: number;
   targetLang?: string;
   channel?: string;
+  newApiPrompt?: string;
+  newApiDomain?: string;
   serverUrl?: string;
   lanServerUrl?: string;
   preferLanServer?: boolean;

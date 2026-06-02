@@ -2,7 +2,7 @@
 
 export type SettingsForm = FormInstance<any>;
 
-export type TranslationChannel = "baidu" | "new-api";
+export type TranslationChannel = "baidu" | "new-api" | "deepl";
 export type TranslationChannelId = "google" | TranslationChannel;
 
 export type TranslationChannelTestStatus = {
@@ -25,6 +25,7 @@ export type SettingsControllerState = {
   isSaving: boolean;
   isTestingBaidu: boolean;
   isTestingNewApi: boolean;
+  isTestingDeepl: boolean;
   isFetchingModels: boolean;
   availableModels: string[];
   currentChannel: string;

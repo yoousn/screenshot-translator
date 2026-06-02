@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
 import type { RapidOcrSelfTestResult, RapidOcrStatus } from "../ocr-models";
 
-export default function useRapidOcrController() {
+type UseRapidOcrControllerOptions = {
+  autoRefresh?: boolean;
+};
+
+export default function useRapidOcrController(options: UseRapidOcrControllerOptions = {}) {
+  const { autoRefresh = false } = options;
   const [status, setStatus] = useState<RapidOcrStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [selfTesting, setSelfTesting] = useState(false);
@@ -44,8 +49,16 @@ export default function useRapidOcrController() {
   };
 
   useEffect(() => {
-    refreshStatus();
-  }, []);
+    if (autoRefresh) {
+      refreshStatus();
+      return;
+    }
+    invoke<any>("get_startup_readiness_snapshot")
+      .then((snapshot) => {
+        if (snapshot?.rapidOcr) setStatus(snapshot.rapidOcr);
+      })
+      .catch(() => {});
+  }, [autoRefresh]);
 
   return {
     status,

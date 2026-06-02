@@ -23,6 +23,7 @@ const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
 static RECORDING_OVERLAY_COLOR: AtomicU32 = AtomicU32::new(RECORDING_BORDER_BLUE);
+static STARTUP_READINESS: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
 
 static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 fn get_screenshot_image() -> &'static Mutex<Option<Vec<u8>>> {
@@ -38,6 +39,10 @@ unsafe impl Send for NativeRecordingOverlay {}
 
 fn get_recording_overlay() -> &'static Mutex<Option<NativeRecordingOverlay>> {
     RECORDING_OVERLAY.get_or_init(|| Mutex::new(None))
+}
+
+fn get_startup_readiness_cache() -> &'static Mutex<Option<serde_json::Value>> {
+    STARTUP_READINESS.get_or_init(|| Mutex::new(None))
 }
 
 struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
@@ -498,6 +503,19 @@ mod win32 {
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
         pub fn GetWindowTextLengthW(hWnd: isize) -> i32;
         pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
+        pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
+        pub fn OpenProcess(
+            dwDesiredAccess: u32,
+            bInheritHandle: i32,
+            dwProcessId: u32,
+        ) -> isize;
+        pub fn QueryFullProcessImageNameW(
+            hProcess: isize,
+            dwFlags: u32,
+            lpExeName: *mut u16,
+            lpdwSize: *mut u32,
+        ) -> i32;
+        pub fn CloseHandle(hObject: isize) -> i32;
         pub fn EnumWindows(lpEnumFunc: EnumWindowsProc, lParam: isize) -> i32;
         pub fn EnumChildWindows(
             hWndParent: isize,
@@ -874,6 +892,10 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
         .get_webview_window("screenshot")
         .and_then(|win| win.is_visible().ok())
         .unwrap_or(false);
+    let main_was_visible = app
+        .get_webview_window("main")
+        .and_then(|win| win.is_visible().ok())
+        .unwrap_or(false);
 
     // Hide app windows before capture. If the screenshot overlay is already visible,
     // keep it visible so a second hotkey can intentionally capture the current box/tools UI.
@@ -918,6 +940,12 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     )
     .await
     .map_err(|e| format!("Screenshot task failed: {}", e))??;
+
+    if main_was_visible {
+        if let Some(main_win) = app.get_webview_window("main") {
+            let _ = main_win.show();
+        }
+    }
 
     // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
     if let Ok(mut guard) = get_screenshot_image().lock() {
@@ -1759,6 +1787,42 @@ fn window_title(hwnd: isize) -> String {
 }
 
 #[cfg(target_os = "windows")]
+fn process_path_for_hwnd(hwnd: isize) -> Option<PathBuf> {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    let mut pid: u32 = 0;
+    unsafe {
+        win32::GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+    }
+    if pid == 0 {
+        return None;
+    }
+    let handle = unsafe { win32::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u16; 32768];
+    let mut size = buffer.len() as u32;
+    let ok = unsafe {
+        win32::QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size as *mut u32)
+    };
+    unsafe {
+        let _ = win32::CloseHandle(handle);
+    }
+    if ok == 0 || size == 0 {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf16_lossy(&buffer[..size as usize])))
+}
+
+#[cfg(target_os = "windows")]
+fn exe_name_from_path(path: Option<&PathBuf>) -> String {
+    path.and_then(|value| value.file_name())
+        .and_then(|value| value.to_str())
+        .unwrap_or("app.exe")
+        .to_string()
+}
+
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn enum_recording_windows(hwnd: isize, lparam: isize) -> i32 {
     let ctx = &mut *(lparam as *mut RecordingWindowListContext);
     if hwnd == 0 || ctx.excluded_hwnds.contains(&hwnd) || win32::IsWindowVisible(hwnd) == 0 {
@@ -1772,9 +1836,14 @@ unsafe extern "system" fn enum_recording_windows(hwnd: isize, lparam: isize) -> 
         let w = rect.right - rect.left;
         let h = rect.bottom - rect.top;
         if w >= 120 && h >= 80 {
+            let process_path = process_path_for_hwnd(hwnd);
+            let exe_name = exe_name_from_path(process_path.as_ref());
             ctx.windows.push(serde_json::json!({
                 "id": hwnd.to_string(),
                 "title": title,
+                "exeName": exe_name,
+                "processPath": process_path.map(|path| path.to_string_lossy().to_string()),
+                "iconDataUrl": null,
                 "x": rect.left,
                 "y": rect.top,
                 "w": w,
@@ -2052,6 +2121,59 @@ fn get_startup_diagnostics_probe_path() -> Result<String, String> {
         .to_string())
 }
 
+fn build_startup_readiness_snapshot(app: tauri::AppHandle) -> serde_json::Value {
+    let checked_at = chrono::Local::now().to_rfc3339();
+    let rapid_ocr = get_rapid_ocr_status(app.clone()).unwrap_or_else(|error| {
+        serde_json::json!({
+            "ready": false,
+            "runtime": "rapidocr",
+            "lastError": error,
+        })
+    });
+    let recording = get_recording_info(app).unwrap_or_else(|error| {
+        serde_json::json!({
+            "ffmpegFound": false,
+            "isRecording": false,
+            "audioDevices": [],
+            "lastError": error,
+        })
+    });
+    serde_json::json!({
+        "checkedAt": checked_at,
+        "rapidOcr": rapid_ocr,
+        "recording": recording,
+    })
+}
+
+fn cache_startup_readiness_snapshot(snapshot: serde_json::Value) {
+    if let Ok(mut guard) = get_startup_readiness_cache().lock() {
+        *guard = Some(snapshot);
+    }
+}
+
+#[tauri::command]
+fn get_startup_readiness_snapshot() -> Result<serde_json::Value, String> {
+    let snapshot = get_startup_readiness_cache()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    Ok(snapshot.unwrap_or_else(|| serde_json::json!({
+        "checkedAt": null,
+        "rapidOcr": null,
+        "recording": null,
+        "pending": true,
+    })))
+}
+
+#[tauri::command]
+async fn run_startup_readiness_probe(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let snapshot = tokio::task::spawn_blocking(move || build_startup_readiness_snapshot(app))
+        .await
+        .map_err(|error| format!("startup readiness probe task failed: {error}"))?;
+    cache_startup_readiness_snapshot(snapshot.clone());
+    Ok(snapshot)
+}
+
 #[tauri::command]
 fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let _ = cleanup_finished_recording_process()?;
@@ -2126,6 +2248,54 @@ fn get_default_recording_output_dir() -> Result<String, String> {
     let dir = default_recording_output_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create recording directory failed: {}", e))?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_path_in_file_manager(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let input_path = PathBuf::from(trimmed);
+    let target_path = if input_path.exists() {
+        input_path
+    } else {
+        fs::create_dir_all(&input_path)
+            .map_err(|e| format!("create directory before opening failed: {}", e))?;
+        input_path
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("explorer.exe");
+        if target_path.is_file() {
+            command.arg(format!("/select,{}", target_path.to_string_lossy()));
+        } else {
+            command.arg(target_path.to_string_lossy().to_string());
+        }
+        command
+            .spawn()
+            .map_err(|e| format!("open path with Explorer failed: {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&target_path)
+            .spawn()
+            .map_err(|e| format!("open path failed: {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&target_path)
+            .spawn()
+            .map_err(|e| format!("open path failed: {}", e))?;
+        Ok(())
+    }
 }
 
 fn resolution_scale_filter(resolution: &str) -> Option<&'static str> {
@@ -2743,6 +2913,16 @@ fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<O
     let temp_path = write_rapidocr_temp_image(&image_bytes)?;
     let model_version = rapid_ocr_model_version();
     let mode = rapid_ocr_mode();
+    let model_root = rapid_ocr_model_root();
+    let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
+    if !missing_models.is_empty() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "RapidOCR model files are missing from {}: {}",
+            model_root.display(),
+            missing_models.join(", ")
+        ));
+    }
     let args = vec![
         "--image".to_string(),
         temp_path.to_string_lossy().to_string(),
@@ -2750,6 +2930,8 @@ fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<O
         model_version.clone(),
         "--mode".to_string(),
         mode,
+        "--model-root".to_string(),
+        model_root.to_string_lossy().to_string(),
     ];
     let result = run_rapidocr_json(app, args);
     let _ = fs::remove_file(&temp_path);
@@ -2801,8 +2983,77 @@ fn rapid_ocr_mode() -> String {
     }
 }
 
+fn repo_root_from_manifest() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|client_root| client_root.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn rapid_ocr_model_root_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = config_value_string("rapidOcrModelRoot")
+        .or_else(|| std::env::var("YSN_RAPIDOCR_MODEL_ROOT").ok())
+        .map(PathBuf::from)
+    {
+        candidates.push(path);
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("models").join("rapidocr"));
+            if let Some(parent) = exe_dir.parent() {
+                candidates.push(parent.join("models").join("rapidocr"));
+            }
+        }
+    }
+    candidates.push(repo_root_from_manifest().join("models").join("rapidocr"));
+    candidates
+}
+
+fn rapid_ocr_model_root() -> PathBuf {
+    rapid_ocr_model_root_candidates()
+        .into_iter()
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| repo_root_from_manifest().join("models").join("rapidocr"))
+}
+
+fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> {
+    let mut files = vec![
+        "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+        "ppocr_keys_v1.txt",
+        "ppocrv5_dict.txt",
+    ];
+    if model_version == "v4" {
+        files.extend([
+            "ch_PP-OCRv4_det_mobile.onnx",
+            "ch_PP-OCRv4_rec_mobile.onnx",
+            "latin_PP-OCRv3_rec_mobile.onnx",
+        ]);
+    } else {
+        files.extend([
+            "ch_PP-OCRv5_det_mobile.onnx",
+            "ch_PP-OCRv5_rec_mobile.onnx",
+            "latin_PP-OCRv5_rec_mobile.onnx",
+            "korean_PP-OCRv5_rec_mobile.onnx",
+            "arabic_PP-OCRv5_rec_mobile.onnx",
+            "cyrillic_PP-OCRv5_rec_mobile.onnx",
+            "th_PP-OCRv5_rec_mobile.onnx",
+        ]);
+    }
+    files
+}
+
+fn rapid_ocr_missing_model_files(model_root: &Path, model_version: &str) -> Vec<String> {
+    rapid_ocr_required_model_files(model_version)
+        .into_iter()
+        .filter(|name| !model_root.join(name).is_file())
+        .map(str::to_string)
+        .collect()
+}
+
 fn write_rapidocr_temp_image(image_bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = app_data_dir().join("rapidocr");
+    let dir = std::env::temp_dir().join("ysn-screenshot-translator").join("rapidocr");
     fs::create_dir_all(&dir).map_err(|error| {
         format!(
             "failed to create RapidOCR temp directory {}: {error}",
@@ -2954,12 +3205,15 @@ fn run_rapidocr_probe(
     app: &tauri::AppHandle,
     model_version: &str,
 ) -> Result<RapidOcrRunnerOutput, String> {
+    let model_root = rapid_ocr_model_root();
     run_rapidocr_json(
         app,
         vec![
             "--probe".to_string(),
             "--model-version".to_string(),
             model_version.to_string(),
+            "--model-root".to_string(),
+            model_root.to_string_lossy().to_string(),
         ],
     )
 }
@@ -2967,11 +3221,19 @@ fn run_rapidocr_probe(
 #[tauri::command]
 fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let model_version = rapid_ocr_model_version();
+    let model_root = rapid_ocr_model_root();
+    let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
     let runner = resolve_rapidocr_command(&app);
     let mut last_error: Option<String> = None;
     let mut probe_timings = serde_json::json!(null);
     let mut probe_ok = false;
-    if runner.is_ok() {
+    if !missing_models.is_empty() {
+        last_error = Some(format!(
+            "RapidOCR model files are missing from {}: {}",
+            model_root.display(),
+            missing_models.join(", ")
+        ));
+    } else if runner.is_ok() {
         match run_rapidocr_probe(&app, &model_version) {
             Ok(output) if output.status == "success" => {
                 probe_ok = true;
@@ -2999,13 +3261,14 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         .as_ref()
         .map(|spec| spec.program.to_string_lossy().to_string())
         .unwrap_or_default();
-    let ready = runner.is_ok() && probe_ok;
+    let models_ready = missing_models.is_empty();
+    let ready = runner.is_ok() && models_ready && probe_ok;
     Ok(serde_json::json!({
         "ready": ready,
         "runnerReady": runner.is_ok(),
         "runtimeInferenceReady": ready,
-        "modelPacksReady": ready,
-        "activeModelsReady": ready,
+        "modelPacksReady": models_ready,
+        "activeModelsReady": models_ready,
         "selfTestReady": probe_ok,
         "runtime": "rapidocr",
         "engine": "rapidocr",
@@ -3014,7 +3277,9 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         "runtimeVersion": "rapidocr-python-3.x",
         "modelSetVersion": format!("rapidocr-{}", model_version),
         "rapidOcrModelVersion": model_version,
-        "modelDir": app_data_dir().join("rapidocr").to_string_lossy().to_string(),
+        "modelDir": model_root.to_string_lossy().to_string(),
+        "modelRoot": model_root.to_string_lossy().to_string(),
+        "missingModelFiles": missing_models,
         "defaultSourceLanguage": "auto",
         "defaultProfile": "balanced",
         "lastError": last_error,
@@ -3036,6 +3301,14 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
                 "label": "RapidOCR probe",
                 "description": "RapidOCR can initialize the configured PP-OCR model version.",
                 "nextAction": if probe_ok { "ready" } else { "run-ocr-self-test" }
+            },
+            {
+                "id": "rapidocr-root-models",
+                "ready": models_ready,
+                "severity": if models_ready { "success" } else { "error" },
+                "label": "RapidOCR root models",
+                "description": "RapidOCR model files are present under the repository or app root models/rapidocr directory.",
+                "nextAction": if models_ready { "ready" } else { "restore-root-models" }
             }
         ]
     }))
@@ -3045,12 +3318,26 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let tested_at = chrono::Local::now().to_rfc3339();
     let model_version = rapid_ocr_model_version();
+    let model_root = rapid_ocr_model_root();
+    let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
+    if !missing_models.is_empty() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "testedAt": tested_at,
+            "runtime": "rapidocr",
+            "modelVersion": model_version,
+            "modelRoot": model_root.to_string_lossy().to_string(),
+            "message": format!("RapidOCR model files are missing from {}: {}", model_root.display(), missing_models.join(", ")),
+            "samples": []
+        }));
+    }
     match run_rapidocr_probe(&app, &model_version) {
         Ok(output) if output.status == "success" => Ok(serde_json::json!({
             "ok": true,
             "testedAt": tested_at,
             "runtime": "rapidocr",
             "modelVersion": model_version,
+            "modelRoot": model_root.to_string_lossy().to_string(),
             "message": "RapidOCR probe passed.",
             "timings": output.timings,
             "samples": [
@@ -3244,6 +3531,7 @@ pub fn run() {
             clear_history,
             get_recording_info,
             get_default_recording_output_dir,
+            open_path_in_file_manager,
             get_recording_targets,
             get_ffmpeg_release_info,
             download_ffmpeg_release,
@@ -3279,6 +3567,8 @@ pub fn run() {
             re_register_shortcut,
             get_diagnostics_report,
             get_startup_diagnostics_probe_path,
+            get_startup_readiness_snapshot,
+            run_startup_readiness_probe,
             get_rapid_ocr_status,
             run_rapid_ocr_self_test
         ])
@@ -3298,6 +3588,16 @@ pub fn run() {
             if let Err(error) = write_startup_diagnostics_probe(app.handle()) {
                 eprintln!("Failed to write startup diagnostics probe: {}", error);
             }
+            let readiness_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let probe_app = readiness_app.clone();
+                match tokio::task::spawn_blocking(move || build_startup_readiness_snapshot(probe_app))
+                    .await
+                {
+                    Ok(snapshot) => cache_startup_readiness_snapshot(snapshot),
+                    Err(error) => eprintln!("Failed to run startup readiness probe: {}", error),
+                }
+            });
 
             let screenshot_item = tauri::menu::MenuItemBuilder::new("Screenshot Now")
                 .id("screenshot")

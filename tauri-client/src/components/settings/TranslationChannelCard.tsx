@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Col, Form, Input, Row, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { Alert, AutoComplete, Button, Card, Col, Form, Input, Row, Select, Space, Tag, Tooltip, Typography } from "antd";
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -15,8 +15,10 @@ import type {
   TranslationChannelId,
   TranslationChannelTestStatus,
 } from "./types";
+import { DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT } from "../../utils/defaultTranslationPrompt";
 
 const { Text } = Typography;
+const { TextArea } = Input;
 
 type TranslationChannelCardProps = Pick<
   SettingsControllerState,
@@ -25,6 +27,7 @@ type TranslationChannelCardProps = Pick<
   | "isFetchingModels"
   | "isTestingBaidu"
   | "isTestingNewApi"
+  | "isTestingDeepl"
   | "channelTestStatuses"
   | "serverChannelStatus"
   | "fetchModels"
@@ -44,6 +47,7 @@ export default function TranslationChannelCard({
   isFetchingModels,
   isTestingBaidu,
   isTestingNewApi,
+  isTestingDeepl,
   channelTestStatuses,
   serverChannelStatus,
   fetchModels,
@@ -57,12 +61,16 @@ export default function TranslationChannelCard({
   const newApiBaseWatch = Form.useWatch("newApiBase", form);
   const newApiKeyWatch = Form.useWatch("newApiKey", form);
   const newApiModelWatch = Form.useWatch("newApiModel", form);
+  const deeplEndpointWatch = Form.useWatch("deeplEndpoint", form);
+  const deeplApiKeyWatch = Form.useWatch("deeplApiKey", form);
 
   const baiduAppId = baiduAppIdWatch ?? form.getFieldValue("baiduAppId");
   const baiduSecretKey = baiduSecretWatch ?? form.getFieldValue("baiduSecretKey");
   const newApiBase = newApiBaseWatch ?? form.getFieldValue("newApiBase");
   const newApiKey = newApiKeyWatch ?? form.getFieldValue("newApiKey");
   const newApiModel = newApiModelWatch ?? form.getFieldValue("newApiModel");
+  const deeplEndpoint = deeplEndpointWatch ?? form.getFieldValue("deeplEndpoint");
+  const deeplApiKey = deeplApiKeyWatch ?? form.getFieldValue("deeplApiKey");
 
   const baiduMissing = [
     !hasValue(baiduAppId) ? "App ID" : "",
@@ -72,6 +80,10 @@ export default function TranslationChannelCard({
     !hasValue(newApiBase) ? labels.relayServiceUrl : "",
     !hasValue(newApiKey) ? "API Key" : "",
     !hasValue(newApiModel) ? labels.modelName : "",
+  ].filter(Boolean);
+  const deeplMissing = [
+    !hasValue(deeplEndpoint) ? labels.deeplEndpoint : "",
+    !hasValue(deeplApiKey) ? "API Key" : "",
   ].filter(Boolean);
 
   const serverSummary = serverChannelStatus.error
@@ -145,6 +157,13 @@ export default function TranslationChannelCard({
       detail: newApiMissing.length > 0 ? formatMissingParts(labels.channelHealthMissingParts, newApiMissing) : labels.channelHealthNewApiDesc,
       configured: newApiMissing.length === 0,
       testStatus: channelTestStatuses["new-api"],
+    },
+    {
+      channel: "deepl",
+      label: labels.channelDeepL,
+      detail: deeplMissing.length > 0 ? formatMissingParts(labels.channelHealthMissingParts, deeplMissing) : labels.channelHealthDeepLDesc,
+      configured: deeplMissing.length === 0,
+      testStatus: channelTestStatuses.deepl,
     },
   ];
 
@@ -253,18 +272,79 @@ export default function TranslationChannelCard({
           <Form.Item label={labels.modelName}>
             <Space style={{ width: "100%" }}>
               <Form.Item name="newApiModel" noStyle>
-                {availableModels.length > 0 ? (
-                  <Select options={availableModels.map((model) => ({ value: model, label: model }))} style={{ height: 32, width: 280 }} />
-                ) : (
-                  <Input placeholder="gemini-3.5-flash" style={{ height: 32, width: 280 }} />
-                )}
+                <AutoComplete
+                  options={availableModels.map((model) => ({ value: model, label: model }))}
+                  style={{ width: 280 }}
+                  onSelect={(value) => form.setFieldValue("newApiModel", value)}
+                  filterOption={(inputValue, option) => String(option?.value || "").toLowerCase().includes(inputValue.toLowerCase())}
+                >
+                  <Input placeholder="gemini-3.5-flash" style={{ height: 32 }} />
+                </AutoComplete>
               </Form.Item>
               <Button icon={<SyncOutlined spin={isFetchingModels} />} onClick={fetchModels} style={{ height: 32 }}>
                 {labels.fetchModels}
               </Button>
             </Space>
           </Form.Item>
+          <Form.Item label={labels.translationDomain || "Translation domain"} name="newApiDomain">
+            <Input placeholder={labels.translationDomainPlaceholder || DEFAULT_LLM_TRANSLATION_DOMAIN} style={{ height: 32 }} />
+          </Form.Item>
+          <Form.Item
+            label={
+              <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                <span>{labels.translationPrompt || "Translation prompt"}</span>
+                <Button
+                  size="small"
+                  type="link"
+                  onClick={() => form.setFieldsValue({
+                    newApiPrompt: DEFAULT_LLM_TRANSLATION_PROMPT,
+                    newApiDomain: DEFAULT_LLM_TRANSLATION_DOMAIN,
+                  })}
+                  style={{ padding: 0, height: 20 }}
+                >
+                  {labels.resetTranslationPrompt || "Reset default"}
+                </Button>
+              </Space>
+            }
+            name="newApiPrompt"
+          >
+            <TextArea
+              autoSize={{ minRows: 8, maxRows: 14 }}
+              placeholder={DEFAULT_LLM_TRANSLATION_PROMPT}
+              style={{ fontFamily: "Consolas, Monaco, monospace", fontSize: 12 }}
+            />
+          </Form.Item>
           <Button type="dashed" onClick={() => testChannel("new-api")} loading={isTestingNewApi} block style={{ height: 32 }}>
+            {labels.testAndEnable}
+          </Button>
+        </Card>
+      )}
+
+      {currentChannel === "deepl" && (
+        <Card type="inner" title={labels.deeplConfig} style={{ marginTop: 12 }}>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label={labels.deeplEndpoint} name="deeplEndpoint">
+                <Input placeholder="https://api-free.deepl.com" style={{ height: 32 }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="API Key" name="deeplApiKey">
+                <Input.Password placeholder="DeepL-Auth-Key" style={{ height: 32 }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item label={labels.deeplFormality} name="deeplFormality">
+            <Select
+              style={{ height: 32 }}
+              options={[
+                { value: "default", label: labels.deeplFormalityDefault || "Default" },
+                { value: "prefer_more", label: labels.deeplFormalityMore || "More formal" },
+                { value: "prefer_less", label: labels.deeplFormalityLess || "Less formal" },
+              ]}
+            />
+          </Form.Item>
+          <Button type="dashed" onClick={() => testChannel("deepl")} loading={isTestingDeepl} block style={{ height: 32 }}>
             {labels.testAndEnable}
           </Button>
         </Card>

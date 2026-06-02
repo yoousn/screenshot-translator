@@ -7,9 +7,10 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
+import hashlib
 from config import load_server_config, save_server_config
-from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, get_translation_runtime_metadata
-from security import normalize_public_base_url, request_public_url
+from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata
+from security import normalize_relay_base_url, request_relay_url
 import logging
 
 logger = logging.getLogger(__name__)
@@ -60,10 +61,14 @@ def _translator_cache_key(cfg: dict) -> str:
     channel = cfg.get("active_channel", "google")
     if channel == "new-api":
         c = cfg.get("channels", {}).get("new-api", {})
-        return f"new-api:{c.get('base_url', '')}:{c.get('api_key', '')[:8]}:{c.get('model', '')}"
+        prompt_hash = hashlib.sha256(f"{c.get('prompt', '')}\n{c.get('domain', '')}".encode("utf-8")).hexdigest()[:12]
+        return f"new-api:{c.get('base_url', '')}:{c.get('api_key', '')[:8]}:{c.get('model', '')}:{prompt_hash}"
     elif channel == "baidu":
         c = cfg.get("channels", {}).get("baidu", {})
         return f"baidu:{c.get('app_id', '')}"
+    elif channel == "deepl":
+        c = cfg.get("channels", {}).get("deepl", {})
+        return f"deepl:{c.get('endpoint', '')}:{c.get('api_key', '')[:8]}:{c.get('formality', '')}"
     return "google"
 
 def get_active_translator():
@@ -77,11 +82,15 @@ def get_active_translator():
     if channel == "new-api":
         c = cfg["channels"]["new-api"]
         logger.info("LLM translator (relay: %s, model: %s)", c.get('base_url'), c.get('model'))
-        instance = LLMTranslator(c["base_url"], c["api_key"], c["model"])
+        instance = LLMTranslator(c["base_url"], c["api_key"], c["model"], c.get("prompt", ""), c.get("domain", ""), allow_private_base_url=True)
     elif channel == "baidu":
         c = cfg["channels"]["baidu"]
         logger.info("Baidu translator (AppID: %s)", c.get('app_id'))
         instance = BaiduTranslator(c["app_id"], c["secret_key"])
+    elif channel == "deepl":
+        c = cfg["channels"]["deepl"]
+        logger.info("DeepL translator (endpoint: %s)", c.get('endpoint'))
+        instance = DeepLTranslator(c.get("api_key", ""), c.get("endpoint", ""), c.get("formality", "default"))
     else:
         logger.info("Google free translator (no credentials)")
         instance = GoogleTranslator()
@@ -100,11 +109,14 @@ def invalidate_config_cache():
 def _server_config_payload(payload: dict) -> tuple[str, dict]:
     channel = payload.get("channel")
     c = payload.get("config", {}) or {}
-    if channel not in {"google", "baidu", "new-api"}:
+    if channel not in {"google", "baidu", "new-api", "deepl"}:
         raise ValueError("未知翻译通道")
     if channel == "new-api":
         c = dict(c)
-        c["base_url"] = normalize_public_base_url(c.get("base_url"))
+        c["base_url"] = normalize_relay_base_url(c.get("base_url"))
+    if channel == "deepl":
+        c = dict(c)
+        c["endpoint"] = c.get("endpoint") or "https://api-free.deepl.com"
     return channel, c
 
 
@@ -231,9 +243,11 @@ def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
         channel, c = _server_config_payload(payload)
         # 1. 临时实例化对应的翻译器进行连通性验证
         if channel == "new-api":
-            temp_t = LLMTranslator(c.get("base_url"), c.get("api_key"), c.get("model"))
+            temp_t = LLMTranslator(c.get("base_url"), c.get("api_key"), c.get("model"), c.get("prompt", ""), c.get("domain", ""), allow_private_base_url=True)
         elif channel == "baidu":
             temp_t = BaiduTranslator(c.get("app_id"), c.get("secret_key"))
+        elif channel == "deepl":
+            temp_t = DeepLTranslator(c.get("api_key", ""), c.get("endpoint", ""), c.get("formality", "default"))
         else:
             temp_t = GoogleTranslator()
             
@@ -279,13 +293,13 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
     api_key = payload.get("api_key", "")
 
     try:
-        base_url = normalize_public_base_url(base_url)
+        base_url = normalize_relay_base_url(base_url)
     except ValueError as e:
         return {"status": "failed", "error": str(e)}
         
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
-        res = request_public_url(requests, "GET", f"{base_url}/v1/models", headers=headers, timeout=5)
+        res = request_relay_url(requests, "GET", f"{base_url}/v1/models", headers=headers, timeout=5)
         if res.status_code == 200:
             m_list = [item["id"] for item in res.json().get("data", [])]
             return {"status": "success", "models": m_list}

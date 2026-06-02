@@ -7,6 +7,7 @@ import {
   CloseOutlined,
   DownOutlined,
   EditOutlined,
+  DragOutlined,
   PushpinOutlined,
   RedoOutlined,
   SaveOutlined,
@@ -29,6 +30,7 @@ interface ScreenshotToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   onSetEditing: (editing: boolean) => void;
+  onSelectMove: () => void;
   onSetAnnotationTool: (tool: AnnotationTool) => void;
   onSetAnnotationColor: (color: string) => void;
   onSetAnnotationSize: (size: number) => void;
@@ -81,6 +83,7 @@ export default function ScreenshotToolbar({
   canUndo,
   canRedo,
   onSetEditing,
+  onSelectMove,
   onSetAnnotationTool,
   onSetAnnotationColor,
   onSetAnnotationSize,
@@ -104,6 +107,18 @@ export default function ScreenshotToolbar({
   return (
     <div ref={containerRef} style={style} onContextMenu={(event) => event.stopPropagation()}>
       <Space size={[normalizedGap, 6]} wrap style={{ display: "inline-flex", maxWidth: "100%", whiteSpace: "normal", alignItems: "center" }}>
+        <Tooltip title="移动/调整选区">
+          <Button
+            size="middle"
+            style={squareButtonStyle}
+            type={!isEditing || !annotationTool ? "primary" : "default"}
+            icon={<DragOutlined />}
+            onClick={() => {
+              onSetEditing(false);
+              onSelectMove();
+            }}
+          />
+        </Tooltip>
         {tools.map((item) => (
           <Tooltip key={item.key} title={item.tip}>
             <Button

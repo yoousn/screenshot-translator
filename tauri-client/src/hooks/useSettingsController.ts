@@ -7,6 +7,7 @@ import type {
   TranslationChannel,
   TranslationChannelTestStatuses,
 } from "../components/settings/types";
+import { DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT } from "../utils/defaultTranslationPrompt";
 
 type ServerChannelPayload = {
   channel: string;
@@ -55,6 +56,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   const [isSaving, setIsSaving] = useState(false);
   const [isTestingBaidu, setIsTestingBaidu] = useState(false);
   const [isTestingNewApi, setIsTestingNewApi] = useState(false);
+  const [isTestingDeepl, setIsTestingDeepl] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [currentChannel, setCurrentChannel] = useState<string>("google");
@@ -70,7 +72,11 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       const configStr = await invoke<string>("get_config");
       const parsedConfig = JSON.parse(configStr || "{}");
 
-      form.setFieldsValue(parsedConfig);
+      form.setFieldsValue({
+        ...parsedConfig,
+        newApiPrompt: parsedConfig.newApiPrompt || DEFAULT_LLM_TRANSLATION_PROMPT,
+        newApiDomain: parsedConfig.newApiDomain || DEFAULT_LLM_TRANSLATION_DOMAIN,
+      });
       if (parsedConfig.channel) {
         setCurrentChannel(parsedConfig.channel);
       }
@@ -135,7 +141,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       return;
     }
     if (!newApiBase || !newApiKey) {
-      message.error("请先填写 New API 中转地址和 API Key。");
+      message.error("请先填写大模型中转地址和 API Key。");
       return;
     }
 
@@ -156,14 +162,16 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       if (resData.status === "success" && Array.isArray(resData.models)) {
         setAvailableModels(resData.models);
         message.success(`模型列表拉取成功，共 ${resData.models.length} 个模型。`);
-        if (resData.models.length > 0 && !resData.models.includes(form.getFieldValue("newApiModel"))) {
+        const currentModel = String(form.getFieldValue("newApiModel") || "").trim();
+        const shouldAdoptFirstModel = !currentModel || (currentModel === "gemini-3.5-flash" && !resData.models.includes(currentModel));
+        if (resData.models.length > 0 && shouldAdoptFirstModel) {
           form.setFieldValue("newApiModel", resData.models[0]);
         }
       } else {
         throw new Error(resData.error || "模型列表拉取失败");
       }
     } catch (error: any) {
-      message.error(`获取模型列表失败：${error.message || error}`);
+      message.warning(`获取模型列表失败，不影响手动填写模型：${error.message || error}`);
     } finally {
       setIsFetchingModels(false);
     }
@@ -187,12 +195,21 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         app_id: form.getFieldValue("baiduAppId") || "",
         secret_key: form.getFieldValue("baiduSecretKey") || "",
       };
-    } else {
+    } else if (channel === "new-api") {
       setIsTestingNewApi(true);
       testPayload.config = {
         base_url: form.getFieldValue("newApiBase") || "",
         api_key: form.getFieldValue("newApiKey") || "",
         model: form.getFieldValue("newApiModel") || "",
+        prompt: form.getFieldValue("newApiPrompt") || DEFAULT_LLM_TRANSLATION_PROMPT,
+        domain: form.getFieldValue("newApiDomain") || DEFAULT_LLM_TRANSLATION_DOMAIN,
+      };
+    } else {
+      setIsTestingDeepl(true);
+      testPayload.config = {
+        endpoint: form.getFieldValue("deeplEndpoint") || "https://api-free.deepl.com",
+        api_key: form.getFieldValue("deeplApiKey") || "",
+        formality: form.getFieldValue("deeplFormality") || "default",
       };
     }
 
@@ -212,7 +229,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       });
 
       if (resData.status === "success") {
-        const channelName = channel === "baidu" ? "百度翻译" : "大模型翻译";
+        const channelName = channel === "baidu" ? "百度翻译" : channel === "deepl" ? "DeepL 翻译" : "大模型翻译";
         message.success(`翻译通道「${channelName}」测试通过，并已设为当前活动通道。`);
         form.setFieldValue("channel", channel);
         setCurrentChannel(channel);
@@ -247,6 +264,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     } finally {
       setIsTestingBaidu(false);
       setIsTestingNewApi(false);
+      setIsTestingDeepl(false);
     }
   };
 
@@ -263,6 +281,14 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         base_url: values.newApiBase || "",
         api_key: values.newApiKey || "",
         model: values.newApiModel || "",
+        prompt: values.newApiPrompt || DEFAULT_LLM_TRANSLATION_PROMPT,
+        domain: values.newApiDomain || DEFAULT_LLM_TRANSLATION_DOMAIN,
+      };
+    } else if (channel === "deepl") {
+      payload.config = {
+        endpoint: values.deeplEndpoint || "https://api-free.deepl.com",
+        api_key: values.deeplApiKey || "",
+        formality: values.deeplFormality || "default",
       };
     }
     return payload;
@@ -350,6 +376,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     isSaving,
     isTestingBaidu,
     isTestingNewApi,
+    isTestingDeepl,
     isFetchingModels,
     availableModels,
     currentChannel,

@@ -21,6 +21,7 @@ export type RecordingWindowPayload = {
   countdownSeconds: number;
   autoStart?: boolean;
   borderLabels: string[];
+  noticeRect?: RecordingBorderRect;
 };
 
 export type RecordingBorderRect = { x: number; y: number; w: number; h: number };
@@ -50,6 +51,7 @@ export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
     withTimeout(invoke("hide_recording_overlay").catch(() => {}), 250),
     withTimeout(closeWindowIfExists("recording_overlay"), 250),
     withTimeout(closeWindowIfExists("recording_control"), 250),
+    withTimeout(closeWindowIfExists("recording_notice"), 250),
   ]);
 };
 
@@ -75,7 +77,7 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
   const preferredY = belowY + controlSize.h <= screenBottom - 8 ? belowY : aboveY;
   const controlY = Math.min(Math.max(screenTop + 8, preferredY), Math.max(screenTop + 8, screenBottom - controlSize.h - 8));
 
-  const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"] };
+  const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"], noticeRect: overlayRect };
   let sent = false;
   const unlistenReady = await listen("recording-overlay-ready", () => {
     sent = true;

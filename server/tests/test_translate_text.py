@@ -34,9 +34,15 @@ def test_translate_text_empty_blocks():
 def test_translate_text_success():
     cfg = load_server_config()
     token = cfg["client_token"]
-    
-    with patch("translator.GoogleTranslator.translate") as mock_translate:
-        mock_translate.side_effect = lambda text, *args, **kwargs: f"Translat: {text}"
+
+    class FakeTranslator:
+        def translate_batch(self, *args, **kwargs):
+            raise RuntimeError("force single fallback")
+
+        def translate(self, text, *args, **kwargs):
+            return f"Translat: {text}"
+
+    with patch("app.get_active_translator", return_value=FakeTranslator()):
         
         payload = {
             "blocks": [

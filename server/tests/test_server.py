@@ -7,8 +7,8 @@ from unittest.mock import patch, MagicMock
 # 确保 PYTHONPATH 能找到 app.py
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import app
-from config import load_server_config
+from app import app, invalidate_config_cache
+from config import load_server_config, save_server_config
 
 client = TestClient(app)
 
@@ -33,7 +33,7 @@ def test_fetch_models_success():
     cfg = load_server_config()
     token = cfg["client_token"]
     
-    with patch("app.request_public_url") as mock_request, patch("app.normalize_public_base_url", return_value="https://api.yousn.me"):
+    with patch("app.request_relay_url") as mock_request, patch("app.normalize_relay_base_url", return_value="https://api.yousn.me"):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -55,19 +55,25 @@ def test_fetch_models_success():
         assert data["status"] == "success"
         assert "gemini-1.5-flash" in data["models"]
 
-def test_fetch_models_rejects_private_url():
+def test_fetch_models_allows_private_relay_url_for_authenticated_user():
     cfg = load_server_config()
     token = cfg["client_token"]
 
-    res = client.post(
-        "/api/config/fetch_models",
-        headers={"X-API-Key": token},
-        json={"base_url": "http://127.0.0.1:3001", "api_key": "sk-xxx"}
-    )
-    assert res.status_code == 200
-    data = res.json()
-    assert data["status"] == "failed"
-    assert "请求地址" in data["error"]
+    with patch("app.request_relay_url") as mock_request:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"data": [{"id": "local-model"}]}
+        mock_request.return_value = mock_response
+
+        res = client.post(
+            "/api/config/fetch_models",
+            headers={"X-API-Key": token},
+            json={"base_url": "http://127.0.0.1:3001", "api_key": "sk-xxx"}
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["models"] == ["local-model"]
 
 def test_config_test_google_success():
     cfg = load_server_config()
@@ -99,6 +105,32 @@ def test_config_save_google_success():
     data = res.json()
     assert data["status"] == "success"
     assert data["active_channel"] == "google"
+
+
+def test_config_save_deepl_success():
+    original_cfg = load_server_config()
+    token = original_cfg["client_token"]
+
+    try:
+        res = client.post(
+            "/api/config/save",
+            headers={"X-API-Key": token},
+            json={
+                "channel": "deepl",
+                "config": {
+                    "endpoint": "https://api-free.deepl.com",
+                    "api_key": "deepl-test",
+                    "formality": "default",
+                },
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["active_channel"] == "deepl"
+    finally:
+        save_server_config(original_cfg)
+        invalidate_config_cache()
 
 
 def test_current_config_exposes_translation_metadata():

@@ -1,6 +1,6 @@
 import { Alert, Button, Card, Descriptions, Select, Space, Tag, Typography } from "antd";
 import { ApiOutlined, CheckCircleOutlined, ExperimentOutlined, FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import type { RapidOcrModelVersion, RapidOcrSelfTestResult, RapidOcrStatus } from "../../ocr-models";
 
 const { Text } = Typography;
@@ -90,7 +90,7 @@ export default function RapidOcrPanel({
         </Descriptions>
 
         <Space wrap>
-          <Button size="small" icon={<FolderOpenOutlined />} onClick={() => openPath(modelDir)}>打开模型目录</Button>
+          <Button size="small" icon={<FolderOpenOutlined />} onClick={() => invoke("open_path_in_file_manager", { path: modelDir })}>打开模型目录</Button>
           {status?.runnerPath && <Text type="secondary" style={{ fontSize: 12 }}>Runner: {status.runnerPath}</Text>}
         </Space>
       </Space>

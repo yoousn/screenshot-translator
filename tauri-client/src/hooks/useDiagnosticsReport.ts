@@ -31,7 +31,12 @@ export type DiagnosticsReport = {
   recovery?: Record<string, string>;
 };
 
-export default function useDiagnosticsReport() {
+type UseDiagnosticsReportOptions = {
+  autoRefresh?: boolean;
+};
+
+export default function useDiagnosticsReport(options: UseDiagnosticsReportOptions = {}) {
+  const { autoRefresh = false } = options;
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,8 +58,10 @@ export default function useDiagnosticsReport() {
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (autoRefresh) {
+      refresh();
+    }
+  }, [autoRefresh, refresh]);
 
   return { report, loading, error, refresh };
 }

@@ -41,9 +41,9 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/ocr/**/*",
       "resources/rapidocr/**/*",
-      "resources/ffmpeg/**/*"
+      "resources/ffmpeg/**/*",
+      "../../models/rapidocr/**/*"
     ],
     "icon": [
       "icons/32x32.png",

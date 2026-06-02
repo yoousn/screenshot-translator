@@ -7,33 +7,30 @@
 ### 当前阶段
 
 - 当前主线：产品内置 `RapidOCR / ONNXRuntime` OCR 主路径。
-- 当前最新完整验证章节：Chapter 133。
-- 当前正在推进章节：Chapter 134：真实截图 RapidOCR fixture 与多语言 fallback 性能优化。
-- Chapter 133 当前状态：已完成，开发版和打包版 RapidOCR fixture、前端构建、Rust 检查/测试均通过。
+- 当前最新完整验证章节：Chapter 134。
+- 当前正在推进章节：Chapter 135：真实截图 RapidOCR fixture 与多语言 fallback 性能优化。
+- Chapter 134 当前状态：已完成，控制台/识字模型页轻量化、录制保存后二次录制、大模型提示词配置、前端构建和服务端测试均通过。
 - 关键原则：旧自研 `YSN OCR Runtime` 已废弃为非主路径；普通主流程只走 RapidOCR runner。OCR ready 必须由打包 runner、自测、fixture、真实 `Ctrl+D` 结果窗和翻译覆盖层共同证明。
 
 ### 当前已验证命令
 
-- Chapter 133 定向验证已通过：
-  - `npm run check:ocr-fixtures`
-  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\tauri-client\scripts\check-ocr-fixtures.ps1 -RunnerPath .\tauri-client\src-tauri\resources\rapidocr\rapidocr-runner\rapidocr-runner.exe`
-  - `npm run build:rapidocr-runner -- -SkipInstall`
+- Chapter 134 定向验证已通过：
   - `npm run check:i18n`
   - `npm run check:ocr-processing`
   - `npm run build`
-  - `cargo check`
-  - `cargo test`：`17 passed; 0 failed`
+  - `python -m pytest server\tests\test_translator.py server\tests\test_server.py`：`16 passed, 2 skipped`
+  - `python -m pytest server\tests`：`26 passed, 3 skipped`
 
 ### 当前未完成事项
 
-- Chapter 134 还未开始：下一步把用户真实截图/网页截图固化成 RapidOCR fixture，并优化韩文/阿拉伯文完整 fallback 的耗时。
+- Chapter 135 还未开始：下一步把用户真实截图/网页截图固化成 RapidOCR fixture，并优化韩文/阿拉伯文完整 fallback 的耗时。
 - 打包版 RapidOCR 资源目录当前约 `340.7 MB`；旧 onefile 遗留 `rapidocr-runner.exe` 已清理，构建脚本已防止复发。
 - 仍未做完整 Windows 人工验收：Alt+A、OCR、翻译、录制、复制、保存、取消、打开目录。
 - 仍需验证真实复杂背景下的覆盖层擦除、长译文换行和边界截断。
 
 ### 当前工作树提醒
 
-- 当前工作树有大量历史未提交改动和未跟踪文件，这是长期连续改造积累的结果。
+- 当前工作树包含本章未提交改动和新增文件。
 - 不要随意 reset / clean。
 - 不要 commit / push / tag，除非用户再次明确要求。
 - 换电脑前如果需要同步，建议先由用户决定是否提交当前工作树或打包整个目录。
@@ -2548,3 +2545,286 @@ Chapter 133：继续截图翻译渲染验收。优先用用户提供的真实页
 ### 下一章建议
 
 Chapter 134：把用户真实截图样例固化进 RapidOCR fixture，并优化多语言 fallback 性能。优先尝试 detector 只跑一次、多个 recognizer 复用检测框，减少韩文/阿拉伯文重复 detector 耗时；同时把 selectedLang、candidate quality、总耗时暴露到诊断或 OCR 调试信息。
+
+## Chapter 134：控制台轻量化、录制复用与大模型提示词配置
+
+### 目标
+
+用户在真实构建中反馈三类高优先级问题：
+
+- 每次进入控制台或“识字模型 / 视频录制”都会自动跑启动诊断、RapidOCR 状态和录制依赖检查，页面有卡顿。
+- 区域录制保存后提示位置不合理，第二次录制状态没有恢复，打开视频目录无反应，胶囊控制条有明显黑色阴影，重新进入录制时只剩蓝框不能录。
+- 大模型翻译配置不能可靠手填自定义模型，界面不应显示 `(New API)`，并需要可编辑、可保存、可传到服务端实际生效的翻译提示词。
+
+### 本章实际处理
+
+- 控制台与配置页轻量化：
+  - `useDiagnosticsReport` 默认不再自动调用 `get_diagnostics_report`。
+  - `useRapidOcrController` 默认不再自动调用 `get_rapid_ocr_status`。
+  - `useRecordingDependencyController` 默认不再自动调用 `get_recording_info`。
+  - “识字模型 / 视频录制”的高级录制依赖折叠区默认收起；用户点击刷新、自测或检测可用性时才执行重检查。
+- 录制闭环修复：
+  - 保存成功后不再立即发送 `recording-ended` 给截图父页面，避免父页面重置导致第二次录制只剩蓝框。
+  - 保存成功后录制状态回到 `ready`，保留原蓝色录制框和控制条，可在同一区域继续第二次录制。
+  - 开始新录制前清空上一段 `segments`、计时器、保存路径和 notice 窗口。
+  - 新增 `recording_notice` 透明提示窗口，保存成功后显示在蓝框中心，短暂展示后自动关闭。
+  - “打开视频目录”优先打开已保存视频所在目录；没有保存视频时打开默认 `Videos\YSN`，失败会提示错误。
+  - 修复 Tauri ACL：`recording_control` 使用 `openPath(folder)` 需要 `opener:allow-open-path`，否则会报 `plugin:opener|open_path not allowed by ACL`。
+  - 将 `recording_notice` 加入默认 capability，保证保存提示窗拥有基础窗口权限。
+  - 录制控制条和准备工具条移除黑色阴影。
+- 大模型翻译配置修复：
+  - 模型字段改为可手填的 `AutoComplete`，获取模型列表只是辅助下拉；模型拉取失败不再阻塞自定义模型。
+  - 模型列表拉取成功时只在模型字段为空的情况下自动填第一项，不覆盖用户手填模型。
+  - 设置页去掉 `(New API)` 叫法，统一显示“大模型翻译 / LLM Translation”。
+  - 新增大模型翻译领域 `newApiDomain` 和提示词 `newApiPrompt`。
+  - 前端保存和测试大模型通道时会把 `prompt/domain` 传到翻译服务端。
+  - 服务端 `new-api` 配置新增 `prompt/domain` 默认值，旧配置自动 merge。
+  - 修复大模型中转地址安全策略：`new-api` 是用户显式配置的自托管/中转服务，允许 LAN、回环或内网解析地址；严格公网校验仍保留给默认公共 provider 路径。
+  - `/api/config/fetch_models` 改走用户中转请求路径，`api.yousn.me` 解析到私有/保留 IP 时不再报 `请求地址不合法 (IP 为私有、回环或保留地址)`。
+  - 前端“获取模型”失败改为非阻断 warning，并提示不影响手动填写模型。
+  - `LLMTranslator` 按 `{{SOURCE_LANGUAGE}}`、`{{TARGET_LANGUAGE}}`、`{{TRANSLATION_DOMAIN}}` 渲染 prompt。
+  - LLM 批量翻译改用用户要求的 `%%` 分段协议；如果模型返回段数不匹配，会降级为逐段补译。
+  - LLM 缓存 namespace 和服务端 translator cache key 加入 prompt/domain 哈希，避免修改提示词后继续命中旧缓存。
+- N100 部署脚本修复：
+  - `deploy_n100_translation_server.ps1` 现在同步 `config.py`、`security.py` 和 `translation_prompt.py`，避免远端缺新文件或继续使用旧安全策略。
+  - 远端语法检查扩展到 `app.py/config.py/security.py/translator.py/translation_prompt.py`。
+
+### 新增文件
+
+- `server/translation_prompt.py`
+- `tauri-client/src/pages/RecordingNoticePage.tsx`
+- `tauri-client/src/utils/defaultTranslationPrompt.ts`
+
+### 修改文件
+
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `server/app.py`
+- `server/config.py`
+- `server/security.py`
+- `server/tests/test_translator.py`
+- `server/tests/test_server.py`
+- `server/translator.py`
+- `deploy_n100_translation_server.ps1`
+- `tauri-client/src/components/recording/RecordingControlHud.tsx`
+- `tauri-client/src/components/recording/RecordingPrepToolbar.tsx`
+- `tauri-client/src/components/settings/TranslationChannelCard.tsx`
+- `tauri-client/src/hooks/useDiagnosticsReport.ts`
+- `tauri-client/src/hooks/useRapidOcrController.ts`
+- `tauri-client/src/hooks/useRecordingDependencyController.ts`
+- `tauri-client/src/hooks/useSettingsController.ts`
+- `tauri-client/src/i18n/dictionaries.ts`
+- `tauri-client/src/main.tsx`
+- `tauri-client/src/pages/OcrConfig.tsx`
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/pages/Settings.tsx`
+- `tauri-client/src-tauri/capabilities/default.json`
+- `tauri-client/src/utils/ocrConfigHelpers.ts`
+- `tauri-client/src/utils/recordingWindows.ts`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 RapidOCR detector/recognizer 质量和速度。
+- 不新增新的翻译 provider。
+- 不绕过现有文本翻译服务端；本章只是让大模型通道配置真正可控。
+- 不承诺录制全场景已完成真实人工验收；本章修复明确代码根因并通过构建检查。
+
+### 验证
+
+- `npm run check:i18n`：通过，`524 zh-CN keys match 524 en-US keys`。
+- `npm run build`：通过。
+- `python -m pytest server\tests\test_translator.py server\tests\test_server.py`：通过，`16 passed, 2 skipped`。
+- `npm run check:ocr-processing`：通过。
+- `python -m pytest server\tests`：通过，`26 passed, 3 skipped`。
+- `cargo check`：通过。
+- ACL 修复后复跑 `npm run build`：通过。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy_n100_translation_server.ps1 -SkipPublicSmoke`：通过，N100 LAN health 和翻译 smoke 通过。
+- N100 `/api/config/fetch_models` 用 `http://127.0.0.1:3001` 验证：不再返回“请求地址不合法”，说明私有中转地址已被允许；真实 `https://api.yousn.me` 当前返回中转服务 `401`，属于 API Key 或中转服务模型列表权限问题。
+- `git diff --check`：无空白错误，仅 Windows 换行提示。
+
+### 当前风险
+
+- 录制 notice 窗口位置使用录制选区的逻辑坐标；高 DPI、多屏、负坐标屏幕仍需要真实 Windows 人工验收。
+- 保存后继续第二次录制已从状态机上修复，但真实 FFmpeg 二次启动、暂停/继续后再保存、复制视频文件仍需要用户实测确认。
+- 大模型 prompt 已能保存并进入服务端请求，但不同模型对 `%%` 协议的遵循程度需要真实 provider 验收。
+- 大模型“获取模型”现在允许私有中转地址；若中转服务返回 `401/404`，需要检查 API Key 或该中转是否支持 OpenAI 兼容 `/v1/models`。
+- 控制台不再自动跑重诊断后，首次进入页面会偏“未检查”；这是为了避免卡顿，后续可以加轻量缓存态显示。
+
+### 下一章建议
+
+Chapter 135：回到 OCR/翻译真实样例验收。把用户真实截图样例固化进 RapidOCR fixture，重点覆盖清晰英文网页、搜索建议、混排中英、长句和复杂背景；同时做一次录制人工验收清单，确认保存后二次录制、打开目录、复制视频和取消清理都稳定。
+
+## Chapter 135：根目录模型、录制选择器、滚动截图与 DeepL 通道
+
+### 目标
+
+用户要求先完成一组真实使用阻塞项，再继续下一章：
+
+- 清空当前构建缓存和无用文件夹，只保留必要模型和文件。
+- 所有 OCR 模型严格放在仓库根目录 `models` 下，旧 `models/ocr` 和 runner 内置模型如果无用就清理。
+- 修复录制控制条“打开视频目录”仍被 ACL 拦截的问题。
+- 窗口录制和显示器录制进入录制前应先显示可取消的蓝框预览和胶囊目标选择器，而不是直接按鼠标附近窗口开始。
+- 首次启动 exe 后自动做一次轻量 readiness 检查，页面进入时只读缓存，避免每次点控制台或识字模型都卡顿。
+- 大模型模型列表获取后下拉可正确选择；保存按钮随页面滚动保持可用。
+- 主面板窗口发起截图后不应让用户必须从任务栏托盘重新打开面板。
+- 新增独立 DeepL 翻译通道。
+- 截图工具栏新增“移动”工具，并作为默认模式。
+- 滚动截图改为点击选区开始自动滚轮、再次点击停止，并在截取中显示右侧长图预览。
+
+### 本章实际处理
+
+- 根目录 RapidOCR 模型主线：
+  - 将 RapidOCR V4/V5 所需模型迁移到仓库根目录 `models/rapidocr`。
+  - 当前根目录模型共 `20` 个文件，约 `150 MB`，包含中文检测、方向分类、V4/V5 中文识别、Latin、Korean、Arabic、Cyrillic、Thai 字典和识别模型。
+  - 删除旧自研 OCR 路径下的 `models/ocr/**` 工作树文件。
+  - 删除 `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/_internal/rapidocr/models/**`，避免 runner 内置模型和根目录模型重复。
+  - `.gitattributes` 改为跟踪 `models/rapidocr/**/*.onnx`，不再跟踪旧 `models/ocr/**`。
+  - `tauri.conf.json` 资源纳入 `../../models/rapidocr/**/*`，同时保留 runner 和 FFmpeg 资源。
+  - `rapidocr_runner.py` 新增 `--model-root`，生产 OCR、probe、warm models、fixture 全部可显式使用根目录模型。
+  - Rust RapidOCR 调用统一解析 root `models/rapidocr`，缺模型时返回明确缺失清单，不再静默使用 AppData 或 runner 内嵌目录。
+  - RapidOCR 临时图片改写入系统 temp 下的 `ysn-screenshot-translator/rapidocr`，避免 OCR 运行态产物跑到项目模型目录或 AppData 模型目录。
+- 启动与状态缓存：
+  - Tauri `setup()` 后台运行一次 startup readiness probe。
+  - 新增 `get_startup_readiness_snapshot` 和 `run_startup_readiness_probe`。
+  - RapidOCR 页面和录制依赖页面优先读取启动缓存；用户手动刷新时才执行重检查。
+- 打开视频目录：
+  - 新增后端命令 `open_path_in_file_manager(path)`，直接调用系统文件管理器打开路径。
+  - 录制控制页、录制依赖页、RapidOCR 模型目录打开都改走该命令，绕开 `plugin:opener|open_path` ACL 限制。
+  - Tauri opener capability 同时补充 `$VIDEO/**`、`$APP/**`、`$RESOURCE/**` 作为插件路径兜底。
+- 录制目标选择：
+  - 新增 `RecordingTargetPicker` 胶囊目标选择器。
+  - 点击窗口录制或显示器录制时先进入可预览状态：目标列表横向展示，点击目标会更新蓝框预览，确认后才进入原录制控制条。
+  - 目标枚举增加 `exeName`、`processPath`、`iconDataUrl` 字段；本章先用 exe 首字母徽标占位，真实 Shell 图标抽取保留为下一步增强。
+  - ESC 会退出录制目标选择和蓝框预览状态。
+  - 普通截图工具条在录制目标选择期间隐藏，避免操作冲突。
+- 主窗口截图体验：
+  - 从主面板发起截图时，截图捕获完成后恢复主窗口可见状态，避免面板消失后只能从托盘重新打开。
+- 滚动截图：
+  - 滚动模式下点击选区开始采集，程序按选区中心自动模拟鼠标滚轮向下滚动。
+  - 截取中再次点击选区停止采集。
+  - 截取过程中右侧显示当前拼接预览图。
+  - 停止、取消、完成都会清理 timer、帧缓存、预览状态，并恢复窗口 capture exclusion。
+- 截图移动工具：
+  - 截图工具栏在矩形按钮左侧新增移动工具按钮。
+  - 每次进入截图默认是移动模式；选择标注工具后才进入对应绘制/编辑模式。
+- DeepL 翻译通道：
+  - 服务端新增 `DeepLTranslator`，使用官方 `/v2/translate` 协议和 `DeepL-Auth-Key`。
+  - 新增 `deepl` channel 配置：endpoint、api_key、formality。
+  - `/api/config/test`、`/api/config/save`、`/api/health`、translator cache key 均支持 DeepL。
+  - 前端设置页新增 DeepL 通道卡片，可配置默认 `https://api-free.deepl.com`、API Key 和 formality。
+  - `new-api` 模型获取成功后，如果当前字段为空或仍是无效默认值，会自动选择返回列表中的第一个模型；下拉选择会立即写回表单字段。
+  - 设置页头部改为 sticky，保存按钮跟随滚动保持可用。
+- 测试隔离：
+  - DeepL 配置测试执行后恢复原 server config，避免跑测试后用户本机 active channel 被留在 `deepl`。
+  - 翻译接口成功测试改为 mock 当前 active translator，不再依赖磁盘配置当前是 Google。
+- 清理：
+  - 清理忽略构建产物和缓存：`tauri-client/dist`、`tauri-client/src-tauri/target`、`tauri-client/src-tauri/gen`、`server/.pytest_cache`、`__pycache__`、旧根目录 `ocr`、旧根目录 `tauri-client.exe`。
+  - 保留 `ffmpeg/ffmpeg.exe`，因为当前录制仍依赖它。
+
+### 新增文件
+
+- `models/rapidocr/arabic_PP-OCRv4_rec_mobile.onnx`
+- `models/rapidocr/arabic_PP-OCRv5_rec_mobile.onnx`
+- `models/rapidocr/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx`
+- `models/rapidocr/ch_PP-OCRv4_det_infer.onnx`
+- `models/rapidocr/ch_PP-OCRv4_det_mobile.onnx`
+- `models/rapidocr/ch_PP-OCRv4_rec_infer.onnx`
+- `models/rapidocr/ch_PP-OCRv4_rec_mobile.onnx`
+- `models/rapidocr/ch_PP-OCRv5_det_mobile.onnx`
+- `models/rapidocr/ch_PP-OCRv5_rec_mobile.onnx`
+- `models/rapidocr/ch_ppocr_mobile_v2.0_cls_infer.onnx`
+- `models/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx`
+- `models/rapidocr/cyrillic_PP-OCRv3_rec_mobile.onnx`
+- `models/rapidocr/cyrillic_PP-OCRv5_rec_mobile.onnx`
+- `models/rapidocr/korean_PP-OCRv4_rec_mobile.onnx`
+- `models/rapidocr/korean_PP-OCRv5_rec_mobile.onnx`
+- `models/rapidocr/latin_PP-OCRv3_rec_mobile.onnx`
+- `models/rapidocr/latin_PP-OCRv5_rec_mobile.onnx`
+- `models/rapidocr/ppocr_keys_v1.txt`
+- `models/rapidocr/ppocrv5_dict.txt`
+- `models/rapidocr/th_PP-OCRv5_rec_mobile.onnx`
+- `tauri-client/src/components/recording/RecordingTargetPicker.tsx`
+
+### 修改文件
+
+- `.gitattributes`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `server/app.py`
+- `server/config.py`
+- `server/tests/test_server.py`
+- `server/tests/test_translate_text.py`
+- `server/tests/test_translator.py`
+- `server/translator.py`
+- `tauri-client/scripts/build-rapidocr-runner.ps1`
+- `tauri-client/scripts/check-ocr-fixtures.ps1`
+- `tauri-client/src-tauri/capabilities/default.json`
+- `tauri-client/src-tauri/rapidocr/rapidocr_runner.py`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/tauri.conf.json`
+- `tauri-client/src/App.tsx`
+- `tauri-client/src/components/config/RapidOcrPanel.tsx`
+- `tauri-client/src/components/screenshot/ScreenshotToolbar.tsx`
+- `tauri-client/src/components/settings/SettingsPageHeader.tsx`
+- `tauri-client/src/components/settings/TranslationChannelCard.tsx`
+- `tauri-client/src/components/settings/settingsOptions.ts`
+- `tauri-client/src/components/settings/types.ts`
+- `tauri-client/src/hooks/useRapidOcrController.ts`
+- `tauri-client/src/hooks/useRecordingDependencyController.ts`
+- `tauri-client/src/hooks/useSettingsController.ts`
+- `tauri-client/src/i18n/dictionaries.ts`
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/pages/Settings.tsx`
+
+### 删除文件
+
+- `models/ocr/**`
+- `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/_internal/rapidocr/models/**`
+- 忽略缓存和构建产物：`tauri-client/dist`、`tauri-client/src-tauri/target`、`tauri-client/src-tauri/gen`、`server/.pytest_cache`、`__pycache__`、旧根目录 `ocr`、旧根目录 `tauri-client.exe`。
+
+### 本章不做
+
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不把真实窗口图标抽取作为本章完成项；当前列表已有字段和 UI 占位，后续可补 Shell/GDI 图标提取。
+- 不承诺滚动截图和录制在所有真实 Windows 多屏/DPI 场景已经人工验收；本章完成状态机、命令、构建和自动化验证。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build:rapidocr-runner`：通过。
+  - runner 使用 `--model-root C:\Users\ysn\Desktop\zzjt\models\rapidocr` 预热模型。
+  - V5 probe 通过，约 `549ms`。
+  - V4 probe 通过，约 `863ms`。
+  - 重新确认 runner 内部 `rapidocr/models` 不存在，根目录 `models/rapidocr` 为唯一模型根。
+- `npm run check:ocr-fixtures`：通过。
+  - 中文大字：`2` blocks，约 `1519ms`。
+  - 英文 UI：`6` blocks，约 `1537ms`。
+  - 小字技术文本：`3` blocks，约 `1465ms`。
+  - 韩文：`3` blocks，约 `6247ms`。
+  - 日文：`4` blocks，约 `1480ms`。
+  - 阿拉伯文：`6` blocks，约 `6591ms`。
+  - 日志确认模型均从 `C:\Users\ysn\Desktop\zzjt\models\rapidocr` 读取。
+- `npm run check:ocr-processing`：通过。
+- `npm run check:i18n`：通过，`532 zh-CN keys match 532 en-US keys`。
+- `python -m pytest server\tests`：通过，`28 passed, 3 skipped`。
+- `npm run build`：通过；仅 Vite chunk 大于 `1200 kB` 的体积警告。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+- `git diff --check`：无空白错误，仅 Windows 换行提示。
+- 测试后确认本机 server config `active_channel` 回到 `google`。
+
+### 当前风险
+
+- 韩文和阿拉伯文仍会进入较重的多候选识别路径，单张 fixture 约 `6s`，后续需要做 detector 复用、候选裁剪和语言先验加速。
+- 录制目标列表当前显示 exe 名称和占位徽标，真实窗口图标尚未抽取。
+- 滚动截图的窗口排除依赖 Windows 对透明窗口 capture exclusion 的支持；如果系统拒绝排除，可能仍需进一步改成隐藏 overlay 后分帧采集。
+- 主窗口截图后恢复可见已从代码层修复，但真实用户习惯上是否需要“截图时主窗口完全不闪”还要人工验收。
+- 根目录 `models/rapidocr` 已成为主模型目录；后续发布包和 Git LFS 需要确认 tag/release 流程包含这些文件。
+
+### 下一章建议
+
+Chapter 136：做真实 exe 人工验收和针对性加速。优先验证窗口录制选择器、显示器录制控制条、打开视频目录、二次录制、滚动截图预览/停止/复制、主面板截图恢复；同时开始优化韩文/阿拉伯文 OCR 的 detector 复用和候选数量，目标把复杂脚本路径从 `6s` 降到可接受范围。

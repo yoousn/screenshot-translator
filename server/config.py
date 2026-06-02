@@ -3,6 +3,7 @@ import os
 import shutil
 import logging
 import secrets
+from translation_prompt import DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,18 @@ def _default_config():
             "new-api": {
                 "base_url": "api.yousn.me",
                 "api_key": os.environ.get("SS_TRANSLATOR_API_KEY", ""),
-                "model": "gemini-3.5-flash"
+                "model": "gemini-3.5-flash",
+                "prompt": DEFAULT_LLM_TRANSLATION_PROMPT,
+                "domain": DEFAULT_LLM_TRANSLATION_DOMAIN,
             },
             "baidu": {
                 "app_id": "",
                 "secret_key": ""
+            },
+            "deepl": {
+                "endpoint": "https://api-free.deepl.com",
+                "api_key": "",
+                "formality": "default"
             }
         }
     }

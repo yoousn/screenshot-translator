@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { App as AntdApp, ConfigProvider } from "antd";
 import type { RecordingWindowPayload } from "../utils/recordingWindows";
 import RecordingControlHud from "../components/recording/RecordingControlHud";
@@ -29,6 +29,12 @@ const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> 
   } finally {
     if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   }
+};
+
+const closeWindowIfExists = async (label: string) => {
+  const win = await WebviewWindow.getByLabel(label).catch(() => null);
+  if (!win) return;
+  await win.destroy().catch(() => win.close().catch(() => {}));
 };
 
 function RecordingControlContent() {
@@ -66,6 +72,7 @@ function RecordingControlContent() {
     allowCloseRef.current = true;
     await Promise.all([
       withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
+      withTimeout(closeWindowIfExists("recording_notice"), 150),
       notifyParent ? withTimeout(emit("recording-ended").catch(() => {}), 150) : Promise.resolve(null),
       withTimeout(winRef.current.hide().catch(() => {}), 150),
     ]);
@@ -103,6 +110,12 @@ function RecordingControlContent() {
   const startRecording = async () => {
     if (busyRef.current || statusRef.current !== "ready") return;
     setSavedPath(null);
+    segmentsRef.current = [];
+    activeStartedAtRef.current = null;
+    accumulatedMsRef.current = 0;
+    cancelledRef.current = false;
+    setElapsedMs(0);
+    await closeWindowIfExists("recording_notice").catch(() => {});
     setOverlayBusy(true);
     try {
       const seconds = Math.max(0, Math.floor(sessionRef.current?.countdownSeconds || 0));
@@ -138,9 +151,11 @@ function RecordingControlContent() {
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       segmentsRef.current = [];
       setSavedPath(nextSavedPath);
-      setOverlayStatus("saved");
-      await emit("recording-ended").catch(() => {});
-      message.success(`录制已保存：${nextSavedPath}`);
+      setOverlayStatus("ready");
+      const noticeShown = await showSavedNotice();
+      if (!noticeShown) {
+        message.success(`录制已保存：${nextSavedPath}`);
+      }
     } catch (error: any) {
       if (cancelledRef.current) return;
       setOverlayStatus(activeStartedAtRef.current === null ? "paused" : "recording");
@@ -202,6 +217,47 @@ function RecordingControlContent() {
       await withTimeout(winRef.current.close().catch(() => {}), 300);
     } finally {
       setOverlayBusy(false);
+    }
+  };
+
+  const showSavedNotice = async () => {
+    const rect = sessionRef.current?.noticeRect;
+    if (!rect) return false;
+    const noticeSize = { w: 340, h: 52 };
+    const screenInfo = window.screen as Screen & { availLeft?: number; availTop?: number };
+    const screenLeft = screenInfo.availLeft || 0;
+    const screenTop = screenInfo.availTop || 0;
+    const screenRight = screenLeft + screenInfo.availWidth;
+    const screenBottom = screenTop + screenInfo.availHeight;
+    const centeredX = rect.x + Math.round((rect.w - noticeSize.w) / 2);
+    const centeredY = rect.y + Math.round((rect.h - noticeSize.h) / 2);
+    const x = Math.min(Math.max(screenLeft + 8, centeredX), Math.max(screenLeft + 8, screenRight - noticeSize.w - 8));
+    const y = Math.min(Math.max(screenTop + 8, centeredY), Math.max(screenTop + 8, screenBottom - noticeSize.h - 8));
+
+    try {
+      await closeWindowIfExists("recording_notice");
+      const notice = new WebviewWindow("recording_notice", {
+        url: `index.html?text=${encodeURIComponent("录制已保存")}`,
+        title: "Recording Saved",
+        decorations: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        shadow: false,
+        width: noticeSize.w,
+        height: noticeSize.h,
+        x,
+        y,
+      });
+      notice.once("tauri://created", () => {
+        invoke("set_window_capture_excluded", { label: "recording_notice", excluded: true }).catch(() => {});
+      });
+      return true;
+    } catch {
+      return false;
     }
   };
 
@@ -268,9 +324,15 @@ function RecordingControlContent() {
   }, []);
 
   const openVideoFolder = async () => {
-    const folder = outputDir || await invoke<string>("get_default_recording_output_dir");
-    setOutputDir(folder);
-    await openPath(folder);
+    try {
+      const folder = savedPath
+        ? savedPath.replace(/[\\/][^\\/]+$/, "")
+        : outputDir || await invoke<string>("get_default_recording_output_dir");
+      setOutputDir(folder);
+      await invoke("open_path_in_file_manager", { path: folder });
+    } catch (error: any) {
+      message.error(`打开视频目录失败：${error?.message || error}`);
+    }
   };
 
   const copySavedVideo = async () => {

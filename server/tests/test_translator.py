@@ -1,7 +1,7 @@
 import pytest
 import requests
 from unittest.mock import patch
-from translator import BaseTranslator, GoogleTranslator, LLMTranslator, BaiduTranslator
+from translator import BaseTranslator, GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator
 
 
 class FakeLLMResponse:
@@ -22,6 +22,25 @@ class FakeLLMSession:
     def post(self, _url, **kwargs):
         self.last_payload = kwargs.get("json")
         return FakeLLMResponse(self.content)
+
+
+class FakeDeepLResponse:
+    status_code = 200
+    text = "ok"
+
+    def json(self):
+        return {"translations": [{"text": "你好"}, {"text": "世界"}]}
+
+
+class FakeDeepLSession:
+    def __init__(self):
+        self.last_headers = None
+        self.last_data = None
+
+    def request(self, _method, _url, **kwargs):
+        self.last_headers = kwargs.get("headers")
+        self.last_data = kwargs.get("data")
+        return FakeDeepLResponse()
 
 
 def test_google_translation():
@@ -64,32 +83,62 @@ def test_llm_cache_namespace_includes_model():
     assert translator_a.cache_namespace() != translator_b.cache_namespace()
 
 
-def test_llm_private_segment_markers_ignore_literal_seg_text():
+def test_llm_prompt_replaces_language_and_domain_placeholders():
+    with patch("translator.normalize_public_base_url", lambda url: url.rstrip('/')):
+        translator = LLMTranslator(
+            "https://example.com",
+            "sk-test",
+            "model-a",
+            "Translate {{SOURCE_LANGUAGE}} to {{TARGET_LANGUAGE}} for {{TRANSLATION_DOMAIN}}.",
+            "screenshot UI",
+        )
+    translator.session = FakeLLMSession("你好")
+    with patch("translator.request_public_url", lambda session, method, url, **kwargs: session.post(url, **kwargs)):
+        translator.translate("Hello", "en", "zh")
+
+    system_prompt = translator.session.last_payload["messages"][0]["content"]
+    assert "English" in system_prompt
+    assert "Simplified Chinese" in system_prompt
+    assert "screenshot UI" in system_prompt
+
+
+def test_llm_percent_segments_ignore_literal_seg_text():
     with patch("translator.normalize_public_base_url", lambda url: url.rstrip('/')):
         translator = LLMTranslator("https://example.com", "sk-test", "model-a")
-    response = (
-        f"{translator._segment_marker(0)}keep literal <SEG2> as text\n"
-        f"{translator._segment_marker(1)}second translation"
-    )
+    response = "keep literal <SEG2> as text\n%%\nsecond translation"
     translator.session = FakeLLMSession(response)
     with patch("translator.request_public_url", lambda session, method, url, **kwargs: session.post(url, **kwargs)):
         result = translator._do_translate_batch(["literal <SEG2>", "second"], "en", "zh")
 
     assert result == ["keep literal <SEG2> as text", "second translation"]
     packed_input = translator.session.last_payload["messages"][1]["content"]
-    assert translator._segment_marker(0) in packed_input
+    assert "\n%%\n" in packed_input
     assert "<SEG0>" not in packed_input
 
 
-def test_llm_segment_validation_falls_back_on_missing_marker():
+def test_llm_percent_segment_validation_falls_back_on_missing_separator():
     with patch("translator.normalize_public_base_url", lambda url: url.rstrip('/')):
         translator = LLMTranslator("https://example.com", "sk-test", "model-a")
-    translator.session = FakeLLMSession(f"{translator._segment_marker(0)}only first")
+    translator.session = FakeLLMSession("only first")
     translator.translate = lambda text, *_args, **_kwargs: f"fallback:{text}"
 
     result = translator._do_translate_batch(["first", "second"], "en", "zh")
 
     assert result == ["fallback:first", "fallback:second"]
+
+
+def test_deepl_batch_uses_official_v2_translate_protocol():
+    with patch("translator.normalize_public_base_url", lambda url: url.rstrip('/')):
+        translator = DeepLTranslator("deepl-key", "https://api-free.deepl.com", "prefer_more")
+    translator.session = FakeDeepLSession()
+    with patch("translator.request_public_url", lambda session, method, url, **kwargs: session.request(method, url, **kwargs)):
+        result = translator._do_translate_batch(["Hello", "World"], "en", "zh")
+
+    assert result == ["你好", "世界"]
+    assert translator.session.last_headers["Authorization"] == "DeepL-Auth-Key deepl-key"
+    assert ("target_lang", "ZH-HANS") in translator.session.last_data
+    assert ("source_lang", "EN") in translator.session.last_data
+    assert translator.session.last_data.count(("text", "Hello")) == 1
 
 
 class CountingTranslator(BaseTranslator):

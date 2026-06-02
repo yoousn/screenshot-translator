@@ -73,7 +73,7 @@ export default function RecordingControlHud({
   const recordTitle = status === "saved" ? "录制已保存" : isRecording || isPaused ? "停止并保存" : "开始录制";
   const countdownText = countdown !== null ? String(countdown).padStart(2, "0") : "00";
   const toolBorderColor = isRecording ? "rgba(239,68,68,0.34)" : isPaused ? "rgba(245,158,11,0.36)" : "rgba(226,232,240,0.95)";
-  const toolShadow = isRecording ? "0 16px 42px rgba(239,68,68,0.24)" : isPaused ? "0 16px 42px rgba(245,158,11,0.22)" : "0 14px 36px rgba(15,23,42,0.20)";
+  const toolShadow = "none";
 
   return (
     <div style={{ width: "100vw", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", background: "transparent", padding: 2, boxSizing: "border-box" }}>
@@ -87,7 +87,7 @@ export default function RecordingControlHud({
       <div className="ysn-rec-tool" style={{ pointerEvents: "auto", height: 48, maxWidth: "calc(100vw - 8px)", display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 999, background: "rgba(255,255,255,0.96)", border: `1px solid ${toolBorderColor}`, boxShadow: toolShadow, color: "#0f172a", boxSizing: "border-box", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", transition: "border-color 180ms ease, box-shadow 180ms ease" }}>
         {dragHandle("left")}
         <Tooltip title={recordTitle}>
-          <Button data-no-drag="true" type="text" loading={isSaving || busy && status === "countdown"} disabled={status === "saved" || isSaving || busy && !isRecording && !isPaused} onClick={onToggleRecord} style={{ width: 34, height: 34, minWidth: 34, borderRadius: 999, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: `${recordColor}14`, border: `1px solid ${recordColor}33` }}>
+          <Button data-no-drag="true" type="text" loading={isSaving || busy && status === "countdown"} disabled={isSaving || busy && !isRecording && !isPaused} onClick={onToggleRecord} style={{ width: 34, height: 34, minWidth: 34, borderRadius: 999, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: `${recordColor}14`, border: `1px solid ${recordColor}33` }}>
             <span style={{ width: isRecording || isPaused ? 14 : 15, height: isRecording || isPaused ? 14 : 15, borderRadius: isRecording || isPaused ? 5 : 999, background: recordColor, boxShadow: `0 0 0 5px ${recordColor}18`, animation: isRecording ? "ysn-rec-pulse 1.15s infinite" : "none" }} />
           </Button>
         </Tooltip>

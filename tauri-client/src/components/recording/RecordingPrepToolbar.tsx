@@ -61,7 +61,7 @@ export default function RecordingPrepToolbar({
   onCancel,
 }: RecordingPrepToolbarProps) {
   return (
-    <Space size={[8, 8]} wrap style={{ maxWidth: "100%", padding: "8px 10px", borderRadius: 16, background: "rgba(255,255,255,0.96)", border: "1px solid rgba(226,232,240,0.95)", boxShadow: "0 12px 32px rgba(15,23,42,0.18)", color: "#111827", backdropFilter: "blur(12px)", boxSizing: "border-box" }}>
+    <Space size={[8, 8]} wrap style={{ maxWidth: "100%", padding: "8px 10px", borderRadius: 16, background: "rgba(255,255,255,0.96)", border: "1px solid rgba(226,232,240,0.95)", boxShadow: "none", color: "#111827", backdropFilter: "blur(12px)", boxSizing: "border-box" }}>
       <span style={{ display: "inline-flex", alignItems: "center", gap: 7, height: 30, padding: "0 10px", borderRadius: 999, background: "#fff1f2", color: "#e11d48", fontWeight: 800, letterSpacing: 0.2 }}>
         <span style={{ width: 8, height: 8, borderRadius: 999, background: "#ef4444", boxShadow: "0 0 0 4px rgba(239,68,68,0.14)" }} />
         {modeLabel[mode]}
@@ -76,7 +76,7 @@ export default function RecordingPrepToolbar({
       <Select size="small" value={resolution} disabled={busy} style={{ width: 96 }} onChange={onResolutionChange} options={[{ label: "480P", value: "480p" }, { label: "720P", value: "720p" }, { label: "1080P", value: "1080p" }, { label: "\u539f\u753b", value: "original" }]} />
       <Select size="small" value={audioMode} disabled={busy} style={{ width: 220, maxWidth: "calc(100vw - 48px)" }} onChange={onAudioModeChange} options={audioOptions} />
       <Select size="small" value={countdownSeconds} disabled={busy} style={{ width: 86 }} onChange={onCountdownChange} options={[{ label: "0s", value: 0 }, { label: "1s", value: 1 }, { label: "3s", value: 3 }, { label: "5s", value: 5 }]} />
-      <Button size="small" type="primary" danger loading={busy} onClick={onStart} style={{ height: 30, borderRadius: 999, fontWeight: 700, boxShadow: "0 8px 18px rgba(239,68,68,0.24)" }}>
+      <Button size="small" type="primary" danger loading={busy} onClick={onStart} style={{ height: 30, borderRadius: 999, fontWeight: 700, boxShadow: "none" }}>
         {"\u5f00\u59cb"}
       </Button>
       <Button size="small" danger disabled={busy} onClick={onCancel} style={{ height: 30, borderRadius: 999, fontWeight: 700, background: "rgba(255,255,255,0.96)" }}>

@@ -53,20 +53,23 @@ $remoteBackup = @"
 cd '$RemoteDir' &&
 ts=`$(date +%Y%m%d-%H%M%S) &&
 mkdir -p deploy-backups/`$ts &&
-cp app.py translator.py translationGlossary.json deploy-backups/`$ts/ 2>/dev/null || true &&
+cp app.py config.py security.py translator.py translation_prompt.py translationGlossary.json deploy-backups/`$ts/ 2>/dev/null || true &&
 echo deploy-backups/`$ts
 "@
 
 Write-Host "[1/6] Backing up remote service files..."
 Invoke-Remote $remoteBackup
 
-Write-Host "[2/6] Uploading app.py, translator.py, and translation glossary..."
+Write-Host "[2/6] Uploading server app, config, security, translator, prompt, and glossary..."
 Copy-RemoteFile "server\app.py" "$RemoteDir/app.py"
+Copy-RemoteFile "server\config.py" "$RemoteDir/config.py"
+Copy-RemoteFile "server\security.py" "$RemoteDir/security.py"
 Copy-RemoteFile "server\translator.py" "$RemoteDir/translator.py"
+Copy-RemoteFile "server\translation_prompt.py" "$RemoteDir/translation_prompt.py"
 Copy-RemoteFile "tauri-client\src\utils\translationGlossary.json" "$RemoteDir/translationGlossary.json"
 
 Write-Host "[3/6] Running remote syntax check..."
-Invoke-Remote "cd '$RemoteDir' && .venv/bin/python -m py_compile app.py translator.py"
+Invoke-Remote "cd '$RemoteDir' && .venv/bin/python -m py_compile app.py config.py security.py translator.py translation_prompt.py"
 
 Write-Host "[4/6] Restarting uvicorn on port $Port..."
 $stopCommand = @"

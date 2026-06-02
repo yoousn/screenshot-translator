@@ -2,6 +2,7 @@ export const getChannelOptions = (labels: Record<string, string>) => [
   { value: "google", label: labels.channelGoogle },
   { value: "baidu", label: labels.channelBaidu },
   { value: "new-api", label: labels.channelNewApi },
+  { value: "deepl", label: labels.channelDeepL },
 ];
 
 export const getTargetLangOptions = (labels: Record<string, string>) => [

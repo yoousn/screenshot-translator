@@ -13,7 +13,7 @@ export default function SettingsPageHeader({ saving }: SettingsPageHeaderProps) 
   const labels = text.settings;
 
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e8e8e8", paddingBottom: 16, marginBottom: 24 }}>
+    <div style={{ position: "sticky", top: 0, zIndex: 20, display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e8e8e8", padding: "10px 0 16px", marginBottom: 24, background: "rgba(255,255,255,0.96)", backdropFilter: "blur(10px)" }}>
       <div>
         <Title level={4} style={{ margin: 0 }}>{labels.pageTitle}</Title>
         <Paragraph type="secondary" style={{ fontSize: 12, margin: "4px 0 0 0" }}>

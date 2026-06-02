@@ -8,11 +8,20 @@
     "pin_*",
     "ocr_*",
     "recording_overlay",
-    "recording_control"
+    "recording_control",
+    "recording_notice"
   ],
   "permissions": [
     "core:default",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$VIDEO/**" },
+        { "path": "$APP/**" },
+        { "path": "$RESOURCE/**" }
+      ]
+    },
     "global-shortcut:default",
     "core:window:allow-set-size",
     "core:window:allow-show",
