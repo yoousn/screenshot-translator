@@ -91,7 +91,7 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
 
   const control = new WebviewWindow("recording_control", {
     url: "index.html",
-    title: "录制控制",
+    title: "Recording Control",
     decorations: false,
     transparent: true,
     alwaysOnTop: true,

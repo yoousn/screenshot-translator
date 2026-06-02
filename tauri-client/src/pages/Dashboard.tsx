@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message, Space } from "antd";
 import {
@@ -9,40 +9,13 @@ import {
   TranslationOutlined,
 } from "@ant-design/icons";
 import DashboardActionList, { type DashboardActionItem } from "../components/dashboard/DashboardActionList";
+import DashboardDiagnosticsCard from "../components/dashboard/DashboardDiagnosticsCard";
 import DashboardHero from "../components/dashboard/DashboardHero";
+import DashboardReadiness from "../components/dashboard/DashboardReadiness";
 import DashboardStats from "../components/dashboard/DashboardStats";
 import DelayedCountdownOverlay from "../components/screenshot/DelayedCountdownOverlay";
-
-const T = {
-  title: "首页",
-  desc: "快速开始截图、翻译、识字和常用操作。",
-  screenshot: "截图",
-  screenshotDesc: "点击或通过快捷键开始框选截图。",
-  translate: "截图翻译",
-  translateDesc: "框选内容并翻译成目标语言。",
-  delayed: "延时截图",
-  delayedDesc: "3 秒后开始截图，适合捕获菜单、下拉框或悬停状态。",
-  ocr: "识字 OCR",
-  ocrDesc: "框选后识别文字，结果自动复制到剪贴板。",
-  fullscreen: "全屏复制",
-  fullscreenDesc: "快速截取当前屏幕并复制到剪贴板。",
-  run: "开始",
-  server: "翻译服务",
-  online: "在线",
-  offline: "离线",
-  checking: "检测中",
-  hotkey: "截图快捷键",
-  ocrMode: "OCR 模式",
-  localOnly: "本地",
-  targetLang: "目标语言",
-  startScreenshot: "开始截图",
-  startTranslateFailed: "启动截图翻译失败：",
-  delayedInfo: "3 秒后开始截图，请准备好要截取的内容。",
-  delayedCancel: "取消倒计时",
-  delayedStarting: "即将开始截图",
-  fullscreenCopied: "全屏截图已复制到剪贴板。",
-  fullscreenFailed: "全屏截图失败：",
-};
+import useDiagnosticsReport from "../hooks/useDiagnosticsReport";
+import { useI18n } from "../i18n";
 
 interface Config {
   serverUrl?: string;
@@ -54,16 +27,24 @@ interface Config {
 
 interface DashboardProps {
   onStartScreenshot: () => void;
+  onNavigate: (key: string) => void;
   shortcutError?: string | null;
   serverStatus: "checking" | "online" | "offline";
   responseTime: number | null;
-  onRefreshStatus: () => void;
 }
 
-export default function Dashboard({ onStartScreenshot, shortcutError, serverStatus, responseTime }: DashboardProps) {
+const targetLanguageLabel = (targetLang: string | undefined, fallback: string) => {
+  if (!targetLang || targetLang === "zh" || targetLang === "zh-CN") return fallback;
+  return targetLang.toUpperCase();
+};
+
+export default function Dashboard({ onStartScreenshot, onNavigate, shortcutError, serverStatus, responseTime }: DashboardProps) {
   const [config, setConfig] = useState<Config>({});
   const [delayedCountdown, setDelayedCountdown] = useState<number | null>(null);
   const [delayedActive, setDelayedActive] = useState(false);
+  const diagnostics = useDiagnosticsReport();
+  const { text } = useI18n();
+  const T = text.dashboard;
 
   useEffect(() => {
     loadConfig();
@@ -118,7 +99,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
     }
   };
 
-  const statusText = serverStatus === "online" ? T.online : serverStatus === "offline" ? T.offline : T.checking;
+  const statusText = serverStatus === "online" ? text.status.online : serverStatus === "offline" ? text.status.offline : text.status.checking;
   const statusColor = serverStatus === "online" ? "green" : serverStatus === "offline" ? "red" : "orange";
 
   const functionList: DashboardActionItem[] = [
@@ -127,7 +108,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       description: T.screenshotDesc,
       icon: <CameraOutlined style={{ fontSize: 18, color: "#1677ff" }} />,
       hotkey: config.hotkey || "Alt+A",
-      buttonText: T.startScreenshot,
+      buttonText: T.primaryAction,
       danger: Boolean(shortcutError),
       onClick: onStartScreenshot,
     },
@@ -135,7 +116,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       title: T.translate,
       description: T.translateDesc,
       icon: <TranslationOutlined style={{ fontSize: 18, color: "#1677ff" }} />,
-      hotkey: "Alt+T",
+      hotkey: "Ctrl+Q",
       buttonText: T.translate,
       onClick: startTranslateScreenshot,
     },
@@ -151,7 +132,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       title: T.ocr,
       description: T.ocrDesc,
       icon: <ScanOutlined style={{ fontSize: 18, color: "#722ed1" }} />,
-      hotkey: "OCR",
+      hotkey: "Ctrl+D",
       buttonText: T.screenshot,
       onClick: onStartScreenshot,
     },
@@ -170,19 +151,35 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
       {delayedActive && delayedCountdown !== null && (
         <DelayedCountdownOverlay countdown={delayedCountdown} title={T.delayedStarting} onCancel={handleDelayedScreenshot} />
       )}
-      <DashboardHero title={T.title} description={T.desc} buttonText={T.startScreenshot} onStartScreenshot={onStartScreenshot} />
+      <DashboardHero title={T.title} description={T.desc} buttonText={T.primaryAction} onStartScreenshot={onStartScreenshot} />
       <DashboardStats
         hotkey={config.hotkey || "Alt+A"}
-        ocrModeLabel={T.localOnly}
-        targetLang={(config.targetLang || "zh").toUpperCase()}
-        serverTitle={T.server}
+        ocrModeLabel={T.ocrModeValue}
+        targetLang={targetLanguageLabel(config.targetLang, T.targetLangDefault)}
+        serverTitle={T.service}
         serverValue={responseTime ? `${responseTime}ms` : statusText}
         serverStatusText={statusText}
         serverStatusColor={statusColor}
         labels={{ hotkey: T.hotkey, ocrMode: T.ocrMode, targetLang: T.targetLang }}
       />
+      <DashboardReadiness
+        labels={T}
+        serverStatus={serverStatus}
+        shortcutError={shortcutError}
+        onOpenModels={() => onNavigate("ocr-config")}
+        onOpenSettings={() => onNavigate("settings")}
+      />
+      <DashboardDiagnosticsCard
+        labels={{ ...T, ...text.config }}
+        report={diagnostics.report}
+        loading={diagnostics.loading}
+        error={diagnostics.error}
+        onRefresh={diagnostics.refresh}
+        onOpenModels={() => onNavigate("ocr-config")}
+        onOpenSettings={() => onNavigate("settings")}
+      />
       <DashboardActionList
-        title={T.title}
+        title={T.commandCenter}
         delayedTitle={T.delayed}
         delayedActive={delayedActive}
         delayedCancelText={T.delayedCancel}

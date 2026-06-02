@@ -36,3 +36,7 @@ sevenz-rust = "0.6"
 futures-util = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+
+sha2 = "0.10"
+ndarray = "0.17"
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native", "api-24"] }

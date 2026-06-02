@@ -101,7 +101,7 @@ function RecordingControlContent() {
   };
 
   const startRecording = async () => {
-    if (busyRef.current || (statusRef.current !== "ready" && statusRef.current !== "saved")) return;
+    if (busyRef.current || statusRef.current !== "ready") return;
     setSavedPath(null);
     setOverlayBusy(true);
     try {
@@ -117,7 +117,7 @@ function RecordingControlContent() {
       setCountdown(null);
       await startSegment();
     } catch (error: any) {
-      message.error(`Failed to start recording: ${error?.message || error}`);
+      message.error(`启动录制失败：${error?.message || error}`);
       setOverlayStatus("ready");
     } finally {
       setOverlayBusy(false);
@@ -139,13 +139,12 @@ function RecordingControlContent() {
       segmentsRef.current = [];
       setSavedPath(nextSavedPath);
       setOverlayStatus("saved");
-      await invoke("hide_recording_overlay").catch(() => {});
       await emit("recording-ended").catch(() => {});
-      message.success(`Recording saved: ${nextSavedPath}`);
+      message.success(`录制已保存：${nextSavedPath}`);
     } catch (error: any) {
       if (cancelledRef.current) return;
       setOverlayStatus(activeStartedAtRef.current === null ? "paused" : "recording");
-      message.error(`Failed to save recording: ${error?.message || error}`);
+      message.error(`保存录制失败：${error?.message || error}`);
     } finally {
       setOverlayBusy(false);
     }
@@ -167,7 +166,7 @@ function RecordingControlContent() {
       await stopActiveSegment();
     } catch (error: any) {
       setOverlayStatus("recording");
-      message.error(`Failed to pause recording: ${error?.message || error}`);
+      message.error(`暂停录制失败：${error?.message || error}`);
     } finally {
       setOverlayBusy(false);
     }
@@ -179,7 +178,7 @@ function RecordingControlContent() {
     try {
       await startSegment();
     } catch (error: any) {
-      message.error(`Failed to resume recording: ${error?.message || error}`);
+      message.error(`继续录制失败：${error?.message || error}`);
     } finally {
       setOverlayBusy(false);
     }
@@ -278,19 +277,19 @@ function RecordingControlContent() {
     if (!savedPath) return;
     try {
       await invoke("copy_file_to_clipboard", { path: savedPath });
-      message.success("Video copied to clipboard");
+      message.success("视频文件已复制到剪贴板");
     } catch {
       await navigator.clipboard.writeText(savedPath);
-      message.info("Video path copied");
+      message.info("视频路径已复制");
     }
   };
 
   const audioLabel = (() => {
     const mode = sessionRef.current?.options.audio_mode || "none";
-    if (mode === "system_mic") return "System + Mic";
-    if (mode === "system") return "System";
-    if (mode === "mic") return "Mic";
-    return "Muted";
+    if (mode === "system_mic") return "系统 + 麦克风";
+    if (mode === "system") return "系统声音";
+    if (mode === "mic") return "麦克风";
+    return "静音";
   })();
 
   return (

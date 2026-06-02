@@ -3,9 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { message, Tag } from "antd";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { DownloadResult, GitHubAsset, GitHubRelease, LocalConfig, ProgressPayload, REPO_API, StatusResult, T, pickWindowsAsset } from "../utils/ocrConfigHelpers";
+import { DownloadResult, GitHubAsset, GitHubRelease, LocalConfig, ProgressPayload, REPO_API, StatusResult, pickWindowsAsset } from "../utils/ocrConfigHelpers";
+import { useI18n } from "../i18n";
 
 export default function useOcrConfigController() {
+  const { text } = useI18n();
+  const labels = text.config;
   const [config, setConfig] = useState<LocalConfig>({});
   const [latest, setLatest] = useState<GitHubRelease | null>(null);
   const [latestAsset, setLatestAsset] = useState<GitHubAsset | null>(null);
@@ -46,9 +49,9 @@ export default function useOcrConfigController() {
       const next = { ...config, ...patch, useLocalOcr: true, fallbackToRemoteOcr: false };
       await invoke("save_config", { configStr: JSON.stringify(next) });
       setConfig(next);
-      if (showMessage) message.success(T.saved);
+      if (showMessage) message.success(labels.ocrConfigSaved);
     } catch (error: any) {
-      message.error(T.saveFailed + (error?.message || error));
+      message.error(labels.ocrConfigSaveFailed + (error?.message || error));
     } finally {
       setSaving(false);
     }
@@ -61,11 +64,11 @@ export default function useOcrConfigController() {
         executablePath: path || config.localOcrExecutablePath || null,
       });
       setStatus(result);
-      if (showMessage) message.success(T.checkedStatus);
+      if (showMessage) message.success(labels.ocrRuntimeChecked);
       return result;
     } catch (error: any) {
       setStatus({ ok: false, path: path || config.localOcrExecutablePath || "", exists: false, isFile: false, parentExists: false });
-      if (showMessage) message.error(T.statusFailed + (error?.message || error));
+      if (showMessage) message.error(labels.ocrRuntimeCheckFailed + (error?.message || error));
       return null;
     } finally {
       setCheckingStatus(false);
@@ -79,14 +82,14 @@ export default function useOcrConfigController() {
       if (!response.ok) throw new Error("GitHub HTTP " + response.status);
       const release = await response.json() as GitHubRelease;
       const asset = pickWindowsAsset(release);
-      if (!asset) throw new Error(T.noWindowsAsset);
+      if (!asset) throw new Error(labels.noWindowsAsset);
       setLatest(release);
       setLatestAsset(asset);
       setDownloadSize(asset.size);
       await saveConfig({ paddleOcrReleaseCheckedAt: new Date().toLocaleString() }, false);
-      message.success(T.checkedLatest + release.tag_name);
+      message.success(labels.checkedLatestCompatibilityOcr + release.tag_name);
     } catch (error: any) {
-      message.error(T.checkFailed + (error?.message || error));
+      message.error(labels.checkCompatibilityFailed + (error?.message || error));
     } finally {
       setChecking(false);
     }
@@ -94,7 +97,7 @@ export default function useOcrConfigController() {
 
   const downloadLatest = async () => {
     if (!latest || !latestAsset) {
-      message.info(T.checkFirst);
+      message.info(labels.checkReleaseFirst);
       return;
     }
     setDownloading(true);
@@ -116,9 +119,9 @@ export default function useOcrConfigController() {
       }, false);
       await checkOcrStatus(result.path, false);
       setDownloadProgress({ phase: "完成", downloaded: result.bytes, total: result.bytes, percent: 100 });
-      message.success(T.downloaded + latest.tag_name);
+      message.success(labels.installedCompatibilityOcr + latest.tag_name);
     } catch (error: any) {
-      message.error(T.downloadFailed + (error?.message || error));
+      message.error(labels.compatibilityDownloadFailed + (error?.message || error));
     } finally {
       setDownloading(false);
     }
@@ -133,16 +136,16 @@ export default function useOcrConfigController() {
       if (!selectedDir) return;
       const result = await checkOcrStatus(selectedDir, false);
       if (!result?.ok) {
-        message.error("所选目录没有可用 OCR 运行入口");
+        message.error(labels.selectedRuntimeUnavailable);
         return;
       }
       await saveConfig({
         localOcrExecutablePath: selectedDir,
         paddleOcrInstallDir: selectedDir,
       }, false);
-      message.success("OCR 运行包已切换");
+      message.success(labels.ocrRuntimeSwitched);
     } catch (error: any) {
-      message.error("选择 OCR 运行包失败：" + (error?.message || error));
+      message.error(labels.chooseOcrRuntimeFailed + (error?.message || error));
     } finally {
       setCheckingStatus(false);
     }
@@ -153,7 +156,7 @@ export default function useOcrConfigController() {
     try {
       const targetDir = await invoke<string | null>("choose_ocr_install_dir");
       if (!targetDir) return;
-      message.loading({ content: T.moving, key: "move-ocr", duration: 0 });
+      message.loading({ content: labels.movingOcrRuntime, key: "move-ocr", duration: 0 });
       const result = await invoke<DownloadResult>("move_ocr_runtime", {
         targetDir,
         executablePath: config.localOcrExecutablePath || null,
@@ -163,7 +166,7 @@ export default function useOcrConfigController() {
         paddleOcrInstallDir: result.installDir,
       }, false);
       await checkOcrStatus(result.path, false);
-      message.success({ content: T.moved, key: "move-ocr" });
+      message.success({ content: labels.movedOcrRuntime, key: "move-ocr" });
     } catch (error: any) {
       message.error({ content: (error?.message || error), key: "move-ocr" });
     } finally {
@@ -186,11 +189,11 @@ export default function useOcrConfigController() {
       await openPath(installDir);
       return;
     }
-    message.info("Please choose a RapidOCR ONNX or PaddleOCR-json runtime first.");
+    message.info(labels.chooseRuntimeFirst);
   };
 
   const hasUpdate = Boolean(latest && latest.tag_name !== config.paddleOcrReleaseTag);
-  const statusTag = status?.ok ? <Tag color="green">{T.statusOk}</Tag> : status ? <Tag color="red">{T.statusBad}</Tag> : <Tag>{T.statusUnknown}</Tag>;
+  const statusTag = status?.ok ? <Tag color="green">{labels.availableValue}</Tag> : status ? <Tag color="red">{labels.unavailableValue}</Tag> : <Tag>{labels.notChecked}</Tag>;
 
   return {
     config,

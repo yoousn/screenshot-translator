@@ -18,6 +18,7 @@ import { getDetectionCandidatesAt, rectSignature } from "../utils/detectionCandi
 import { translateWithLocalOcr } from "../utils/localOcrTranslate";
 import { renderScreenshotCanvas } from "../utils/renderScreenshotCanvas";
 import { openRecordingWindows } from "../utils/recordingWindows";
+import { buildOcrNormalizationReport } from "../ocr-processing";
 
 interface Config {
   serverUrl?: string;
@@ -1416,7 +1417,8 @@ export default function ScreenshotPage() {
         executablePath: configRef.current.localOcrExecutablePath || null,
         timeoutMs: configRef.current.localOcrTimeoutMs || 15000
       });
-      const texts = (ocrBlocks || []).map((item) => item.text).filter(Boolean).join("\n");
+      const normalization = await buildOcrNormalizationReport(ocrBlocks || []);
+      const texts = normalization.text;
 
       message.destroy();
       setIsOCRing(false);
@@ -1427,7 +1429,21 @@ export default function ScreenshotPage() {
         } catch {}
       }
 
-      await openOcrResultWindow({ selection: rectRef.current, text: texts, previewBase64: base64, margin: FLOATING_PANEL_MARGIN, gap: FLOATING_PANEL_GAP, windowSize: OCR_WINDOW_SIZE });
+      await openOcrResultWindow({
+        selection: rectRef.current,
+        text: texts,
+        previewBase64: base64,
+        margin: FLOATING_PANEL_MARGIN,
+        gap: FLOATING_PANEL_GAP,
+        windowSize: OCR_WINDOW_SIZE,
+        normalizationSummary: {
+          rawCount: normalization.rawCount,
+          usefulCount: normalization.usefulCount,
+          virtualLineCount: normalization.virtualLineCount,
+          droppedCount: normalization.droppedCount,
+          routeMissingScripts: normalization.routePlan?.missingScripts || [],
+        },
+      });
       resetScreenshotState();
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
     } catch (e: any) {

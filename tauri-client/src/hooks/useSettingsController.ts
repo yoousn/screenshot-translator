@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
+import type { FormInstance } from "antd";
 
-export default function useSettingsController(form: any, onConfigSaved: () => void) {
+type TranslationChannel = "baidu" | "new-api";
+
+type ServerChannelPayload = {
+  channel: string;
+  config: Record<string, string>;
+};
+
+const trimTrailingSlash = (value: string) => value.replace(/\/$/, "");
+
+export default function useSettingsController(form: FormInstance, onConfigSaved: () => void) {
   const [isSaving, setIsSaving] = useState(false);
   const [isTestingBaidu, setIsTestingBaidu] = useState(false);
   const [isTestingNewApi, setIsTestingNewApi] = useState(false);
@@ -17,7 +27,7 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
   const loadSettings = async () => {
     try {
       const configStr = await invoke<string>("get_config");
-      const parsedConfig = JSON.parse(configStr);
+      const parsedConfig = JSON.parse(configStr || "{}");
 
       form.setFieldsValue(parsedConfig);
       if (parsedConfig.channel) {
@@ -32,30 +42,32 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
       }
 
       if (parsedConfig.serverUrl) {
-        try {
-          const response = await fetch(`${parsedConfig.serverUrl.replace(/\/$/, "")}/api/config/current`, {
-            headers: {
-              "x-api-key": parsedConfig.clientToken || ""
-            }
-          });
-          const serverConfig = await response.json();
-          if (serverConfig.status === "success" && serverConfig.active_channel) {
-            setCurrentChannel(serverConfig.active_channel);
-            form.setFieldValue("channel", serverConfig.active_channel);
-          }
-        } catch (e) {
-          console.warn("Failed to sync server active channel", e);
-        }
+        await syncActiveServerChannel(parsedConfig.serverUrl, parsedConfig.clientToken || "");
       }
     } catch (error) {
       console.error(error);
-      message.error("加载配置文件失败");
+      message.error("加载设置失败，请检查本地配置文件是否损坏。");
     }
   };
 
-  const handleFormChange = (changedValues: any) => {
+  const syncActiveServerChannel = async (serverUrl: string, clientToken: string) => {
+    try {
+      const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/current`, {
+        headers: { "x-api-key": clientToken },
+      });
+      const serverConfig = await response.json();
+      if (serverConfig.status === "success" && serverConfig.active_channel) {
+        setCurrentChannel(serverConfig.active_channel);
+        form.setFieldValue("channel", serverConfig.active_channel);
+      }
+    } catch (error) {
+      console.warn("Failed to sync server active channel", error);
+    }
+  };
+
+  const handleFormChange = (changedValues: Record<string, unknown>) => {
     if (changedValues.channel) {
-      setCurrentChannel(changedValues.channel);
+      setCurrentChannel(String(changedValues.channel));
     }
   };
 
@@ -66,17 +78,17 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
     const newApiKey = form.getFieldValue("newApiKey");
 
     if (!serverUrl) {
-      message.error("请先配置并保存服务器 URL");
+      message.error("请先填写并保存文本翻译服务地址。");
       return;
     }
     if (!newApiBase || !newApiKey) {
-      message.error("请先填写中转地址和 API Key");
+      message.error("请先填写 New API 中转地址和 API Key。");
       return;
     }
 
     setIsFetchingModels(true);
     try {
-      const response = await fetch(`${serverUrl.replace(/\/$/, "")}/api/config/fetch_models`, {
+      const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/fetch_models`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -89,53 +101,50 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
       });
 
       const resData = await response.json();
-      if (resData.status === "success" && resData.models) {
+      if (resData.status === "success" && Array.isArray(resData.models)) {
         setAvailableModels(resData.models);
-        message.success(`拉取模型成功，共获取 ${resData.models.length} 个模型`);
+        message.success(`模型列表拉取成功，共 ${resData.models.length} 个模型。`);
         if (resData.models.length > 0 && !resData.models.includes(form.getFieldValue("newApiModel"))) {
           form.setFieldValue("newApiModel", resData.models[0]);
         }
       } else {
-        throw new Error(resData.error || "拉取失败");
+        throw new Error(resData.error || "模型列表拉取失败");
       }
-    } catch (e: any) {
-      message.error(`获取模型列表失败: ${e.message}`);
+    } catch (error: any) {
+      message.error(`获取模型列表失败：${error.message || error}`);
     } finally {
       setIsFetchingModels(false);
     }
   };
 
-  const testChannel = async (channel: "baidu" | "new-api") => {
+  const testChannel = async (channel: TranslationChannel) => {
     const serverUrl = form.getFieldValue("serverUrl");
     const clientToken = form.getFieldValue("clientToken") || "";
 
     if (!serverUrl) {
-      message.error("请先配置服务器 URL");
+      message.error("请先填写文本翻译服务地址。");
       return;
     }
 
-    const testPayload: any = {
-      channel,
-      config: {},
-    };
+    const testPayload: ServerChannelPayload = { channel, config: {} };
 
     if (channel === "baidu") {
       setIsTestingBaidu(true);
       testPayload.config = {
-        app_id: form.getFieldValue("baiduAppId"),
-        secret_key: form.getFieldValue("baiduSecretKey"),
+        app_id: form.getFieldValue("baiduAppId") || "",
+        secret_key: form.getFieldValue("baiduSecretKey") || "",
       };
     } else {
       setIsTestingNewApi(true);
       testPayload.config = {
-        base_url: form.getFieldValue("newApiBase"),
-        api_key: form.getFieldValue("newApiKey"),
-        model: form.getFieldValue("newApiModel"),
+        base_url: form.getFieldValue("newApiBase") || "",
+        api_key: form.getFieldValue("newApiKey") || "",
+        model: form.getFieldValue("newApiModel") || "",
       };
     }
 
     try {
-      const response = await fetch(`${serverUrl.replace(/\/$/, "")}/api/config/test`, {
+      const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/test`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -146,23 +155,24 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
 
       const resData = await response.json();
       if (resData.status === "success") {
-        message.success(`翻译通道 [${channel === "baidu" ? "百度" : "大模型"}] 测试通过，并已设为当前激活通道！`);
+        const channelName = channel === "baidu" ? "百度翻译" : "大模型翻译";
+        message.success(`翻译通道「${channelName}」测试通过，并已设为当前活动通道。`);
         form.setFieldValue("channel", channel);
         setCurrentChannel(channel);
       } else {
         throw new Error(resData.error || "接口验证失败");
       }
-    } catch (e: any) {
-      message.error(`测试连通性失败: ${e.message}`);
+    } catch (error: any) {
+      message.error(`测试连接失败：${error.message || error}`);
     } finally {
       setIsTestingBaidu(false);
       setIsTestingNewApi(false);
     }
   };
 
-  const buildServerChannelPayload = (values: any) => {
+  const buildServerChannelPayload = (values: any): ServerChannelPayload => {
     const channel = values.channel || "google";
-    const payload: any = { channel, config: {} };
+    const payload: ServerChannelPayload = { channel, config: {} };
     if (channel === "baidu") {
       payload.config = {
         app_id: values.baiduAppId || "",
@@ -182,10 +192,10 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
     const serverUrl = values.serverUrl;
     const clientToken = values.clientToken || "";
     if (!serverUrl) {
-      throw new Error("请先配置服务器 URL");
+      throw new Error("请先填写文本翻译服务地址。");
     }
 
-    const response = await fetch(`${serverUrl.replace(/\/$/, "")}/api/config/save`, {
+    const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/save`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -195,7 +205,7 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
     });
     const resData = await response.json().catch(() => ({}));
     if (!response.ok || resData.status !== "success") {
-      throw new Error(resData.error || `服务器配置保存失败，状态码: ${response.status}`);
+      throw new Error(resData.error || `服务端配置保存失败，状态码：${response.status}`);
     }
   };
 
@@ -216,9 +226,12 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
       const configStr = JSON.stringify(configValues, null, 4);
       await invoke("save_config", { configStr });
       try {
-        await invoke("re_register_shortcut", { hotkey: configValues.hotkey || "", translateHotkey: configValues.translateHotkey || "" });
-      } catch (shortcutErr: any) {
-        message.warning(`本地配置已保存，但快捷键注册失败: ${shortcutErr.message || shortcutErr}`);
+        await invoke("re_register_shortcut", {
+          hotkey: configValues.hotkey || "",
+          translateHotkey: configValues.translateHotkey || "",
+        });
+      } catch (shortcutError: any) {
+        message.warning(`本地配置已保存，但快捷键注册失败：${shortcutError.message || shortcutError}`);
       }
       await invoke("set_autostart_enabled", { enabled: Boolean(autostartVal) });
 
@@ -226,23 +239,22 @@ export default function useSettingsController(form: any, onConfigSaved: () => vo
       try {
         await saveServerChannelConfig(configValues);
         serverSaved = true;
-      } catch (serverErr: any) {
-        message.warning(`本地设置已保存，但服务器配置未同步: ${serverErr.message || serverErr}`);
+      } catch (serverError: any) {
+        message.warning(`本地设置已保存，但服务端翻译配置未同步：${serverError.message || serverError}`);
       }
 
-      message.success(serverSaved ? "设置保存成功！" : "本地设置已保存");
+      message.success(serverSaved ? "设置保存成功。" : "本地设置已保存。");
       onConfigSaved();
     } catch (error: any) {
-      message.error(`保存失败: ${error.message || error}`);
+      message.error(`保存失败：${error.message || error}`);
     } finally {
       setIsSaving(false);
     }
   };
 
-
   const restoreDefaultHotkeys = () => {
     form.setFieldsValue({ hotkey: "Alt+A", translateHotkey: "Alt+T" });
-    message.success("已还原默认快捷键");
+    message.success("已还原默认快捷键。");
   };
 
   return {

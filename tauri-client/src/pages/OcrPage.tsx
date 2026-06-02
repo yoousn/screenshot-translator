@@ -1,23 +1,40 @@
-import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button, Input, Tooltip, message } from "antd";
-import { CloseOutlined, CopyOutlined, PushpinOutlined } from "@ant-design/icons";
+import { message } from "antd";
+import OcrResultWindow, { type OcrResultContextMenu } from "../components/ocr/OcrResultWindow";
+import { useI18n } from "../i18n";
+
+type OcrResultNormalizationSummary = {
+  rawCount: number;
+  usefulCount: number;
+  virtualLineCount: number;
+  droppedCount: number;
+  routeMissingScripts?: string[];
+};
 
 interface OcrWindowPayload {
   text: string;
   previewBase64: string;
   title?: string;
+  normalizationSummary?: OcrResultNormalizationSummary;
 }
 
 export default function OcrPage() {
+  const { text: dictionary } = useI18n();
+  const labels = dictionary.ocrResult;
   const winRef = useRef(getCurrentWindow());
   const [text, setText] = useState("");
   const textRef = useRef("");
   const [previewBase64, setPreviewBase64] = useState("");
-  const [title, setTitle] = useState("OCR 识字结果");
+  const [title, setTitle] = useState(labels.defaultTitle);
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<OcrResultContextMenu>(null);
+  const [normalizationSummary, setNormalizationSummary] = useState<OcrResultNormalizationSummary | null>(null);
+
+  useEffect(() => {
+    setTitle((current) => current || labels.defaultTitle);
+  }, [labels.defaultTitle]);
 
   useEffect(() => {
     const win = winRef.current;
@@ -31,7 +48,8 @@ export default function OcrPage() {
         textRef.current = nextText;
         setText(nextText);
         setPreviewBase64(payload.previewBase64 || "");
-        setTitle(payload.title || "OCR 识字结果");
+        setTitle(payload.title || labels.defaultTitle);
+        setNormalizationSummary(payload.normalizationSummary || null);
       } catch (error) {
         console.error("Failed to parse OCR payload", error);
       }
@@ -43,9 +61,10 @@ export default function OcrPage() {
     const focusWindow = () => {
       win.setFocus().catch(() => {});
     };
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        win.close().catch(() => {});
+        closeWindow();
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
@@ -54,19 +73,19 @@ export default function OcrPage() {
         const currentText = textRef.current;
         if (!hasSelectedText && target?.tagName !== "TEXTAREA" && currentText) {
           event.preventDefault();
-          navigator.clipboard.writeText(currentText).catch(() => {});
+          copyAndClose();
         }
       }
     };
 
-    window.addEventListener("mouseenter", focusWindow);
-    window.addEventListener("mousemove", focusWindow);
     const handleContextMenu = (event: MouseEvent) => {
       event.preventDefault();
-      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 112), y: Math.min(event.clientY, window.innerHeight - 76) });
+      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 128), y: Math.min(event.clientY, window.innerHeight - 76) });
     };
     const handleClick = () => setContextMenu(null);
 
+    window.addEventListener("mouseenter", focusWindow);
+    window.addEventListener("mousemove", focusWindow);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("click", handleClick);
@@ -79,7 +98,7 @@ export default function OcrPage() {
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("click", handleClick);
     };
-  }, []);
+  }, [labels.defaultTitle]);
 
   const startDragging = async (event: React.MouseEvent<HTMLElement>) => {
     if (event.button !== 0) return;
@@ -99,113 +118,38 @@ export default function OcrPage() {
       await winRef.current.setAlwaysOnTop(next);
     } catch (error) {
       setAlwaysOnTop(!next);
-      message.error("置顶切换失败");
+      message.error(labels.pinToggleFailed);
     }
   };
 
-  const copyText = async () => {
+  const updateText = (nextText: string) => {
+    textRef.current = nextText;
+    setText(nextText);
+  };
+
+  const copyAndClose = async () => {
     try {
       await navigator.clipboard.writeText(textRef.current);
       setContextMenu(null);
       await winRef.current.close();
     } catch (error) {
-      message.error("Copy failed");
+      message.error(labels.copyFailed);
     }
   };
 
   return (
-    <div
+    <OcrResultWindow
+      title={title}
+      text={text}
+      previewBase64={previewBase64}
+      alwaysOnTop={alwaysOnTop}
+      contextMenu={contextMenu}
+      onTextChange={updateText}
       onMouseDown={startDragging}
-      style={{
-        width: "100vw",
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: "#ffffff",
-        border: "1px solid #e5e7eb",
-        boxSizing: "border-box",
-        overflow: "hidden",
-        userSelect: "auto",
-      }}
-    >
-      <div
-        style={{
-          height: 40,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "0 8px 0 12px",
-          borderBottom: "1px solid #f0f0f0",
-          background: "#f8fafc",
-          cursor: "move",
-          flex: "0 0 auto",
-          userSelect: "none",
-        }}
-      >
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#1f2937" }}>{title}</div>
-        <div data-no-drag="true" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-          <Tooltip title={alwaysOnTop ? "Unpin" : "Pin window"}>
-            <Button
-              size="small"
-              type={alwaysOnTop ? "primary" : "text"}
-              icon={<PushpinOutlined />}
-              onClick={toggleAlwaysOnTop}
-            />
-          </Tooltip>
-          <Tooltip title="Close">
-            <Button size="small" type="text" danger icon={<CloseOutlined />} onClick={closeWindow} />
-          </Tooltip>
-        </div>
-      </div>
-
-      {contextMenu && (
-        <div data-no-drag="true" style={{ position: "absolute", left: Math.max(8, contextMenu.x), top: Math.max(8, contextMenu.y), zIndex: 20, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 4, minWidth: 96 }} onMouseDown={(event) => event.stopPropagation()}>
-          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: text ? "pointer" : "not-allowed", opacity: text ? 1 : 0.45 }} onClick={copyText} disabled={!text}>Copy and close</button>
-          <button style={{ width: "100%", padding: "6px 10px", border: 0, background: "transparent", textAlign: "left", cursor: "pointer", color: "#cf1322" }} onClick={closeWindow}>Close</button>
-        </div>
-      )}
-
-      <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, minHeight: 0, flex: 1 }}>
-        <div data-no-drag="true" style={{ minHeight: 0, flex: 1, cursor: "auto" }}>
-          <Input.TextArea
-            value={text}
-            onChange={(event) => { textRef.current = event.target.value; setText(event.target.value); }}
-            placeholder="No text recognized"
-            style={{ height: "100%", resize: "none", fontSize: 13, lineHeight: 1.55 }}
-          />
-        </div>
-
-        {previewBase64 && (
-          <div
-            data-no-drag="true"
-            style={{
-              height: 96,
-              border: "1px solid #f0f0f0",
-              borderRadius: 6,
-              overflow: "hidden",
-              background: "#fafafa",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flex: "0 0 auto",
-              cursor: "auto",
-            }}
-          >
-            <img
-              src={`data:image/png;base64,${previewBase64}`}
-              alt="OCR preview"
-              draggable={false}
-              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
-            />
-          </div>
-        )}
-
-        <div data-no-drag="true" style={{ display: "flex", justifyContent: "flex-end", cursor: "auto" }}>
-          <Button size="small" type="primary" icon={<CopyOutlined />} onClick={copyText} disabled={!text}>
-            Copy and close
-          </Button>
-        </div>
-      </div>
-    </div>
+      onToggleAlwaysOnTop={toggleAlwaysOnTop}
+      onClose={closeWindow}
+      onCopyAndClose={copyAndClose}
+      normalizationSummary={normalizationSummary}
+    />
   );
 }

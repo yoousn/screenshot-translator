@@ -4,6 +4,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Rect } from "../types/screenshot";
 import { clamp } from "./annotationGeometry";
 
+export type OcrResultNormalizationSummary = {
+  rawCount: number;
+  usefulCount: number;
+  virtualLineCount: number;
+  droppedCount: number;
+  routeMissingScripts?: string[];
+};
+
 type OcrResultWindowOptions = {
   selection: Rect;
   text: string;
@@ -12,6 +20,7 @@ type OcrResultWindowOptions = {
   gap: number;
   windowSize: { width: number; height: number };
   title?: string;
+  normalizationSummary?: OcrResultNormalizationSummary;
 };
 
 const getOcrWindowPosition = async (
@@ -48,9 +57,9 @@ const getOcrWindowPosition = async (
   };
 };
 
-export const openOcrResultWindow = async ({ selection, text, previewBase64, margin, gap, windowSize, title = "OCR 识字结果" }: OcrResultWindowOptions) => {
+export const openOcrResultWindow = async ({ selection, text, previewBase64, margin, gap, windowSize, title, normalizationSummary }: OcrResultWindowOptions) => {
   const label = `ocr_${Date.now()}`;
-  const payload = JSON.stringify({ text, previewBase64, title });
+  const payload = JSON.stringify({ text, previewBase64, title, normalizationSummary });
   const position = await getOcrWindowPosition(selection, margin, gap, windowSize);
   let isPayloadDelivered = false;
   let resolvePayload: () => void = () => {};
@@ -72,7 +81,7 @@ export const openOcrResultWindow = async ({ selection, text, previewBase64, marg
   try {
     const win = new WebviewWindow(label, {
       url: "index.html",
-      title: "OCR 识字结果",
+      title: title || "OCR Result",
       decorations: false,
       alwaysOnTop: true,
       focus: true,

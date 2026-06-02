@@ -61,6 +61,10 @@ export interface LocalConfig {
   paddleOcrInstallDir?: string;
   paddleOcrReleaseAssetName?: string;
   paddleOcrReleaseCheckedAt?: string;
+  targetLang?: string;
+  channel?: string;
+  appLanguage?: string;
+  recordingFfmpegPath?: string;
 }
 
 export interface GitHubAsset {

@@ -1,6 +1,29 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+mod ysn_ocr_crop;
+mod ysn_ocr_decode;
+mod ysn_ocr_dictionary;
+mod ysn_ocr_manifest_store;
+mod ysn_ocr_model_downloader;
+mod ysn_ocr_model_index;
+mod ysn_ocr_model_schema;
+mod ysn_ocr_model_sources;
+mod ysn_ocr_pipeline;
+mod ysn_ocr_postprocess;
+mod ysn_ocr_preprocess;
+mod ysn_ocr_router;
+mod ysn_ocr_runtime;
+mod ysn_ocr_runtime_adapter;
+use ysn_ocr_runtime::{
+    create_ysn_ocr_managed_source_index_template, dry_run_ysn_ocr_managed_source_index,
+    get_ysn_ocr_model_index, get_ysn_ocr_status, import_local_ysn_ocr_model,
+    import_ysn_ocr_managed_source_index, install_ysn_ocr_model_pack, plan_ysn_ocr_routes,
+    probe_ysn_ocr_model_session, probe_ysn_ocr_model_session_by_id,
+    probe_ysn_ocr_model_session_readiness_by_id, run_ysn_ocr_decode_fixture,
+    run_ysn_ocr_model_inference_probe, run_ysn_ocr_self_test, update_ysn_ocr_model_pack,
+};
+
 use arboard::{Clipboard, ImageData};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use futures_util::StreamExt;
@@ -366,7 +389,6 @@ fn find_paddleocr_json_exe(dir: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-
 fn find_rapidocr_exe(dir: &std::path::Path) -> Option<PathBuf> {
     if !dir.exists() {
         return None;
@@ -464,7 +486,11 @@ fn ocr_runtime_protocol(exe_path: &std::path::Path) -> String {
                 .map(|value| value.to_string())
         })
         .unwrap_or_else(|| {
-            let name = exe_path.file_name().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+            let name = exe_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             if name.contains("rapidocr") {
                 "cli-json-file".to_string()
             } else {
@@ -637,7 +663,10 @@ async fn download_paddleocr_release(
         .await
         .map_err(|e| format!("failed to download OCR runtime: {}", e))?;
     if !resp.status().is_success() {
-        return Err(format!("failed to download OCR runtime: HTTP {}", resp.status()));
+        return Err(format!(
+            "failed to download OCR runtime: HTTP {}",
+            resp.status()
+        ));
     }
 
     let total = resp.content_length();
@@ -658,7 +687,8 @@ async fn download_paddleocr_release(
     let mut download_dir = app_data_dir();
     download_dir.push("ocr");
     download_dir.push("downloads");
-    fs::create_dir_all(&download_dir).map_err(|e| format!("failed to create OCR download directory: {}", e))?;
+    fs::create_dir_all(&download_dir)
+        .map_err(|e| format!("failed to create OCR download directory: {}", e))?;
     let archive_path = download_dir.join(filename);
     fs::write(&archive_path, &bytes).map_err(|e| format!("failed to save OCR archive: {}", e))?;
 
@@ -668,10 +698,13 @@ async fn download_paddleocr_release(
         .map(PathBuf::from)
         .unwrap_or_else(|| ensure_writable_dir(default_ocr_install_dir()));
     if install_dir.exists() {
-        fs::remove_dir_all(&install_dir).map_err(|e| format!("failed to clean OCR install directory: {}", e))?;
+        fs::remove_dir_all(&install_dir)
+            .map_err(|e| format!("failed to clean OCR install directory: {}", e))?;
     }
-    fs::create_dir_all(&install_dir).map_err(|e| format!("failed to create OCR install directory: {}", e))?;
-    sevenz_rust::decompress_file(&archive_path, &install_dir).map_err(|e| format!("failed to extract OCR runtime: {}", e))?;
+    fs::create_dir_all(&install_dir)
+        .map_err(|e| format!("failed to create OCR install directory: {}", e))?;
+    sevenz_rust::decompress_file(&archive_path, &install_dir)
+        .map_err(|e| format!("failed to extract OCR runtime: {}", e))?;
     let _ = fs::remove_file(&archive_path);
     emit_ocr_progress(&app, "Checking", downloaded, total, 95);
 
@@ -709,7 +742,34 @@ fn choose_ocr_runtime_dir(current_dir: Option<String>) -> Result<Option<String>,
             }
         }
     }
-    Ok(dialog.pick_folder().map(|path| path.to_string_lossy().to_string()))
+    Ok(dialog
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn choose_ysn_ocr_managed_source_index_file(
+    current_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Choose YSN OCR managed source index")
+        .add_filter("JSON", &["json"]);
+    if let Some(path) = current_path {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            if path.is_file() {
+                if let Some(parent) = path.parent() {
+                    dialog = dialog.set_directory(parent);
+                }
+            } else if path.is_dir() {
+                dialog = dialog.set_directory(path);
+            }
+        }
+    }
+    Ok(dialog
+        .pick_file()
+        .map(|path| path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -734,9 +794,12 @@ fn move_ocr_runtime(
         .ok_or_else(|| "Failed to resolve OCR runtime directory".to_string())?
         .to_path_buf();
 
-    let source_canon = fs::canonicalize(&source_dir).map_err(|e| format!("failed to read OCR directory: {}", e))?;
-    fs::create_dir_all(&target_dir).map_err(|e| format!("failed to create target OCR directory: {}", e))?;
-    let target_canon = fs::canonicalize(&target_dir).map_err(|e| format!("failed to resolve target OCR directory: {}", e))?;
+    let source_canon = fs::canonicalize(&source_dir)
+        .map_err(|e| format!("failed to read OCR directory: {}", e))?;
+    fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("failed to create target OCR directory: {}", e))?;
+    let target_canon = fs::canonicalize(&target_dir)
+        .map_err(|e| format!("failed to resolve target OCR directory: {}", e))?;
     if source_canon == target_canon {
         return Ok(serde_json::json!({
             "path": source_exe.to_string_lossy().to_string(),
@@ -748,7 +811,11 @@ fn move_ocr_runtime(
     let exe_path = resolve_ocr_executable_from_path(&target_dir)
         .ok_or_else(|| "No OCR runtime entry found after moving directory".to_string())?;
     if !target_dir.join("ocr-runtime.json").exists()
-        && exe_path.file_name().and_then(|name| name.to_str()).map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe")).unwrap_or(false)
+        && exe_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("PaddleOCR-json.exe"))
+            .unwrap_or(false)
     {
         let _ = write_paddleocr_runtime_manifest(&target_dir, "custom", &exe_path);
     }
@@ -1178,11 +1245,7 @@ fn set_recording_overlay_status(status: String) -> Result<(), String> {
     RECORDING_OVERLAY_COLOR.store(recording_color_ref(status.trim()), Ordering::Relaxed);
     #[cfg(target_os = "windows")]
     {
-        if let Some(overlay) = get_recording_overlay()
-            .lock()
-            .ok()
-            .and_then(|guard| *guard)
-        {
+        if let Some(overlay) = get_recording_overlay().lock().ok().and_then(|guard| *guard) {
             unsafe {
                 let _ = win32::InvalidateRect(overlay.hwnd, std::ptr::null(), 1);
                 let _ = win32::UpdateWindow(overlay.hwnd);
@@ -1191,7 +1254,6 @@ fn set_recording_overlay_status(status: String) -> Result<(), String> {
     }
     Ok(())
 }
-
 
 #[tauri::command]
 fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
@@ -1332,7 +1394,8 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
         move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
-            let screens = Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
+            let screens =
+                Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
             if screens.is_empty() {
                 return Err("No display detected".to_string());
             }
@@ -1344,7 +1407,9 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
             let info = screen.display_info;
             let screen_info = (info.x, info.y, info.width, info.height);
 
-            let image = screen.capture().map_err(|e| format!("Screenshot failed: {}", e))?;
+            let image = screen
+                .capture()
+                .map_err(|e| format!("Screenshot failed: {}", e))?;
             let mut buffer = std::io::Cursor::new(Vec::new());
             let encoder =
                 screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
@@ -1461,9 +1526,12 @@ fn quick_fullscreen_capture() -> Result<(), String> {
     } else {
         screens[0]
     };
-    let image = screen.capture().map_err(|e| format!("Screenshot failed: {}", e))?;
+    let image = screen
+        .capture()
+        .map_err(|e| format!("Screenshot failed: {}", e))?;
     let (width, height) = image.dimensions();
-    let mut clipboard = Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
+    let mut clipboard =
+        Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
     let img_data = ImageData {
         width: width as usize,
         height: height as usize,
@@ -1846,7 +1914,8 @@ fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
     .map_err(|e| format!("Parse cropped image data failed: {}", e))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
-    let mut clipboard = Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
+    let mut clipboard =
+        Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
     let img_data = ImageData {
         width: width as usize,
         height: height as usize,
@@ -1994,7 +2063,8 @@ fn extract_ffmpeg_exe_from_zip(
     let reader = Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|e| format!("Read ffmpeg archive failed: {}", e))?;
-    fs::create_dir_all(install_dir).map_err(|e| format!("Create ffmpeg directory failed: {}", e))?;
+    fs::create_dir_all(install_dir)
+        .map_err(|e| format!("Create ffmpeg directory failed: {}", e))?;
     let target = install_dir.join("ffmpeg.exe");
     let mut found = false;
     for index in 0..archive.len() {
@@ -2012,7 +2082,8 @@ fn extract_ffmpeg_exe_from_zip(
         }
         let mut out =
             fs::File::create(&target).map_err(|e| format!("Create ffmpeg.exe failed: {}", e))?;
-        std::io::copy(&mut file, &mut out).map_err(|e| format!("Extract ffmpeg.exe failed: {}", e))?;
+        std::io::copy(&mut file, &mut out)
+            .map_err(|e| format!("Extract ffmpeg.exe failed: {}", e))?;
         found = true;
         break;
     }
@@ -2258,6 +2329,238 @@ fn get_recording_targets(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     }))
 }
 
+fn build_diagnostic_readiness_by_module(
+    ocr_runtime: &serde_json::Value,
+    recording: &serde_json::Value,
+) -> serde_json::Value {
+    let ocr_steps = ocr_runtime["readinessSteps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let ocr_ready_steps = ocr_steps
+        .iter()
+        .filter(|step| step["ready"].as_bool().unwrap_or(false))
+        .count();
+    let first_blocked_ocr_step = ocr_steps
+        .iter()
+        .find(|step| !step["ready"].as_bool().unwrap_or(false))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(null));
+    let ffmpeg_ready = recording["ffmpegFound"].as_bool().unwrap_or(false);
+    let audio_ready = recording["audioDevices"]
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+    let recording_steps = serde_json::json!([
+        {
+            "id": "ffmpeg",
+            "ready": ffmpeg_ready,
+            "label": "FFmpeg executable",
+            "nextAction": if ffmpeg_ready { "detect-audio-devices" } else { "download-or-choose-ffmpeg" }
+        },
+        {
+            "id": "audio-devices",
+            "ready": audio_ready,
+            "label": "Recording audio devices",
+            "nextAction": if audio_ready { "ready" } else { "recheck-recording-audio-devices" }
+        }
+    ]);
+    let recording_ready_steps = recording_steps
+        .as_array()
+        .map(|steps| {
+            steps
+                .iter()
+                .filter(|step| step["ready"].as_bool().unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0);
+    let first_blocked_recording_step = recording_steps
+        .as_array()
+        .and_then(|steps| {
+            steps
+                .iter()
+                .find(|step| !step["ready"].as_bool().unwrap_or(false))
+                .cloned()
+        })
+        .unwrap_or_else(|| serde_json::json!(null));
+
+    serde_json::json!({
+        "ocrRuntime": {
+            "ready": ocr_runtime["ready"].as_bool().unwrap_or(false),
+            "readySteps": ocr_ready_steps,
+            "totalSteps": ocr_steps.len(),
+            "firstBlockedStep": first_blocked_ocr_step,
+            "steps": ocr_steps,
+        },
+        "recording": {
+            "ready": ffmpeg_ready && audio_ready,
+            "readySteps": recording_ready_steps,
+            "totalSteps": recording_steps.as_array().map(|steps| steps.len()).unwrap_or(0),
+            "firstBlockedStep": first_blocked_recording_step,
+            "steps": recording_steps,
+        }
+    })
+}
+
+#[tauri::command]
+fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let generated_at = chrono::Local::now().to_rfc3339();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unavailable".to_string());
+    let startup_probe_path = startup_diagnostics_probe_path()
+        .to_string_lossy()
+        .to_string();
+    let recording = get_recording_info(app.clone()).unwrap_or_else(|error| {
+        serde_json::json!({
+            "ok": false,
+            "error": error,
+        })
+    });
+    let ocr_runtime = get_ysn_ocr_status(app.clone()).unwrap_or_else(|error| {
+        serde_json::json!({
+            "ready": false,
+            "error": error,
+        })
+    });
+    let shortcut_status = serde_json::json!({
+        "registered": true,
+        "note": "Shortcut registration errors are surfaced during app startup; detailed shortcut state is managed in AppShortcutStatus."
+    });
+
+    let mut issues = Vec::new();
+    if !ocr_runtime["ready"].as_bool().unwrap_or(false) {
+        issues.push(serde_json::json!({
+            "severity": "error",
+            "module": "ocrRuntime",
+            "code": "ocr-runtime-not-ready",
+            "message": "YSN OCR Runtime is not fully ready.",
+            "nextAction": "Open OCR model center, check trusted model sources, model pack health, and ONNX runtime self-test."
+        }));
+    }
+    if !ocr_runtime["sourceReadiness"]["ready"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        issues.push(serde_json::json!({
+            "severity": "warning",
+            "module": "ocrRuntime",
+            "code": "trusted-model-source-pending",
+            "message": "Trusted OCR model sources are not fully configured.",
+            "nextAction": "Configure managed model source URL, SHA256, size, version, packId, path, and license metadata."
+        }));
+    }
+    if ocr_runtime["activeModelIssues"]
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
+        issues.push(serde_json::json!({
+            "severity": "error",
+            "module": "ocrRuntime",
+            "code": "active-model-health-failed",
+            "message": "One or more active OCR model files are missing, mismatched, or non-production.",
+            "nextAction": "Repair model pack, re-import local validation model, or install from managed source."
+        }));
+    }
+    if !recording["ffmpegFound"].as_bool().unwrap_or(false) {
+        issues.push(serde_json::json!({
+            "severity": "error",
+            "module": "recording",
+            "code": "ffmpeg-not-found",
+            "message": "FFmpeg was not found, so video recording cannot be fully ready.",
+            "nextAction": "Download FFmpeg from the video recording dependency panel or choose ffmpeg.exe manually."
+        }));
+    }
+    if recording["audioDevices"]
+        .as_array()
+        .map(|items| items.is_empty())
+        .unwrap_or(true)
+    {
+        issues.push(serde_json::json!({
+            "severity": "warning",
+            "module": "recording",
+            "code": "audio-devices-empty",
+            "message": "No FFmpeg audio devices were detected.",
+            "nextAction": "Re-check recording dependency after FFmpeg is installed; verify Windows audio devices if needed."
+        }));
+    }
+
+    let critical_count = issues
+        .iter()
+        .filter(|issue| issue["severity"].as_str() == Some("error"))
+        .count();
+    let mut issues_by_module = std::collections::BTreeMap::<String, usize>::new();
+    for issue in &issues {
+        if let Some(module) = issue["module"].as_str() {
+            *issues_by_module.entry(module.to_string()).or_insert(0) += 1;
+        }
+    }
+    let readiness_by_module = build_diagnostic_readiness_by_module(&ocr_runtime, &recording);
+
+    Ok(serde_json::json!({
+        "schemaVersion": 2,
+        "generatedAt": generated_at,
+        "app": {
+            "name": "YSN Screenshot Translator",
+            "version": env!("CARGO_PKG_VERSION"),
+            "appDataDir": app_data_dir,
+            "startupProbePath": startup_probe_path,
+        },
+        "health": {
+            "ready": critical_count == 0,
+            "criticalCount": critical_count,
+            "issueCount": issues.len(),
+            "issuesByModule": issues_by_module,
+            "readinessByModule": readiness_by_module,
+            "issues": issues,
+        },
+        "ocrRuntime": ocr_runtime,
+        "recording": recording,
+        "shortcuts": shortcut_status,
+        "recovery": {
+            "ocr": "Open the OCR model center, configure trusted model sources or import local-dev models for validation, then run self-test.",
+            "recording": "Install or choose ffmpeg.exe, then re-check video recording dependency.",
+            "shortcuts": "If global shortcuts fail, restart the app or change conflicting hotkeys in settings."
+        }
+    }))
+}
+
+fn startup_diagnostics_probe_path() -> PathBuf {
+    std::env::temp_dir()
+        .join("ysn_screenshot_translator")
+        .join("startup_status.json")
+}
+
+fn write_startup_diagnostics_probe(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let path = startup_diagnostics_probe_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| "failed to resolve startup diagnostics directory".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("create startup diagnostics directory failed: {}", e))?;
+    let report = get_diagnostics_report(app.clone())?;
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "generatedAt": chrono::Local::now().to_rfc3339(),
+        "processId": std::process::id(),
+        "diagnostics": report,
+    });
+    let body = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("serialize startup diagnostics failed: {}", e))?;
+    fs::write(&path, body).map_err(|e| format!("write startup diagnostics failed: {}", e))?;
+    Ok(path)
+}
+
+#[tauri::command]
+fn get_startup_diagnostics_probe_path() -> Result<String, String> {
+    Ok(startup_diagnostics_probe_path()
+        .to_string_lossy()
+        .to_string())
+}
+
 #[tauri::command]
 fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let _ = cleanup_finished_recording_process()?;
@@ -2287,9 +2590,7 @@ fn recording_temp_dir() -> PathBuf {
 }
 
 fn default_recording_output_dir() -> PathBuf {
-    dirs::video_dir()
-        .unwrap_or_else(app_data_dir)
-        .join("YSN")
+    dirs::video_dir().unwrap_or_else(app_data_dir).join("YSN")
 }
 
 fn timestamped_recording_file_name() -> String {
@@ -2320,7 +2621,8 @@ fn recording_output_path(output_dir: Option<String>) -> Result<PathBuf, String> 
         .filter(|value| !value.trim().is_empty())
         .map(|value| PathBuf::from(value.trim()))
         .unwrap_or_else(recording_temp_dir);
-    fs::create_dir_all(&dir).map_err(|e| format!("create recording temp directory failed: {}", e))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("create recording temp directory failed: {}", e))?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2513,7 +2815,9 @@ async fn get_ffmpeg_release_info() -> Result<serde_json::Value, String> {
                 name.ends_with(".zip") && name.contains("win64") && !name.contains("shared")
             })
         })
-        .ok_or_else(|| "No Windows x64 ffmpeg zip asset found in the official release".to_string())?;
+        .ok_or_else(|| {
+            "No Windows x64 ffmpeg zip asset found in the official release".to_string()
+        })?;
 
     Ok(serde_json::json!({
         "tag": release.tag_name,
@@ -2539,7 +2843,8 @@ async fn download_ffmpeg_release(
         || !url.to_ascii_lowercase().ends_with(".zip")
     {
         return Err(
-            "Please choose an official Windows zip from BtbN/FFmpeg-Builds GitHub Releases".to_string(),
+            "Please choose an official Windows zip from BtbN/FFmpeg-Builds GitHub Releases"
+                .to_string(),
         );
     }
 
@@ -2577,7 +2882,8 @@ async fn download_ffmpeg_release(
     let mut download_dir = app_data_dir();
     download_dir.push("ffmpeg");
     download_dir.push("downloads");
-    fs::create_dir_all(&download_dir).map_err(|e| format!("Create ffmpeg download directory failed: {}", e))?;
+    fs::create_dir_all(&download_dir)
+        .map_err(|e| format!("Create ffmpeg download directory failed: {}", e))?;
     let archive_path = download_dir.join(format!("ffmpeg-{}.zip", safe_tag));
     fs::write(&archive_path, &bytes).map_err(|e| format!("Save ffmpeg archive failed: {}", e))?;
 
@@ -2638,8 +2944,7 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     }
 
     let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| {
-        r"ffmpeg.exe was not found. Put ffmpeg
-fmpeg.exe next to the app or choose ffmpeg.exe in settings.".to_string()
+        "ffmpeg.exe was not found. Put ffmpeg.exe next to the app or choose ffmpeg.exe in settings.".to_string()
     })?;
     let output_path = recording_output_path(options.output_dir.clone())?;
     let args = build_recording_args(&options, &output_path)?;
@@ -2735,14 +3040,16 @@ fn concat_recording_segments(
 
     let save_path = unique_recording_output_path()?;
     if existing_segments.len() == 1 {
-        fs::copy(&existing_segments[0], &save_path).map_err(|e| format!("save recording failed: {}", e))?;
+        fs::copy(&existing_segments[0], &save_path)
+            .map_err(|e| format!("save recording failed: {}", e))?;
         return Ok(save_path.to_string_lossy().to_string());
     }
 
     let ffmpeg = find_ffmpeg_executable(&app)
         .ok_or_else(|| "ffmpeg.exe not found, cannot merge recording segments".to_string())?;
     let mut list_path = recording_temp_dir();
-    fs::create_dir_all(&list_path).map_err(|e| format!("create recording temp directory failed: {}", e))?;
+    fs::create_dir_all(&list_path)
+        .map_err(|e| format!("create recording temp directory failed: {}", e))?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2753,7 +3060,8 @@ fn concat_recording_segments(
         .map(|path| format!("file '{}'", escape_concat_path(path)))
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(&list_path, list_body).map_err(|e| format!("create recording temp directory failed: {}", e))?;
+    fs::write(&list_path, list_body)
+        .map_err(|e| format!("create recording temp directory failed: {}", e))?;
 
     let args = vec![
         "-y".to_string(),
@@ -2776,7 +3084,10 @@ fn concat_recording_segments(
         .map_err(|e| format!("failed to start ffmpeg merge: {}", e))?;
     let _ = fs::remove_file(&list_path);
     if !status.success() {
-        return Err(format!("ffmpeg failed to merge recording segments: {}", status));
+        return Err(format!(
+            "ffmpeg failed to merge recording segments: {}",
+            status
+        ));
     }
     Ok(save_path.to_string_lossy().to_string())
 }
@@ -2794,13 +3105,22 @@ fn copy_file_to_clipboard(path: String) -> Result<(), String> {
             shell_escape_powershell_single(&file_path.to_string_lossy())
         );
         let status = Command::new("powershell")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
             .status()
             .map_err(|e| format!("failed to start clipboard command: {}", e))?;
         if status.success() {
             return Ok(());
         }
-        return Err(format!("failed to copy video file to clipboard: {}", status));
+        return Err(format!(
+            "failed to copy video file to clipboard: {}",
+            status
+        ));
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -2812,15 +3132,31 @@ fn shell_escape_powershell_single(value: &str) -> String {
     format!("'{}'", value.replace("'", "''"))
 }
 
+fn is_recording_temp_file(path: &Path, temp_dir: &Path) -> bool {
+    let Ok(canonical_path) = fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(canonical_temp_dir) = fs::canonicalize(temp_dir) else {
+        return false;
+    };
+    canonical_path.starts_with(canonical_temp_dir)
+        && canonical_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("mp4"))
+            .unwrap_or(false)
+}
+
 #[tauri::command]
 fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
+    let temp_dir = recording_temp_dir();
     for path in paths {
         let trimmed = path.trim();
         if trimmed.is_empty() {
             continue;
         }
         let path_buf = PathBuf::from(trimmed);
-        if path_buf.exists() {
+        if path_buf.exists() && is_recording_temp_file(&path_buf, &temp_dir) {
             let _ = fs::remove_file(path_buf);
         }
     }
@@ -2903,10 +3239,10 @@ fn start_ocr_process(
     config_key: &str,
 ) -> Result<LocalOcrProcess, String> {
     if !exe_path.is_file() {
-        return Err(format!("Local OCR executable is invalid: {}", exe_path.to_string_lossy()));
-
-
-
+        return Err(format!(
+            "Local OCR executable is invalid: {}",
+            exe_path.to_string_lossy()
+        ));
     }
 
     let exe_dir = exe_path
@@ -3226,7 +3562,10 @@ fn run_local_ocr_sync(
     let resolved_exe = resolve_local_ocr_executable(&app, executable_path)?;
 
     if !resolved_exe.is_file() {
-        return Err(format!("Local OCR executable does not exist: {}", resolved_exe.display()));
+        return Err(format!(
+            "Local OCR executable does not exist: {}",
+            resolved_exe.display()
+        ));
     }
 
     // Save the image to a unique temporary file for OCR.
@@ -3241,7 +3580,8 @@ fn run_local_ocr_sync(
 
     let mut ocr_temp_path = std::env::temp_dir();
     ocr_temp_path.push(format!("ocr-{}.png", rand_suffix));
-    fs::write(&ocr_temp_path, &bytes).map_err(|e| format!("Save temporary OCR image failed: {}", e))?;
+    fs::write(&ocr_temp_path, &bytes)
+        .map_err(|e| format!("Save temporary OCR image failed: {}", e))?;
 
     let abs_image_path = ocr_temp_path.to_string_lossy().to_string();
 
@@ -3478,6 +3818,7 @@ pub fn run() {
             download_paddleocr_release,
             choose_ocr_install_dir,
             choose_ocr_runtime_dir,
+            choose_ysn_ocr_managed_source_index_file,
             move_ocr_runtime,
             check_local_ocr_status,
             is_autostart_enabled,
@@ -3495,7 +3836,24 @@ pub fn run() {
             get_window_rects,
             overlay_ready_to_show,
             run_local_ocr,
-            re_register_shortcut
+            re_register_shortcut,
+            get_diagnostics_report,
+            get_startup_diagnostics_probe_path,
+            get_ysn_ocr_status,
+            get_ysn_ocr_model_index,
+            run_ysn_ocr_self_test,
+            install_ysn_ocr_model_pack,
+            update_ysn_ocr_model_pack,
+            import_local_ysn_ocr_model,
+            import_ysn_ocr_managed_source_index,
+            create_ysn_ocr_managed_source_index_template,
+            dry_run_ysn_ocr_managed_source_index,
+            plan_ysn_ocr_routes,
+            probe_ysn_ocr_model_session,
+            probe_ysn_ocr_model_session_by_id,
+            probe_ysn_ocr_model_session_readiness_by_id,
+            run_ysn_ocr_decode_fixture,
+            run_ysn_ocr_model_inference_probe
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -3510,6 +3868,9 @@ pub fn run() {
                 &configured_translate_hotkey,
             );
             app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
+            if let Err(error) = write_startup_diagnostics_probe(app.handle()) {
+                eprintln!("Failed to write startup diagnostics probe: {}", error);
+            }
 
             let screenshot_item = tauri::menu::MenuItemBuilder::new("Screenshot Now")
                 .id("screenshot")
@@ -3813,5 +4174,88 @@ File formats:
         );
         assert_eq!(super::sanitize_tag("***"), "___");
     }
-}
+    #[test]
+    fn test_recording_overlay_status_color_mapping() {
+        assert_eq!(
+            super::recording_color_ref("ready"),
+            super::RECORDING_BORDER_BLUE
+        );
+        assert_eq!(
+            super::recording_color_ref("recording"),
+            super::RECORDING_BORDER_RED
+        );
+        assert_eq!(
+            super::recording_color_ref("paused"),
+            super::RECORDING_BORDER_YELLOW
+        );
+        assert_eq!(
+            super::recording_color_ref("saved"),
+            super::RECORDING_BORDER_BLUE
+        );
+    }
 
+    #[test]
+    fn test_default_recording_output_dir_ends_with_ysn() {
+        let dir = super::default_recording_output_dir();
+        assert_eq!(
+            dir.file_name().and_then(|value| value.to_str()),
+            Some("YSN")
+        );
+    }
+
+    #[test]
+    fn test_cleanup_recording_files_only_deletes_temp_mp4() {
+        let temp_dir = super::recording_temp_dir();
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let temp_file = temp_dir.join("unit_test_cleanup_boundary.mp4");
+        std::fs::write(&temp_file, b"temp").unwrap();
+
+        let external_dir = std::env::temp_dir().join("ysn_recording_boundary_external");
+        std::fs::create_dir_all(&external_dir).unwrap();
+        let external_file = external_dir.join("unit_test_external.mp4");
+        std::fs::write(&external_file, b"external").unwrap();
+
+        super::cleanup_recording_files(vec![
+            temp_file.to_string_lossy().to_string(),
+            external_file.to_string_lossy().to_string(),
+        ])
+        .unwrap();
+
+        assert!(!temp_file.exists());
+        assert!(external_file.exists());
+
+        let _ = std::fs::remove_file(external_file);
+        let _ = std::fs::remove_dir(external_dir);
+    }
+
+    #[test]
+    fn test_startup_diagnostics_probe_path_is_in_temp_dir() {
+        let path = super::startup_diagnostics_probe_path();
+        assert!(path.starts_with(std::env::temp_dir()));
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("startup_status.json")
+        );
+    }
+
+    #[test]
+    fn test_diagnostic_readiness_by_module_keeps_ocr_not_ready() {
+        let ocr_runtime = serde_json::json!({
+            "ready": false,
+            "readinessSteps": [
+                { "id": "trusted-sources", "ready": true },
+                { "id": "runtime-inference", "ready": false, "nextAction": "complete-onnx-inference-runtime" }
+            ]
+        });
+        let recording = serde_json::json!({ "ffmpegFound": false, "audioDevices": [] });
+        let readiness = super::build_diagnostic_readiness_by_module(&ocr_runtime, &recording);
+        assert_eq!(readiness["ocrRuntime"]["ready"].as_bool(), Some(false));
+        assert_eq!(readiness["ocrRuntime"]["readySteps"].as_u64(), Some(1));
+        assert_eq!(readiness["ocrRuntime"]["totalSteps"].as_u64(), Some(2));
+        assert_eq!(
+            readiness["ocrRuntime"]["firstBlockedStep"]["id"].as_str(),
+            Some("runtime-inference")
+        );
+        assert_eq!(readiness["recording"]["ready"].as_bool(), Some(false));
+    }
+}

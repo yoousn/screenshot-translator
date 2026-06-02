@@ -1,4 +1,4 @@
-import React from "react";
+﻿import React from "react";
 import { Button, Dropdown, InputNumber, Space, Tooltip } from "antd";
 import {
   ArrowUpOutlined,
@@ -47,21 +47,25 @@ interface ScreenshotToolbarProps {
   buttonGap?: number;
 }
 
-const tools: Array<{ key: AnnotationTool; tip: string; icon: React.ReactNode }> = [
-  { key: "rect", tip: "方框 1", icon: <BorderOutlined /> },
-  { key: "circle", tip: "圆形 2", icon: <span style={{ fontSize: 22, lineHeight: 1 }}>○</span> },
-  { key: "arrow", tip: "箭头 3", icon: <ArrowUpOutlined rotate={45} style={{ fontSize: 18 }} /> },
+type ToolbarTool = { key: AnnotationTool; tip: string; icon: React.ReactNode };
+
+const tools: ToolbarTool[] = [
+  { key: "rect", tip: "矩形标注 1", icon: <BorderOutlined /> },
+  { key: "circle", tip: "圆形标注 2", icon: <span style={{ fontSize: 22, lineHeight: 1 }}>○</span> },
+  { key: "arrow", tip: "箭头标注 3", icon: <ArrowUpOutlined rotate={45} style={{ fontSize: 18 }} /> },
   { key: "brush", tip: "画笔 4", icon: <EditOutlined style={{ fontSize: 18 }} /> },
-  { key: "text", tip: "文字 5 / T", icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
+  { key: "text", tip: "文字标注 5 / T", icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
   { key: "mosaic", tip: "马赛克 6", icon: <span style={{ fontSize: 20, lineHeight: 1 }}>▦</span> },
 ];
 
 const squareButtonStyle: React.CSSProperties = { width: 36, height: 36, padding: 0, fontSize: 18 };
+const iconButtonStyle: React.CSSProperties = { width: 42, height: 36, padding: 0 };
 
 const getToolHint = (annotationTool: AnnotationTool | null) => {
-  if (annotationTool === "text") return "点击选区添加文字，点击已有文字可编辑";
-  if (annotationTool === "rect" || annotationTool === "circle") return "方框/圆可拖动移动，边缘可调整大小";
-  return "画错可撤销删除";
+  if (annotationTool === "text") return "点击选区添加文字；点击已有文字可编辑。";
+  if (annotationTool === "rect" || annotationTool === "circle") return "矩形和圆形可拖动移动，边缘可调整大小。";
+  if (annotationTool === "mosaic") return "拖动需要打码的区域；可用撤销删除。";
+  return "拖动绘制标注；可用撤销删除。";
 };
 
 export default function ScreenshotToolbar({
@@ -95,6 +99,8 @@ export default function ScreenshotToolbar({
   buttonGap = 6,
 }: ScreenshotToolbarProps) {
   const normalizedGap = Math.max(0, Math.min(16, Number(buttonGap) || 0));
+  const isBusy = isTranslating || isOCRing || isScrollCapturing;
+
   return (
     <div ref={containerRef} style={style} onContextMenu={(event) => event.stopPropagation()}>
       <Space size={[normalizedGap, 6]} wrap style={{ display: "inline-flex", maxWidth: "100%", whiteSpace: "normal", alignItems: "center" }}>
@@ -112,24 +118,32 @@ export default function ScreenshotToolbar({
             />
           </Tooltip>
         ))}
+
         <Dropdown
           trigger={["click"]}
           menu={{
-            items: [{ key: "result", label: "翻译结果", disabled: !canShowTranslateResult }],
+            items: [{ key: "result", label: "查看翻译结果", disabled: !canShowTranslateResult }],
             onClick: ({ key }) => {
               if (key === "result") onShowTranslateResult();
             },
           }}
         >
           <Button.Group>
-            <Tooltip title="翻译并重绘">
-              <Button size="middle" style={{ width: 42, height: 36, padding: 0 }} type="primary" ghost onClick={(event) => { event.stopPropagation(); onTranslate(); }} loading={isTranslating} disabled={isOCRing} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>A/文</span>} />
+            <Tooltip title="截图翻译并重绘 Ctrl+Q">
+              <Button size="middle" style={iconButtonStyle} type="primary" ghost onClick={(event) => { event.stopPropagation(); onTranslate(); }} loading={isTranslating} disabled={isOCRing} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>A/文</span>} />
             </Tooltip>
             <Button size="middle" style={{ width: 24, height: 36, padding: 0 }} disabled={isTranslating || isOCRing} icon={<DownOutlined style={{ fontSize: 10 }} />} />
           </Button.Group>
         </Dropdown>
-        <Tooltip title="OCR 识字"><Button size="middle" style={squareButtonStyle} icon={<ScanOutlined />} onClick={onOCR} loading={isOCRing} disabled={isTranslating || isScrollCapturing} /></Tooltip>
-        {onScrollCapture && <Tooltip title="滚动截图"><Button size="middle" style={squareButtonStyle} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>SCR</span>} onClick={onScrollCapture} loading={isScrollCapturing} disabled={isTranslating || isOCRing} /></Tooltip>}
+
+        <Tooltip title="OCR 识字 Ctrl+D">
+          <Button size="middle" style={squareButtonStyle} icon={<ScanOutlined />} onClick={onOCR} loading={isOCRing} disabled={isTranslating || isScrollCapturing} />
+        </Tooltip>
+        {onScrollCapture && (
+          <Tooltip title="滚动截图">
+            <Button size="middle" style={squareButtonStyle} icon={<span style={{ fontSize: 13, fontWeight: 800 }}>SCR</span>} onClick={onScrollCapture} loading={isScrollCapturing} disabled={isTranslating || isOCRing} />
+          </Tooltip>
+        )}
         {onRecording && (
           <Dropdown
             trigger={["click"]}
@@ -143,19 +157,19 @@ export default function ScreenshotToolbar({
             }}
           >
             <Button.Group>
-              <Tooltip title="录制">
-                <Button size="middle" style={{ width: 42, height: 36, padding: 0 }} icon={<VideoCameraOutlined />} disabled={isTranslating || isOCRing || isScrollCapturing} />
+              <Tooltip title="录制选区">
+                <Button size="middle" style={iconButtonStyle} icon={<VideoCameraOutlined />} disabled={isBusy} />
               </Tooltip>
-              <Button size="middle" style={{ width: 24, height: 36, padding: 0 }} disabled={isTranslating || isOCRing || isScrollCapturing} icon={<DownOutlined style={{ fontSize: 10 }} />} />
+              <Button size="middle" style={{ width: 24, height: 36, padding: 0 }} disabled={isBusy} icon={<DownOutlined style={{ fontSize: 10 }} />} />
             </Button.Group>
           </Dropdown>
         )}
-        <Tooltip title="贴图"><Button size="middle" style={squareButtonStyle} icon={<PushpinOutlined />} onClick={onPin} /></Tooltip>
+        <Tooltip title="钉图"><Button size="middle" style={squareButtonStyle} icon={<PushpinOutlined />} onClick={onPin} /></Tooltip>
         <Tooltip title="撤销 Ctrl+Z"><Button size="middle" style={squareButtonStyle} disabled={!canUndo} icon={<UndoOutlined />} onClick={onUndo} /></Tooltip>
         <Tooltip title="恢复 Ctrl+Y / Ctrl+Shift+Z"><Button size="middle" style={squareButtonStyle} disabled={!canRedo} icon={<RedoOutlined />} onClick={onRedo} /></Tooltip>
-        <Tooltip title="保存"><Button size="middle" style={squareButtonStyle} icon={<SaveOutlined />} onClick={onSave} /></Tooltip>
-        <Tooltip title="取消"><Button size="middle" style={{ width: 42, height: 36, padding: 0, color: "#ef4444", borderColor: "transparent", background: "transparent", fontSize: 20, borderRadius: 10, boxShadow: "none" }} icon={<CloseOutlined />} onClick={onCancel} /></Tooltip>
-        <Tooltip title="完成并复制"><Button size="middle" style={{ width: 42, height: 36, padding: 0, color: "#16a34a", borderColor: "transparent", background: "transparent", fontSize: 20, borderRadius: 10, boxShadow: "none" }} icon={<CheckOutlined />} onClick={onCopy} /></Tooltip>
+        <Tooltip title="保存 Ctrl+S"><Button size="middle" style={squareButtonStyle} icon={<SaveOutlined />} onClick={onSave} /></Tooltip>
+        <Tooltip title="取消 Esc"><Button size="middle" style={{ ...iconButtonStyle, color: "#ef4444", borderColor: "transparent", background: "transparent", fontSize: 20, borderRadius: 10, boxShadow: "none" }} icon={<CloseOutlined />} onClick={onCancel} /></Tooltip>
+        <Tooltip title="完成并复制 Ctrl+C"><Button size="middle" style={{ ...iconButtonStyle, color: "#16a34a", borderColor: "transparent", background: "transparent", fontSize: 20, borderRadius: 10, boxShadow: "none" }} icon={<CheckOutlined />} onClick={onCopy} /></Tooltip>
       </Space>
       {isEditing && annotationTool && (
         <div style={{ marginTop: 8, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, color: "#334155", fontSize: 12, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "6px 8px" }}>

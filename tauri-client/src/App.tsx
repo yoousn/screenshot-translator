@@ -1,12 +1,12 @@
-import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ConfigProvider, App as AntdApp } from "antd";
 import {
-  HistoryOutlined,
-  SettingOutlined,
-  InfoCircleOutlined,
   DashboardOutlined,
   FileTextOutlined,
+  HistoryOutlined,
+  InfoCircleOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
@@ -15,11 +15,13 @@ import About from "./pages/About";
 import OcrConfig from "./pages/OcrConfig";
 import AppLayout from "./components/app/AppLayout";
 import useServerStatus from "./hooks/useServerStatus";
+import { I18nProvider, useI18n } from "./i18n";
 
 function AppContent() {
   const [activeKey, setActiveKey] = useState<string>("dashboard");
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const { message, notification } = AntdApp.useApp();
+  const { language, setLanguage, text } = useI18n();
   const { serverUrl, isOnline, isChecking, responseTime, checkStatus, fetchServerUrl } = useServerStatus();
 
   useEffect(() => {
@@ -30,22 +32,20 @@ function AppContent() {
     try {
       await invoke("get_shortcut_status");
       setShortcutError(null);
-    } catch (e: any) {
-      const errMsg = e.toString();
-      setShortcutError(errMsg);
-      
+    } catch (error: any) {
+      const errorMessage = error?.message || error?.toString?.() || String(error);
+      setShortcutError(errorMessage);
+
       let hotkey = "Alt+A";
       try {
         const configStr = await invoke<string>("get_config");
-        const parsedConfig = JSON.parse(configStr);
-        if (parsedConfig.hotkey) {
-          hotkey = parsedConfig.hotkey;
-        }
+        const parsedConfig = JSON.parse(configStr || "{}");
+        if (parsedConfig.hotkey) hotkey = parsedConfig.hotkey;
       } catch (_) {}
-      
+
       notification.error({
-        message: `全局快捷键 (${hotkey}) 注册失败`,
-        description: `无法成功在系统中注册截图快捷键 ${hotkey}。该热键可能已被其他运行中的软件占用。请尝试关闭相应软件或在设置中修改快捷键。`,
+        message: text.app.shortcutErrorTitle,
+        description: text.app.shortcutErrorDesc.replace("{hotkey}", hotkey),
         duration: 0,
         placement: "topRight",
       });
@@ -54,26 +54,26 @@ function AppContent() {
 
   const handleStartScreenshot = async () => {
     try {
-      message.loading({ content: "正在启动截图...", key: "screenshot" });
+      message.loading({ content: text.app.startingScreenshot, key: "screenshot" });
       await invoke("start_screenshot");
-      message.success({ content: "已启动截图窗口", key: "screenshot" });
-    } catch (err) {
-      message.error({ content: `启动截图失败: ${err}`, key: "screenshot" });
+      message.success({ content: text.app.screenshotStarted, key: "screenshot" });
+    } catch (error: any) {
+      message.error({ content: `${text.app.screenshotFailed}${error?.message || error}`, key: "screenshot" });
     }
   };
 
   const menuItems = [
-    { key: "dashboard", icon: <DashboardOutlined />, label: "首页" },
-    { key: "settings", icon: <SettingOutlined />, label: "系统设置" },
-    { key: "ocr-config", icon: <FileTextOutlined />, label: "模型/视频配置" },
-    { key: "history", icon: <HistoryOutlined />, label: "历史记录" },
-    { key: "about", icon: <InfoCircleOutlined />, label: "关于" },
+    { key: "dashboard", icon: <DashboardOutlined />, label: text.nav.dashboard },
+    { key: "settings", icon: <SettingOutlined />, label: text.nav.settings },
+    { key: "ocr-config", icon: <FileTextOutlined />, label: text.nav.ocrConfig },
+    { key: "history", icon: <HistoryOutlined />, label: text.nav.history },
+    { key: "about", icon: <InfoCircleOutlined />, label: text.nav.about },
   ];
 
   const renderContent = () => {
     switch (activeKey) {
       case "dashboard":
-        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onRefreshStatus={() => checkStatus(serverUrl)} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onNavigate={setActiveKey} />;
       case "settings":
         return <Settings onConfigSaved={fetchServerUrl} />;
       case "ocr-config":
@@ -83,7 +83,7 @@ function AppContent() {
       case "about":
         return <About />;
       default:
-        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onRefreshStatus={() => checkStatus(serverUrl)} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onNavigate={setActiveKey} />;
     }
   };
 
@@ -94,6 +94,19 @@ function AppContent() {
       serverUrl={serverUrl}
       isOnline={isOnline}
       isChecking={isChecking}
+      language={language}
+      labels={{
+        appName: text.app.name,
+        tagline: text.app.tagline,
+        screenshotNow: text.app.screenshotNow,
+        refresh: text.app.refresh,
+        language: text.app.language,
+        service: text.status.service,
+        online: text.status.online,
+        offline: text.status.offline,
+        checking: text.status.checking,
+      }}
+      onLanguageChange={setLanguage}
       onMenuSelect={setActiveKey}
       onStartScreenshot={handleStartScreenshot}
       onRefreshStatus={() => checkStatus(serverUrl)}
@@ -103,9 +116,12 @@ function AppContent() {
   );
 }
 
-export default function App() {
+function LocalizedApp() {
+  const { antdLocale } = useI18n();
+
   return (
     <ConfigProvider
+      locale={antdLocale}
       theme={{
         token: {
           colorPrimary: "#1677ff",
@@ -123,5 +139,13 @@ export default function App() {
         <AppContent />
       </AntdApp>
     </ConfigProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <I18nProvider>
+      <LocalizedApp />
+    </I18nProvider>
   );
 }

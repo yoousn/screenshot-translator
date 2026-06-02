@@ -1,9 +1,22 @@
-import React from "react";
-import { Button, Layout, Menu, Space, Tag, Tooltip, Typography } from "antd";
-import { CameraOutlined, SyncOutlined, WifiOutlined } from "@ant-design/icons";
+﻿import React from "react";
+import { Button, Layout, Menu, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { CameraOutlined, GlobalOutlined, SyncOutlined, WifiOutlined } from "@ant-design/icons";
+import { LANGUAGE_OPTIONS, type AppLanguage } from "../../i18n";
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
+
+type AppLayoutLabels = {
+  appName: string;
+  tagline: string;
+  screenshotNow: string;
+  refresh: string;
+  language: string;
+  service: string;
+  online: string;
+  offline: string;
+  checking: string;
+};
 
 interface AppLayoutProps {
   activeKey: string;
@@ -11,11 +24,20 @@ interface AppLayoutProps {
   serverUrl: string;
   isOnline: "checking" | "online" | "offline";
   isChecking: boolean;
+  language: AppLanguage;
+  labels: AppLayoutLabels;
   children: React.ReactNode;
+  onLanguageChange: (language: AppLanguage) => void;
   onMenuSelect: (key: string) => void;
   onStartScreenshot: () => void;
   onRefreshStatus: () => void;
 }
+
+const statusColor = {
+  online: "success",
+  offline: "error",
+  checking: "warning",
+} as const;
 
 export default function AppLayout({
   activeKey,
@@ -23,116 +45,79 @@ export default function AppLayout({
   serverUrl,
   isOnline,
   isChecking,
+  language,
+  labels,
   children,
+  onLanguageChange,
   onMenuSelect,
   onStartScreenshot,
   onRefreshStatus,
 }: AppLayoutProps) {
+  const statusText = isOnline === "online" ? labels.online : isOnline === "offline" ? labels.offline : labels.checking;
+
   return (
-    <Layout style={{ height: "100vh", width: "100vw", overflow: "hidden" }}>
+    <Layout style={{ height: "100vh", width: "100vw", overflow: "hidden", background: "#f5f7fb" }}>
       <Sider
-        width={200}
+        width={224}
         theme="light"
         style={{
-          borderRight: "1px solid #f0f0f0",
+          borderRight: "1px solid #e5e7eb",
           display: "flex",
           flexDirection: "column",
           justifyContent: "space-between",
+          background: "#ffffff",
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-          <div
-            style={{
-              height: 56,
-              display: "flex",
-              alignItems: "center",
-              paddingLeft: 20,
-              borderBottom: "1px solid #f0f0f0",
-              userSelect: "none",
-            }}
-          >
-            <div
-              style={{
-                height: 28,
-                width: 28,
-                borderRadius: 8,
-                background: "linear-gradient(135deg, #1677ff 0%, #0050b3 100%)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#ffffff",
-                fontWeight: "bold",
-                fontSize: 14,
-                marginRight: 10,
-                boxShadow: "0 2px 8px rgba(22, 119, 255, 0.2)",
-              }}
-            >
-              Y
+          <div style={{ minHeight: 72, display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", borderBottom: "1px solid #eef2f7", userSelect: "none" }}>
+            <div style={{ height: 34, width: 34, borderRadius: 12, background: "linear-gradient(135deg, #2563eb 0%, #06b6d4 100%)", display: "flex", alignItems: "center", justifyContent: "center", color: "#ffffff", fontWeight: 900, fontSize: 15, boxShadow: "0 8px 22px rgba(37, 99, 235, 0.24)" }}>Y</div>
+            <div style={{ minWidth: 0 }}>
+              <Text strong style={{ display: "block", fontSize: 13, color: "#0f172a", letterSpacing: 0.2, lineHeight: 1.2 }}>{labels.appName}</Text>
+              <Text type="secondary" style={{ display: "block", fontSize: 11, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150 }}>{labels.tagline}</Text>
             </div>
-            <Text strong style={{ fontSize: 13, color: "#1f1f1f", letterSpacing: 0.5 }}>
-              YSN 截图翻译
-            </Text>
           </div>
 
-          <Menu
-            mode="inline"
-            selectedKeys={[activeKey]}
-            onClick={({ key }) => onMenuSelect(key)}
-            items={menuItems}
-            style={{ borderRight: 0, paddingTop: 12, flex: 1 }}
-          />
+          <Menu mode="inline" selectedKeys={[activeKey]} onClick={({ key }) => onMenuSelect(key)} items={menuItems} style={{ borderRight: 0, paddingTop: 12, flex: 1 }} />
 
-          <div style={{ padding: 16, borderTop: "1px solid #f0f0f0" }}>
-            <Button
-              type="primary"
-              icon={<CameraOutlined />}
-              block
-              onClick={onStartScreenshot}
-              style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }}
-            >
-              立即截图
+          <div style={{ padding: 16, borderTop: "1px solid #eef2f7" }}>
+            <Button type="primary" icon={<CameraOutlined />} block onClick={onStartScreenshot} style={{ height: 40, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 12, fontWeight: 700 }}>
+              {labels.screenshotNow}
             </Button>
           </div>
         </div>
       </Sider>
 
       <Layout>
-        <Header
-          style={{
-            height: 56,
-            background: "#ffffff",
-            padding: "0 24px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            borderBottom: "1px solid #f0f0f0",
-            lineHeight: "56px",
-          }}
-        >
-          <Space size="middle">
-            <span style={{ fontSize: 12, color: "#8c8c8c" }}>本地截图翻译</span>
+        <Header style={{ height: 64, background: "rgba(255,255,255,0.92)", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #e5e7eb", lineHeight: "64px", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+          <Space direction="vertical" size={0}>
+            <Text strong style={{ fontSize: 13, color: "#0f172a" }}>{labels.appName}</Text>
+            <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.2 }}>{labels.tagline}</Text>
           </Space>
 
           <Space size="middle" style={{ marginLeft: "auto" }}>
-            <Tooltip title={`文本翻译服务: ${serverUrl}`}>
-              <Space size="small">
-                {isOnline === "online" && <Tag color="success" icon={<WifiOutlined />} style={{ margin: 0 }}>服务在线 (Online)</Tag>}
-                {isOnline === "offline" && <Tag color="error" icon={<WifiOutlined />} style={{ margin: 0 }}>服务离线 (Offline)</Tag>}
-                {isOnline === "checking" && <Tag color="warning" icon={<SyncOutlined spin />} style={{ margin: 0 }}>检测中...</Tag>}
-              </Space>
+            <Tooltip title={`${labels.service}: ${serverUrl || "-"}`}>
+              <Tag color={statusColor[isOnline]} icon={isOnline === "checking" ? <SyncOutlined spin /> : <WifiOutlined />} style={{ margin: 0, borderRadius: 999, padding: "2px 10px" }}>
+                {statusText}
+              </Tag>
             </Tooltip>
 
-            <Button
-              type="text"
-              icon={<SyncOutlined spin={isChecking} />}
-              onClick={onRefreshStatus}
-              disabled={isChecking}
-              style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 32 }}
+            <Tooltip title={labels.refresh}>
+              <Button type="text" icon={<SyncOutlined spin={isChecking} />} onClick={onRefreshStatus} disabled={isChecking} style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 32, width: 32, borderRadius: 999 }} />
+            </Tooltip>
+
+            <Select
+              size="small"
+              value={language}
+              options={LANGUAGE_OPTIONS}
+              onChange={onLanguageChange}
+              suffixIcon={<GlobalOutlined />}
+              aria-label={labels.language}
+              style={{ width: 126 }}
             />
           </Space>
         </Header>
 
-        <Content style={{ padding: 24, background: "#f5f7fb", overflowY: "auto" }}>{children}</Content>
+        <Content style={{ padding: 24, background: "linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)", overflowY: "auto" }}>{children}</Content>
       </Layout>
     </Layout>
   );
