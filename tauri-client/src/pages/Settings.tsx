@@ -31,6 +31,8 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         hotkey: "Alt+A",
         translateHotkey: "Alt+T",
         serverUrl: DEFAULT_TRANSLATION_SERVICE_URL,
+        lanServerUrl: "",
+        preferLanServer: false,
         channel: "google",
         targetLang: "zh",
       }}
@@ -43,11 +45,14 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <TranslationServiceCard />
         <TranslationChannelCard
+          form={form}
           currentChannel={controller.currentChannel}
           availableModels={controller.availableModels}
           isFetchingModels={controller.isFetchingModels}
           isTestingBaidu={controller.isTestingBaidu}
           isTestingNewApi={controller.isTestingNewApi}
+          channelTestStatuses={controller.channelTestStatuses}
+          serverChannelStatus={controller.serverChannelStatus}
           fetchModels={controller.fetchModels}
           testChannel={controller.testChannel}
         />

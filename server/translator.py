@@ -6,10 +6,136 @@ import hashlib
 import random
 import logging
 import re
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from security import normalize_public_base_url, request_public_url
 
 logger = logging.getLogger(__name__)
+
+_HAS_CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
+_HAS_LATIN_RE = re.compile(r"[A-Za-z]{2,}")
+_HAS_NON_CHINESE_TRANSLATABLE_RE = re.compile(r"[\u0400-\u052f\u0600-\u06ff\u0e00-\u0e7f\u3040-\u30ff\uac00-\ud7af]")
+_TRANS_LABEL_RE = re.compile(r"[A-Za-z]{2,}|[\u0400-\u052f]{2,}|[\u0600-\u06ff]{2,}|[\u0e00-\u0e7f]{2,}|[\u3040-\u30ff]{2,}|[\uac00-\ud7af]{2,}")
+_FILE_EXT_RE = re.compile(r"\.(?:exe|dll|json|md|markdown|txt|onnx|yaml|yml|toml|rs|ts|tsx|js|jsx|mjs|py|ps1|bat|cmd|png|jpe?g|webp|gif|zip|7z|msi|nsi|lock|log)$", re.IGNORECASE)
+_PATH_LIKE_RE = re.compile(r"(?:^[A-Za-z]:[\\/]|[\\/]|^\.\.?[\\/]|~[\\/])")
+_COMMAND_FLAG_RE = re.compile(r"^-{1,2}[\w-]+(?:[=:][^\s]+)?$")
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Z_][A-Z0-9_]*=.+$")
+_COMMAND_LINE_MARKER_RE = re.compile(r"(?:&&|\|\||\s-{1,2}[\w-]+)")
+_PACKAGE_LIKE_RE = re.compile(r"^(?:@[\w.-]+/)?[\w.-]+(?:/[\w.-]+)+$")
+_UPPER_IDENTIFIER_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.-]*[_./-][A-Z0-9_.-]*$")
+_TECHNICAL_SAFE_TEXT_RE = re.compile(r"^[\w .:@~+\\/\-=&|]+$")
+_PROTECTED_EXACT_TERMS = {
+    "path",
+    "windows",
+    "ocr",
+    "onnx",
+    "rapidocr",
+    "paddleocr-json",
+    "ysn ocr runtime",
+    "ctrl+d",
+    "ctrl+q",
+}
+
+_LATIN_DIACRITIC_RE = re.compile(r"[À-ÖØ-öø-ÿ]")
+_NON_ENGLISH_LATIN_RE = re.compile(
+    r"\b(?:abrir|antes|guardar|vista|previa|ouvrir|aperçu|apercu|avant|enregistrer|paramètres|parametres|fichier|fenêtre|fenetre|actualizar|cancelar|copiar|configuración|configuracion|de|des|du|del|para|por|con|sin)\b",
+    re.IGNORECASE,
+)
+
+
+def has_likely_non_english_latin_text(text: str) -> bool:
+    text = " ".join((text or "").strip().split())
+    if not re.search(r"[A-Za-z]{2,}", text):
+        return False
+    return bool(_LATIN_DIACRITIC_RE.search(text) or _NON_ENGLISH_LATIN_RE.search(text))
+
+
+def _trim_token_punctuation(text: str) -> str:
+    return (text or "").strip().strip("`\"'([{<").rstrip("`\"'])}>.,;:")
+
+
+def is_protected_technical_token(raw: str) -> bool:
+    token = _trim_token_punctuation(raw)
+    if not token:
+        return False
+    lower = token.lower()
+    if lower in _PROTECTED_EXACT_TERMS:
+        return True
+    if re.match(r"^ctrl\+[a-z0-9]$", token, re.IGNORECASE):
+        return True
+    if _ENV_ASSIGNMENT_RE.match(token):
+        return True
+    if _COMMAND_FLAG_RE.match(token):
+        return True
+    if _FILE_EXT_RE.search(token):
+        return True
+    if _PATH_LIKE_RE.search(token) and _TECHNICAL_SAFE_TEXT_RE.match(token):
+        return True
+    if _PACKAGE_LIKE_RE.match(token):
+        return True
+    if _UPPER_IDENTIFIER_RE.match(token) and token == token.upper():
+        return True
+    return False
+
+
+def is_likely_protected_technical_text(text: str) -> bool:
+    normalized = " ".join((text or "").strip().split())
+    if not normalized or _HAS_CHINESE_RE.search(normalized):
+        return False
+    if is_protected_technical_token(normalized):
+        return True
+
+    tokens = [item for item in normalized.split() if item]
+    if len(tokens) <= 1:
+        return False
+
+    has_path_or_file_marker = _PATH_LIKE_RE.search(normalized) or _FILE_EXT_RE.search(normalized)
+    if has_path_or_file_marker and _TECHNICAL_SAFE_TEXT_RE.match(normalized):
+        return True
+    has_command_line_marker = _ENV_ASSIGNMENT_RE.match(tokens[0] or "") or _COMMAND_LINE_MARKER_RE.search(normalized)
+    if has_command_line_marker and _TECHNICAL_SAFE_TEXT_RE.match(normalized):
+        return True
+
+    return all(is_protected_technical_token(token) for token in tokens)
+
+
+def should_preserve_without_translation(text: str, target_lang: str) -> bool:
+    normalized = " ".join((text or "").strip().split())
+    if not normalized:
+        return True
+    if is_likely_protected_technical_text(normalized):
+        return True
+    if (
+        target_lang in {"zh", "zh-CN"}
+        and _HAS_CHINESE_RE.search(normalized)
+        and not _HAS_LATIN_RE.search(normalized)
+        and not _HAS_NON_CHINESE_TRANSLATABLE_RE.search(normalized)
+    ):
+        return True
+    return not _TRANS_LABEL_RE.search(normalized)
+
+
+def detect_source_lang_hint(text: str, fallback: str = "auto") -> str:
+    if re.search(r"[\uac00-\ud7af]", text or ""):
+        return "ko"
+    if re.search(r"[\u0600-\u06ff]", text or ""):
+        return "ar"
+    if re.search(r"[\u3040-\u30ff]", text or ""):
+        return "ja"
+    if re.search(r"[\u0400-\u052f]", text or ""):
+        return "ru"
+    if re.search(r"[\u0e00-\u0e7f]", text or ""):
+        return "th"
+    if fallback == "en" and has_likely_non_english_latin_text(text):
+        return "auto"
+    return fallback or "auto"
+
+def should_group_by_source_hints(texts: list[str], source_lang: str) -> bool:
+    hints = {detect_source_lang_hint(text, "auto") for text in texts}
+    if source_lang == "auto":
+        return len(hints) > 1 or (hints and "auto" not in hints)
+    hints = {detect_source_lang_hint(text, source_lang) for text in texts}
+    return len(hints) > 1 or (hints and source_lang not in hints)
 
 # 使用全局共享的 requests Session 保持 Keep-Alive 长连接，免去每次 TLS 握手的开销
 _shared_session = requests.Session()
@@ -72,6 +198,50 @@ class TranslationCache:
 GLOBAL_TRANSLATE_CACHE = TranslationCache(maxsize=5000, ttl_seconds=86400)
 
 
+def _load_translation_glossary() -> dict:
+    candidates = [
+        Path(__file__).with_name("translationGlossary.json"),
+        Path(__file__).resolve().parents[1] / "tauri-client" / "src" / "utils" / "translationGlossary.json",
+    ]
+    for path in candidates:
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                return json.load(file)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            logger.warning("Failed to load translation glossary %s: %s", path, exc)
+    return {"version": "fallback", "zh": {"ui": {}}}
+
+
+TRANSLATION_GLOSSARY = _load_translation_glossary()
+ZH_UI_GLOSSARY = TRANSLATION_GLOSSARY.get("zh", {}).get("ui", {})
+
+
+def get_translation_runtime_metadata(active_channel: str = "google") -> dict:
+    return {
+        "glossary_version": TRANSLATION_GLOSSARY.get("version", "unknown"),
+        "glossary_loaded": bool(ZH_UI_GLOSSARY),
+        "glossary_terms": len(ZH_UI_GLOSSARY),
+        "quality_flags": {
+            "short_ui_glossary": bool(ZH_UI_GLOSSARY),
+            "latin_non_english_auto_source": True,
+            "multiline_block_preserved": True,
+            "technical_identifier_preservation": True,
+            "google_free_low_quality_risk": active_channel == "google",
+        },
+    }
+
+
+def lookup_short_ui_glossary(text: str, source_lang: str, target_lang: str) -> str | None:
+    if target_lang not in {"zh", "zh-CN"}:
+        return None
+    if source_lang not in {"auto", "en"}:
+        return None
+    normalized = " ".join((text or "").strip().lower().split())
+    return ZH_UI_GLOSSARY.get(normalized)
+
+
 class BaseTranslator(abc.ABC):
     def __init__(self):
         self.session = _shared_session
@@ -83,19 +253,42 @@ class BaseTranslator(abc.ABC):
     def cache_namespace(self) -> str:
         return self.__class__.__name__.lower().replace("translator", "")
 
+    def _ensure_stats_ref(self, stats_ref: dict = None) -> dict | None:
+        if stats_ref is None:
+            return None
+        stats_ref.setdefault("cache_hits", 0)
+        stats_ref.setdefault("provider_misses", 0)
+        stats_ref.setdefault("request_duplicates", 0)
+        stats_ref.setdefault("preserved_hits", 0)
+        return stats_ref
+
     def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
             return []
 
+        stats_ref = self._ensure_stats_ref(stats_ref)
         results = [None] * len(texts)
-        miss_indices = []
         miss_texts = []
+        miss_keys = []
+        miss_slots = []
+        scheduled_misses = {}
 
         channel_name = self.cache_namespace()
         # 后续如果有版本区分可从配置读取，目前固定 "1.0"
         version = "1.0"
 
         for idx, text in enumerate(texts):
+            if should_preserve_without_translation(text, target_lang):
+                results[idx] = text
+                if stats_ref is not None:
+                    stats_ref["preserved_hits"] += 1
+                continue
+            glossary_val = lookup_short_ui_glossary(text, source_lang, target_lang)
+            if glossary_val is not None:
+                results[idx] = glossary_val
+                if stats_ref is not None:
+                    stats_ref["cache_hits"] += 1
+                continue
             key = GLOBAL_TRANSLATE_CACHE.make_key(text, source_lang, target_lang, channel_name, version)
             cached_val = GLOBAL_TRANSLATE_CACHE.get(key)
             if cached_val is not None:
@@ -103,21 +296,32 @@ class BaseTranslator(abc.ABC):
                 if stats_ref is not None:
                     stats_ref["cache_hits"] += 1
             else:
-                miss_indices.append(idx)
+                scheduled_index = scheduled_misses.get(key)
+                if scheduled_index is not None:
+                    miss_slots[scheduled_index].append(idx)
+                    if stats_ref is not None:
+                        stats_ref["request_duplicates"] += 1
+                    continue
+                scheduled_misses[key] = len(miss_texts)
+                miss_keys.append(key)
                 miss_texts.append(text)
+                miss_slots.append([idx])
 
         if miss_texts:
+            if stats_ref is not None:
+                stats_ref["provider_misses"] += len(miss_texts)
             translated_misses = self._do_translate_batch(miss_texts, source_lang, target_lang, stats_ref)
             if len(translated_misses) != len(miss_texts):
-                translated_misses = miss_texts
+                translated_misses = [""] * len(miss_texts)
 
-            for idx, text, trans_val in zip(miss_indices, miss_texts, translated_misses):
-                results[idx] = trans_val
+            for key, slots, trans_val in zip(miss_keys, miss_slots, translated_misses):
+                for idx in slots:
+                    results[idx] = trans_val
                 # 写入缓存
-                key = GLOBAL_TRANSLATE_CACHE.make_key(text, source_lang, target_lang, channel_name, version)
-                GLOBAL_TRANSLATE_CACHE.set(key, trans_val)
+                if trans_val:
+                    GLOBAL_TRANSLATE_CACHE.set(key, trans_val)
 
-        return results
+        return [item or "" for item in results]
 
     def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
@@ -127,7 +331,28 @@ class BaseTranslator(abc.ABC):
             return [f.result() for f in futures]
 
 class GoogleTranslator(BaseTranslator):
+    def _do_translate_script_groups(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+        groups = {}
+        for index, text in enumerate(texts):
+            hint = detect_source_lang_hint(text, source_lang)
+            groups.setdefault(hint, []).append((index, text))
+
+        results = [""] * len(texts)
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(groups)))) as executor:
+            futures = {
+                executor.submit(self._do_translate_batch, [text for _, text in items], hint, target_lang, stats_ref): items
+                for hint, items in groups.items()
+            }
+            for future, items in futures.items():
+                translated_items = future.result()
+                if len(translated_items) != len(items):
+                    translated_items = [""] * len(items)
+                for (original_index, _), translated in zip(items, translated_items):
+                    results[original_index] = translated
+        return results
+
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        source_lang = detect_source_lang_hint(text, source_lang)
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source_lang}&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
         response = self.session.get(url, timeout=5)
         if response.status_code == 200:
@@ -150,6 +375,11 @@ class GoogleTranslator(BaseTranslator):
             return []
 
         # 1. 预处理文本，去掉行内换行防止干扰分行逻辑
+        if should_group_by_source_hints(texts, source_lang):
+            return self._do_translate_script_groups(texts, source_lang, target_lang, stats_ref)
+        if any("\n" in text for text in texts):
+            return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+
         cleaned_texts = [t.replace('\n', ' ').strip() for t in texts]
         query = "\n".join(cleaned_texts)
 
@@ -327,7 +557,7 @@ class LLMTranslator(BaseTranslator):
                         final_results[idx] = fut.result()
                     except Exception as fe:
                         logger.error(f"[LLM Precision Fallback] 补偿翻译索引 {idx} 失败: {fe}")
-                        final_results[idx] = texts[idx] # 终极兜底：直接保留原文
+                        final_results[idx] = ""
 
         return final_results
 

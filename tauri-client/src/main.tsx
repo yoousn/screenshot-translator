@@ -9,7 +9,15 @@ import RecordingControlPage from "./pages/RecordingControlPage";
 import { I18nProvider } from "./i18n";
 import "./index.css";
 
-const label = getCurrentWindow().label;
+const resolveWindowLabel = () => {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return "main";
+  }
+};
+
+const label = resolveWindowLabel();
 
 // Set transparent background BEFORE React renders for screenshot windows
 if (label === "screenshot" || label === "recording_control") {

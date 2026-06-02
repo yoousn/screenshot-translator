@@ -1,29 +1,6 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-mod ysn_ocr_crop;
-mod ysn_ocr_decode;
-mod ysn_ocr_dictionary;
-mod ysn_ocr_manifest_store;
-mod ysn_ocr_model_downloader;
-mod ysn_ocr_model_index;
-mod ysn_ocr_model_schema;
-mod ysn_ocr_model_sources;
-mod ysn_ocr_pipeline;
-mod ysn_ocr_postprocess;
-mod ysn_ocr_preprocess;
-mod ysn_ocr_router;
-mod ysn_ocr_runtime;
-mod ysn_ocr_runtime_adapter;
-use ysn_ocr_runtime::{
-    create_ysn_ocr_managed_source_index_template, dry_run_ysn_ocr_managed_source_index,
-    get_ysn_ocr_model_index, get_ysn_ocr_status, import_local_ysn_ocr_model,
-    import_ysn_ocr_managed_source_index, install_ysn_ocr_model_pack, plan_ysn_ocr_routes,
-    probe_ysn_ocr_model_session, probe_ysn_ocr_model_session_by_id,
-    probe_ysn_ocr_model_session_readiness_by_id, run_ysn_ocr_decode_fixture,
-    run_ysn_ocr_model_inference_probe, run_ysn_ocr_self_test, update_ysn_ocr_model_pack,
-};
-
 use arboard::{Clipboard, ImageData};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use futures_util::StreamExt;
@@ -47,9 +24,9 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
 static RECORDING_OVERLAY_COLOR: AtomicU32 = AtomicU32::new(RECORDING_BORDER_BLUE);
 
-static SCREENSHOT_JPEG: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
-fn get_screenshot_jpeg() -> &'static Mutex<Option<Vec<u8>>> {
-    SCREENSHOT_JPEG.get_or_init(|| Mutex::new(None))
+static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+fn get_screenshot_image() -> &'static Mutex<Option<Vec<u8>>> {
+    SCREENSHOT_IMAGE.get_or_init(|| Mutex::new(None))
 }
 
 #[derive(Clone, Copy)]
@@ -303,9 +280,14 @@ fn app_data_dir() -> PathBuf {
 fn cleanup_temp_files() {
     let _ = stop_recording_internal(1500);
     let mut path = app_data_dir();
-    path.push("fullscreen_temp.jpg");
+    path.push("fullscreen_temp.png");
     if path.exists() {
         let _ = fs::remove_file(&path);
+    }
+    let mut legacy_path = app_data_dir();
+    legacy_path.push("fullscreen_temp.jpg");
+    if legacy_path.exists() {
+        let _ = fs::remove_file(&legacy_path);
     }
     let mut cropped_path = app_data_dir();
     cropped_path.push("cropped_temp.png");
@@ -907,7 +889,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     close_screenshot_windows(&app, false);
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime
-    let (jpeg_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
+    let (png_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
         move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
             let screens =
                 Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
@@ -926,35 +908,35 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
                 .capture()
                 .map_err(|e| format!("Screenshot failed: {}", e))?;
             let mut buffer = std::io::Cursor::new(Vec::new());
-            let encoder =
-                screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 80);
             image
-                .write_with_encoder(encoder)
-                .map_err(|e| format!("Encode JPEG failed: {}", e))?;
-            let jpeg_bytes = buffer.into_inner();
-            let base64_data = BASE64_STANDARD.encode(&jpeg_bytes);
-            Ok((jpeg_bytes, base64_data, screen_info))
+                .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
+                .map_err(|e| format!("Encode PNG failed: {}", e))?;
+            let png_bytes = buffer.into_inner();
+            let base64_data = BASE64_STANDARD.encode(&png_bytes);
+            Ok((png_bytes, base64_data, screen_info))
         },
     )
     .await
     .map_err(|e| format!("Screenshot task failed: {}", e))??;
 
-    // Store JPEG bytes in memory for capture_region (avoids disk read on the critical path)
-    if let Ok(mut guard) = get_screenshot_jpeg().lock() {
-        *guard = Some(jpeg_bytes.clone());
+    // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
+    if let Ok(mut guard) = get_screenshot_image().lock() {
+        *guard = Some(png_bytes.clone());
     }
 
     // Write to disk asynchronously (non-blocking) 鈥?only needed as a backup
     let write_dir = app_data_dir();
-    let write_path = write_dir.join("fullscreen_temp.jpg");
-    let jpeg_for_write = jpeg_bytes.clone();
+    let write_path = write_dir.join("fullscreen_temp.png");
+    let legacy_write_path = write_dir.join("fullscreen_temp.jpg");
+    let png_for_write = png_bytes.clone();
     tokio::task::spawn_blocking(move || {
         if let Some(parent) = write_path.parent() {
             if !parent.exists() {
                 let _ = fs::create_dir_all(parent);
             }
         }
-        let _ = fs::write(&write_path, &jpeg_for_write);
+        let _ = fs::write(&write_path, &png_for_write);
+        let _ = fs::remove_file(&legacy_write_path);
     });
 
     let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
@@ -1314,13 +1296,13 @@ async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> Resu
 #[tauri::command]
 fn get_fullscreen_image() -> Result<String, String> {
     // Try memory first (fast), fall back to disk
-    if let Ok(guard) = get_screenshot_jpeg().lock() {
+    if let Ok(guard) = get_screenshot_image().lock() {
         if let Some(ref bytes) = *guard {
             return Ok(BASE64_STANDARD.encode(bytes));
         }
     }
     let mut path = app_data_dir();
-    path.push("fullscreen_temp.jpg");
+    path.push("fullscreen_temp.png");
     if !path.exists() {
         return Err("No display detected".to_string());
     }
@@ -1335,13 +1317,17 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     }
 
     // Try memory first (fast), fall back to disk
-    let jpeg_bytes = {
-        let guard = get_screenshot_jpeg().lock().map_err(|e| e.to_string())?;
+    let screenshot_bytes = {
+        let guard = get_screenshot_image().lock().map_err(|e| e.to_string())?;
         if let Some(ref bytes) = *guard {
             bytes.clone()
         } else {
             let mut path = app_data_dir();
-            path.push("fullscreen_temp.jpg");
+            path.push("fullscreen_temp.png");
+            if !path.exists() {
+                path = app_data_dir();
+                path.push("fullscreen_temp.jpg");
+            }
             if !path.exists() {
                 return Err("No display detected".to_string());
             }
@@ -1349,11 +1335,8 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
         }
     };
 
-    let img = screenshots::image::load_from_memory_with_format(
-        &jpeg_bytes,
-        screenshots::image::ImageFormat::Jpeg,
-    )
-    .map_err(|e| format!("Load fullscreen image failed: {}", e))?;
+    let img = screenshots::image::load_from_memory(&screenshot_bytes)
+        .map_err(|e| format!("Load fullscreen image failed: {}", e))?;
     let iw = img.width() as i32;
     let ih = img.height() as i32;
     let sx = x.clamp(0, iw.saturating_sub(1));
@@ -1934,7 +1917,7 @@ fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, St
             "error": error,
         })
     });
-    let ocr_runtime = get_ysn_ocr_status(app.clone()).unwrap_or_else(|error| {
+    let ocr_runtime = get_rapid_ocr_status(app.clone()).unwrap_or_else(|error| {
         serde_json::json!({
             "ready": false,
             "error": error,
@@ -1950,34 +1933,27 @@ fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, St
         issues.push(serde_json::json!({
             "severity": "error",
             "module": "ocrRuntime",
-            "code": "ocr-runtime-not-ready",
-            "message": "Local screenshot translation is not fully ready.",
-            "nextAction": "Open the local screenshot translation settings and run the model check."
+            "code": "rapidocr-not-ready",
+            "message": "RapidOCR text recognition is not ready.",
+            "nextAction": "Open the text recognition panel and run the RapidOCR check."
         }));
     }
-    if !ocr_runtime["sourceReadiness"]["ready"]
-        .as_bool()
-        .unwrap_or(false)
-    {
+    if !ocr_runtime["runnerReady"].as_bool().unwrap_or(false) {
         issues.push(serde_json::json!({
             "severity": "warning",
             "module": "ocrRuntime",
-            "code": "trusted-model-source-pending",
-            "message": "Trusted OCR model sources are not fully configured.",
-            "nextAction": "Configure managed model source URL, SHA256, size, version, packId, path, and license metadata."
+            "code": "rapidocr-runner-missing",
+            "message": "RapidOCR runner is not available.",
+            "nextAction": "Install the RapidOCR package for development or bundle rapidocr-runner.exe for release."
         }));
     }
-    if ocr_runtime["activeModelIssues"]
-        .as_array()
-        .map(|items| !items.is_empty())
-        .unwrap_or(false)
-    {
+    if ocr_runtime["lastError"].as_str().is_some() {
         issues.push(serde_json::json!({
             "severity": "error",
             "module": "ocrRuntime",
-            "code": "active-model-health-failed",
-            "message": "One or more active OCR model files are missing, mismatched, or non-production.",
-            "nextAction": "Repair model pack, re-import local validation model, or install from managed source."
+            "code": "rapidocr-probe-failed",
+            "message": "RapidOCR probe failed.",
+            "nextAction": "Run the RapidOCR self-test and reinstall the model/runtime package if needed."
         }));
     }
     if !recording["ffmpegFound"].as_bool().unwrap_or(false) {
@@ -2036,7 +2012,7 @@ fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "recording": recording,
         "shortcuts": shortcut_status,
         "recovery": {
-            "ocr": "Open the OCR model center, configure trusted model sources or import local-dev models for validation, then run self-test.",
+            "ocr": "Open the text recognition panel, choose Rapid OCR V5 or V4, then run self-test.",
             "recording": "Install or choose ffmpeg.exe, then re-check video recording dependency.",
             "shortcuts": "If global shortcuts fail, restart the app or change conflicting hotkeys in settings."
         }
@@ -2695,24 +2671,36 @@ pub struct OcrBlock {
     pub box_coords: Vec<Vec<i32>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RapidOcrRunnerOutput {
+    status: String,
+    engine: Option<String>,
+    #[serde(rename = "modelVersion")]
+    model_version: Option<String>,
+    #[serde(rename = "selectedLang")]
+    selected_lang: Option<String>,
+    blocks: Option<Vec<OcrBlock>>,
+    timings: Option<serde_json::Value>,
+    candidates: Option<Vec<serde_json::Value>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RapidOcrCommandSpec {
+    program: PathBuf,
+    args_prefix: Vec<String>,
+    kind: String,
+}
+
 #[tauri::command]
 async fn prewarm_local_ocr_models(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(move || {
-        let manifest = crate::ysn_ocr_manifest_store::read_manifest(&app)?;
-        let mut warmed = Vec::new();
-        for model_id in ["det-default", "rec-cjk", "rec-latin"] {
-            let model = find_ysn_model(&manifest, model_id)?;
-            let path = crate::ysn_ocr_model_downloader::safe_active_model_path(
-                &app,
-                model["path"].as_str().unwrap_or(""),
-            )?;
-            crate::ysn_ocr_runtime_adapter::prewarm_onnx_session(&path)?;
-            warmed.push(model_id.to_string());
-        }
-        Ok(warmed)
+        let model_version = rapid_ocr_model_version();
+        run_rapidocr_probe(&app, &model_version)?;
+        Ok(vec![format!("rapidocr-{model_version}")])
     })
     .await
-    .map_err(|error| format!("prewarm OCR model task failed: {error}"))?
+    .map_err(|error| format!("RapidOCR prewarm task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2736,7 +2724,7 @@ fn run_local_ocr_sync(
     image_base64: String,
     _executable_path: Option<String>,
 ) -> Result<Vec<OcrBlock>, String> {
-    match run_ysn_ocr_onnx_sync(&app, &image_base64) {
+    match run_rapidocr_sync(&app, &image_base64) {
         Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
         Ok(_) => {
             return Err(
@@ -2747,274 +2735,349 @@ fn run_local_ocr_sync(
     }
 }
 
-fn run_ysn_ocr_onnx_sync(
-    app: &tauri::AppHandle,
-    image_base64: &str,
-) -> Result<Vec<OcrBlock>, String> {
+fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<OcrBlock>, String> {
     let total_started = Instant::now();
     let image_bytes = BASE64_STANDARD
         .decode(image_base64)
-        .map_err(|error| format!("Decode OCR image failed: {error}"))?;
-    let decoded_at = Instant::now();
-    let manifest = crate::ysn_ocr_manifest_store::read_manifest(app)?;
-    let model_root = crate::ysn_ocr_runtime::model_root(app)?;
-    let active_dir = crate::ysn_ocr_model_downloader::active_dir(app)?;
-    let missing = crate::ysn_ocr_model_downloader::active_model_missing(app, &manifest);
-    if !missing.is_empty() {
+        .map_err(|error| format!("Decode RapidOCR image failed: {error}"))?;
+    let temp_path = write_rapidocr_temp_image(&image_bytes)?;
+    let model_version = rapid_ocr_model_version();
+    let mode = rapid_ocr_mode();
+    let args = vec![
+        "--image".to_string(),
+        temp_path.to_string_lossy().to_string(),
+        "--model-version".to_string(),
+        model_version.clone(),
+        "--mode".to_string(),
+        mode,
+    ];
+    let result = run_rapidocr_json(app, args);
+    let _ = fs::remove_file(&temp_path);
+    let output = result?;
+    if output.status != "success" {
+        return Err(output
+            .error
+            .unwrap_or_else(|| "RapidOCR returned a failed status.".to_string()));
+    }
+    let blocks = output.blocks.unwrap_or_default();
+    eprintln!(
+        "[local-screenshot-translate] rapidocr total={}ms runner={} model={} lang={} blocks={} timings={}",
+        total_started.elapsed().as_millis(),
+        output.engine.as_deref().unwrap_or("rapidocr"),
+        output.model_version.as_deref().unwrap_or(&model_version),
+        output.selected_lang.as_deref().unwrap_or("auto"),
+        blocks.len(),
+        serde_json::to_string(&output.timings).unwrap_or_else(|_| "null".to_string())
+    );
+    if let Some(candidates) = output.candidates {
+        eprintln!(
+            "[local-screenshot-translate] rapidocr candidates {}",
+            serde_json::to_string(&candidates).unwrap_or_else(|_| "[]".to_string())
+        );
+    }
+    Ok(blocks)
+}
+
+fn rapid_ocr_model_version() -> String {
+    match config_value_string("rapidOcrModelVersion")
+        .unwrap_or_else(|| "v5".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "v4" => "v4".to_string(),
+        _ => "v5".to_string(),
+    }
+}
+
+fn rapid_ocr_mode() -> String {
+    match config_value_string("rapidOcrMode")
+        .unwrap_or_else(|| "auto".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "full" => "full".to_string(),
+        "latin" => "latin".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn write_rapidocr_temp_image(image_bytes: &[u8]) -> Result<PathBuf, String> {
+    let dir = app_data_dir().join("rapidocr");
+    fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "failed to create RapidOCR temp directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    let path = dir.join(format!(
+        "ocr-{}-{}.png",
+        std::process::id(),
+        chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+    ));
+    fs::write(&path, image_bytes).map_err(|error| {
+        format!(
+            "failed to write RapidOCR temp image {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn resolve_rapidocr_command(app: &tauri::AppHandle) -> Result<RapidOcrCommandSpec, String> {
+    if let Some(path) = config_value_string("rapidOcrRunnerPath")
+        .or_else(|| std::env::var("YSN_RAPIDOCR_RUNNER").ok())
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+    {
+        return Ok(RapidOcrCommandSpec {
+            program: path,
+            args_prefix: Vec::new(),
+            kind: "custom-runner".to_string(),
+        });
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            if let Some(path) = find_rapidocr_runner_exe(exe_dir) {
+                return Ok(RapidOcrCommandSpec {
+                    program: path,
+                    args_prefix: Vec::new(),
+                    kind: "bundled-runner".to_string(),
+                });
+            }
+        }
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        for relative in [
+            PathBuf::from("rapidocr")
+                .join("rapidocr-runner")
+                .join("rapidocr-runner.exe"),
+            PathBuf::from("rapidocr").join("rapidocr-runner.exe"),
+            PathBuf::from("resources")
+                .join("rapidocr")
+                .join("rapidocr-runner")
+                .join("rapidocr-runner.exe"),
+            PathBuf::from("resources")
+                .join("rapidocr")
+                .join("rapidocr-runner.exe"),
+        ] {
+            let path = resource_dir.join(relative);
+            if path.exists() {
+                return Ok(RapidOcrCommandSpec {
+                    program: path,
+                    args_prefix: Vec::new(),
+                    kind: "resource-runner".to_string(),
+                });
+            }
+        }
+    }
+
+    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("rapidocr")
+        .join("rapidocr_runner.py");
+    if script_path.exists() {
+        return Ok(RapidOcrCommandSpec {
+            program: PathBuf::from("python"),
+            args_prefix: vec![script_path.to_string_lossy().to_string()],
+            kind: "python-runner".to_string(),
+        });
+    }
+
+    Err("RapidOCR runner was not found. Expected bundled rapidocr-runner.exe or src-tauri/rapidocr/rapidocr_runner.py.".to_string())
+}
+
+fn find_rapidocr_runner_exe(dir: &Path) -> Option<PathBuf> {
+    let exact = dir.join("rapidocr-runner.exe");
+    if exact.exists() {
+        return Some(exact);
+    }
+    fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .map(|name| name.starts_with("rapidocr-runner") && name.ends_with(".exe"))
+                .unwrap_or(false)
+        })
+}
+
+fn run_rapidocr_json(
+    app: &tauri::AppHandle,
+    args: Vec<String>,
+) -> Result<RapidOcrRunnerOutput, String> {
+    let spec = resolve_rapidocr_command(app)?;
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args_prefix);
+    command.args(&args);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = command.output().map_err(|error| {
+        format!(
+            "failed to start RapidOCR runner ({}): {error}",
+            spec.program.display()
+        )
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
         return Err(format!(
-            "\u{672c}\u{5730}\u{622a}\u{56fe}\u{7ffb}\u{8bd1}\u{6a21}\u{578b}\u{6587}\u{4ef6}\u{7f3a}\u{5931}\u{6216}\u{6821}\u{9a8c}\u{5931}\u{8d25}\u{ff1a}{}\u{3002}\u{6a21}\u{578b}\u{76ee}\u{5f55}\u{ff1a}{}\u{3002}\u{8bf7}\u{91cd}\u{65b0}\u{8fd0}\u{884c} scripts/install_ppocrv5_onnx_models.ps1\u{3002}",
-            missing.join(", "),
-            model_root.display()
+            "RapidOCR runner failed with status {}. stdout: {} stderr: {}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
         ));
     }
+    let json_line = stdout
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .ok_or_else(|| {
+            format!(
+                "RapidOCR runner did not return JSON. stderr: {}",
+                stderr.trim()
+            )
+        })?;
+    let mut parsed: RapidOcrRunnerOutput = serde_json::from_str(json_line.trim())
+        .map_err(|error| format!("failed to parse RapidOCR JSON: {error}; output: {json_line}"))?;
+    if parsed.engine.is_none() {
+        parsed.engine = Some(spec.kind);
+    }
+    Ok(parsed)
+}
 
-    let det_model = find_ysn_model(&manifest, "det-default")?;
-    let rec_model = find_ysn_model(&manifest, "rec-cjk")?;
-    let latin_rec_model = find_ysn_model(&manifest, "rec-latin")?;
-    let det_path = crate::ysn_ocr_model_downloader::safe_active_model_path(
+fn run_rapidocr_probe(
+    app: &tauri::AppHandle,
+    model_version: &str,
+) -> Result<RapidOcrRunnerOutput, String> {
+    run_rapidocr_json(
         app,
-        det_model["path"]
-            .as_str()
-            .unwrap_or("models/det-default.onnx"),
-    )?;
-    let rec_path = crate::ysn_ocr_model_downloader::safe_active_model_path(
-        app,
-        rec_model["path"].as_str().unwrap_or("models/rec-cjk.onnx"),
-    )?;
-    let latin_rec_path = crate::ysn_ocr_model_downloader::safe_active_model_path(
-        app,
-        latin_rec_model["path"]
-            .as_str()
-            .unwrap_or("models/rec-latin.onnx"),
-    )?;
-    let manifest_ready_at = Instant::now();
-
-    let det_config = crate::ysn_ocr_preprocess::OcrTensorPreprocessConfig::for_model_descriptor(
-        &det_model, None, None,
-    )?;
-    let det_tensor =
-        crate::ysn_ocr_preprocess::image_bytes_to_nchw_rgb_tensor(&image_bytes, &det_config)?;
-    let det_preprocessed_at = Instant::now();
-    let det_outputs =
-        crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_outputs(&det_path, &det_tensor)?;
-    let det_inferred_at = Instant::now();
-    let mut detections = decode_ysn_detection_outputs(&det_outputs, &det_tensor)?;
-    let det_decoded_at = Instant::now();
-    if detections.is_empty() {
-        detections = vec![whole_image_detection(
-            det_tensor.original_width,
-            det_tensor.original_height,
-        )];
-    }
-    if detections.len() > 12 {
-        detections.truncate(12);
-    }
-
-    let crop_config = crate::ysn_ocr_crop::OcrCropPlanConfig {
-        image_width: det_tensor.original_width,
-        image_height: det_tensor.original_height,
-        padding: 4,
-        minimum_width: 4,
-        minimum_height: 4,
-    };
-    let crop_plan = crate::ysn_ocr_crop::build_line_crop_plan(&detections, &crop_config)?;
-    let cropped_lines = crate::ysn_ocr_crop::crop_line_images_from_bytes(&image_bytes, &crop_plan)?;
-    let cropped_at = Instant::now();
-    let dictionary = crate::ysn_ocr_dictionary::load_dictionary_from_contract(
-        &active_dir,
-        &rec_model["contract"],
-    )?;
-    let latin_dictionary = crate::ysn_ocr_dictionary::load_dictionary_from_contract(
-        &active_dir,
-        &latin_rec_model["contract"],
-    )?;
-    let dictionaries_loaded_at = Instant::now();
-    let rec_config = crate::ysn_ocr_preprocess::OcrTensorPreprocessConfig::for_model_descriptor(
-        &rec_model,
-        Some(320),
-        Some(48),
-    )?;
-    let latin_rec_config =
-        crate::ysn_ocr_preprocess::OcrTensorPreprocessConfig::for_model_descriptor(
-            &latin_rec_model,
-            Some(320),
-            Some(48),
-        )?;
-    let mut recognitions = Vec::new();
-    let mut cjk_fallbacks = 0usize;
-    for crop in cropped_lines.iter() {
-        let latin_tensor = crate::ysn_ocr_preprocess::cropped_line_to_nchw_rgb_tensor(
-            crop,
-            &latin_rec_config,
-        )?;
-        let latin_outputs = crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_outputs(
-            &latin_rec_path,
-            &latin_tensor,
-        )?;
-        let latin_recognition =
-            decode_ysn_recognition_outputs(&latin_outputs, &latin_dictionary)?;
-        if is_poor_ysn_recognition(&latin_recognition) {
-            let tensor =
-                crate::ysn_ocr_preprocess::cropped_line_to_nchw_rgb_tensor(crop, &rec_config)?;
-            let outputs =
-                crate::ysn_ocr_runtime_adapter::run_onnx_nchw_f32_outputs(&rec_path, &tensor)?;
-            let recognition = decode_ysn_recognition_outputs(&outputs, &dictionary)?;
-            if is_better_ysn_recognition(&recognition, &latin_recognition) {
-                cjk_fallbacks += 1;
-                recognitions.push(recognition);
-            } else {
-                recognitions.push(latin_recognition);
-            }
-        } else {
-            recognitions.push(latin_recognition);
-        }
-    }
-    let recognized_at = Instant::now();
-
-    let runtime_blocks = crate::ysn_ocr_postprocess::align_detections_with_recognitions(
-        &detections,
-        &recognitions,
-        &crate::ysn_ocr_postprocess::OcrPostprocessConfig {
-            minimum_confidence: 0.05,
-            default_script: "cjk".to_string(),
-            default_language: "auto".to_string(),
-            model_id: "rec-cjk".to_string(),
-        },
-    );
-    eprintln!(
-        "[local-screenshot-translate] ocr timings total={}ms decode={}ms manifest={}ms det_pre={}ms det={}ms det_decode={}ms crop={}ms dict={}ms rec={}ms detections={} crops={} cjk_fallbacks={} blocks={}",
-        total_started.elapsed().as_millis(),
-        decoded_at.duration_since(total_started).as_millis(),
-        manifest_ready_at.duration_since(decoded_at).as_millis(),
-        det_preprocessed_at.duration_since(manifest_ready_at).as_millis(),
-        det_inferred_at.duration_since(det_preprocessed_at).as_millis(),
-        det_decoded_at.duration_since(det_inferred_at).as_millis(),
-        cropped_at.duration_since(det_decoded_at).as_millis(),
-        dictionaries_loaded_at.duration_since(cropped_at).as_millis(),
-        recognized_at.duration_since(dictionaries_loaded_at).as_millis(),
-        detections.len(),
-        cropped_lines.len(),
-        cjk_fallbacks,
-        runtime_blocks.len()
-    );
-    Ok(runtime_blocks
-        .into_iter()
-        .map(|block| OcrBlock {
-            text: block.text,
-            confidence: block.confidence as f64,
-            box_coords: block.box_coords,
-        })
-        .collect())
-}
-
-fn is_poor_ysn_recognition(line: &crate::ysn_ocr_decode::OcrRecognitionLine) -> bool {
-    line.text.trim().is_empty() || line.confidence < 0.15 || line.token_count == 0
-}
-
-fn is_better_ysn_recognition(
-    candidate: &crate::ysn_ocr_decode::OcrRecognitionLine,
-    current: &crate::ysn_ocr_decode::OcrRecognitionLine,
-) -> bool {
-    let candidate_text = candidate.text.trim();
-    if candidate_text.is_empty() {
-        return false;
-    }
-    let current_text = current.text.trim();
-    if current_text.is_empty() {
-        return true;
-    }
-    candidate.confidence > current.confidence + 0.05
-        || (candidate.token_count > current.token_count
-            && candidate.confidence >= current.confidence)
-}
-
-fn find_ysn_model(
-    manifest: &serde_json::Value,
-    model_id: &str,
-) -> Result<serde_json::Value, String> {
-    manifest["models"]
-        .as_array()
-        .and_then(|models| {
-            models
-                .iter()
-                .find(|model| model["id"].as_str() == Some(model_id))
-        })
-        .cloned()
-        .ok_or_else(|| format!("YSN OCR model descriptor not found: {model_id}"))
-}
-
-fn decode_ysn_detection_outputs(
-    outputs: &[crate::ysn_ocr_runtime_adapter::OnnxF32TensorOutput],
-    tensor: &crate::ysn_ocr_preprocess::OcrTensorInput,
-) -> Result<Vec<crate::ysn_ocr_decode::OcrDetectionBox>, String> {
-    let output = outputs
-        .iter()
-        .find(|output| output.shape.len() == 4)
-        .ok_or_else(|| "YSN OCR detector did not return a rank-4 probability map.".to_string())?;
-    let height = *output
-        .shape
-        .get(2)
-        .ok_or_else(|| "YSN OCR detector output missing height.".to_string())?;
-    let width = *output
-        .shape
-        .get(3)
-        .ok_or_else(|| "YSN OCR detector output missing width.".to_string())?;
-    let mut probabilities = output.data.clone();
-    let needs_sigmoid = probabilities
-        .iter()
-        .any(|value| *value < 0.0 || *value > 1.0);
-    if needs_sigmoid {
-        for value in probabilities.iter_mut() {
-            *value = 1.0 / (1.0 + (-*value).exp());
-        }
-    }
-    crate::ysn_ocr_decode::decode_db_probability_map(
-        &probabilities,
-        width,
-        height,
-        &crate::ysn_ocr_decode::DbTextDetectorConfig {
-            probability_threshold: 0.35,
-            minimum_area: 16,
-            original_width: tensor.original_width,
-            original_height: tensor.original_height,
-        },
-    )
-}
-
-fn whole_image_detection(width: u32, height: u32) -> crate::ysn_ocr_decode::OcrDetectionBox {
-    crate::ysn_ocr_decode::OcrDetectionBox {
-        box_coords: vec![
-            vec![0, 0],
-            vec![width as i32, 0],
-            vec![width as i32, height as i32],
-            vec![0, height as i32],
+        vec![
+            "--probe".to_string(),
+            "--model-version".to_string(),
+            model_version.to_string(),
         ],
-        confidence: 0.5,
-    }
+    )
 }
 
-fn decode_ysn_recognition_outputs(
-    outputs: &[crate::ysn_ocr_runtime_adapter::OnnxF32TensorOutput],
-    dictionary: &crate::ysn_ocr_dictionary::LoadedOcrDictionary,
-) -> Result<crate::ysn_ocr_decode::OcrRecognitionLine, String> {
-    let output = outputs
-        .iter()
-        .find(|output| output.shape.len() == 3)
-        .ok_or_else(|| "YSN OCR recognizer did not return rank-3 CTC logits.".to_string())?;
-    let time_steps = output.shape[1];
-    let class_count = output.shape[2];
-    let mut tokens = Vec::with_capacity(class_count);
-    tokens.extend(dictionary.tokens.iter().cloned());
-    while tokens.len() < class_count {
-        tokens.push(String::new());
+#[tauri::command]
+fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let model_version = rapid_ocr_model_version();
+    let runner = resolve_rapidocr_command(&app);
+    let mut last_error: Option<String> = None;
+    let mut probe_timings = serde_json::json!(null);
+    let mut probe_ok = false;
+    if runner.is_ok() {
+        match run_rapidocr_probe(&app, &model_version) {
+            Ok(output) if output.status == "success" => {
+                probe_ok = true;
+                probe_timings = output.timings.unwrap_or_else(|| serde_json::json!(null));
+            }
+            Ok(output) => {
+                last_error = Some(
+                    output
+                        .error
+                        .unwrap_or_else(|| "RapidOCR probe failed.".to_string()),
+                );
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+    } else if let Err(error) = &runner {
+        last_error = Some(error.clone());
     }
-    crate::ysn_ocr_decode::decode_ctc_logits(
-        &output.data,
-        time_steps,
-        class_count,
-        &tokens,
-        dictionary.blank_token_id,
-    )
+    let runner_kind = runner
+        .as_ref()
+        .map(|spec| spec.kind.clone())
+        .unwrap_or_else(|_| "missing".to_string());
+    let runner_path = runner
+        .as_ref()
+        .map(|spec| spec.program.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ready = runner.is_ok() && probe_ok;
+    Ok(serde_json::json!({
+        "ready": ready,
+        "runnerReady": runner.is_ok(),
+        "runtimeInferenceReady": ready,
+        "modelPacksReady": ready,
+        "activeModelsReady": ready,
+        "selfTestReady": probe_ok,
+        "runtime": "rapidocr",
+        "engine": "rapidocr",
+        "runnerKind": runner_kind,
+        "runnerPath": runner_path,
+        "runtimeVersion": "rapidocr-python-3.x",
+        "modelSetVersion": format!("rapidocr-{}", model_version),
+        "rapidOcrModelVersion": model_version,
+        "modelDir": app_data_dir().join("rapidocr").to_string_lossy().to_string(),
+        "defaultSourceLanguage": "auto",
+        "defaultProfile": "balanced",
+        "lastError": last_error,
+        "probeTimings": probe_timings,
+        "supportedModelVersions": ["v5", "v4"],
+        "readinessSteps": [
+            {
+                "id": "rapidocr-runner",
+                "ready": runner.is_ok(),
+                "severity": if runner.is_ok() { "success" } else { "error" },
+                "label": "RapidOCR runner",
+                "description": "RapidOCR runner executable or development Python runner is available.",
+                "nextAction": if runner.is_ok() { "run-ocr-self-test" } else { "install-rapidocr-runner" }
+            },
+            {
+                "id": "rapidocr-probe",
+                "ready": probe_ok,
+                "severity": if probe_ok { "success" } else { "error" },
+                "label": "RapidOCR probe",
+                "description": "RapidOCR can initialize the configured PP-OCR model version.",
+                "nextAction": if probe_ok { "ready" } else { "run-ocr-self-test" }
+            }
+        ]
+    }))
+}
+
+#[tauri::command]
+fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let tested_at = chrono::Local::now().to_rfc3339();
+    let model_version = rapid_ocr_model_version();
+    match run_rapidocr_probe(&app, &model_version) {
+        Ok(output) if output.status == "success" => Ok(serde_json::json!({
+            "ok": true,
+            "testedAt": tested_at,
+            "runtime": "rapidocr",
+            "modelVersion": model_version,
+            "message": "RapidOCR probe passed.",
+            "timings": output.timings,
+            "samples": [
+                { "id": "engine-init", "ok": true, "confidence": 1.0, "modelId": format!("rapidocr-{}", model_version) }
+            ]
+        })),
+        Ok(output) => Ok(serde_json::json!({
+            "ok": false,
+            "testedAt": tested_at,
+            "runtime": "rapidocr",
+            "modelVersion": model_version,
+            "message": output.error.unwrap_or_else(|| "RapidOCR probe failed.".to_string()),
+            "samples": [
+                { "id": "engine-init", "ok": false, "confidence": 0.0, "modelId": format!("rapidocr-{}", model_version) }
+            ]
+        })),
+        Err(error) => Ok(serde_json::json!({
+            "ok": false,
+            "testedAt": tested_at,
+            "runtime": "rapidocr",
+            "modelVersion": model_version,
+            "message": error,
+            "samples": [
+                { "id": "engine-init", "ok": false, "confidence": 0.0, "modelId": format!("rapidocr-{}", model_version) }
+            ]
+        })),
+    }
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryRecord {
@@ -3216,21 +3279,8 @@ pub fn run() {
             re_register_shortcut,
             get_diagnostics_report,
             get_startup_diagnostics_probe_path,
-            get_ysn_ocr_status,
-            get_ysn_ocr_model_index,
-            run_ysn_ocr_self_test,
-            install_ysn_ocr_model_pack,
-            update_ysn_ocr_model_pack,
-            import_local_ysn_ocr_model,
-            import_ysn_ocr_managed_source_index,
-            create_ysn_ocr_managed_source_index_template,
-            dry_run_ysn_ocr_managed_source_index,
-            plan_ysn_ocr_routes,
-            probe_ysn_ocr_model_session,
-            probe_ysn_ocr_model_session_by_id,
-            probe_ysn_ocr_model_session_readiness_by_id,
-            run_ysn_ocr_decode_fixture,
-            run_ysn_ocr_model_inference_probe
+            get_rapid_ocr_status,
+            run_rapid_ocr_self_test
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -3620,8 +3670,8 @@ File formats:
         let ocr_runtime = serde_json::json!({
             "ready": false,
             "readinessSteps": [
-                { "id": "trusted-sources", "ready": true },
-                { "id": "runtime-inference", "ready": false, "nextAction": "complete-onnx-inference-runtime" }
+                { "id": "rapidocr-runner", "ready": true },
+                { "id": "rapidocr-probe", "ready": false, "nextAction": "run-ocr-self-test" }
             ]
         });
         let recording = serde_json::json!({ "ffmpegFound": false, "audioDevices": [] });
@@ -3631,7 +3681,7 @@ File formats:
         assert_eq!(readiness["ocrRuntime"]["totalSteps"].as_u64(), Some(2));
         assert_eq!(
             readiness["ocrRuntime"]["firstBlockedStep"]["id"].as_str(),
-            Some("runtime-inference")
+            Some("rapidocr-probe")
         );
         assert_eq!(readiness["recording"]["ready"].as_bool(), Some(false));
     }

@@ -2,6 +2,7 @@
 import { Button, Layout, Menu, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { CameraOutlined, GlobalOutlined, SyncOutlined, WifiOutlined } from "@ant-design/icons";
 import { LANGUAGE_OPTIONS, type AppLanguage } from "../../i18n";
+import type { TranslationServiceMetadata } from "../../hooks/useServerStatus";
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -16,6 +17,9 @@ type AppLayoutLabels = {
   online: string;
   offline: string;
   checking: string;
+  channel: string;
+  glossary: string;
+  qualityRisk: string;
 };
 
 interface AppLayoutProps {
@@ -24,6 +28,7 @@ interface AppLayoutProps {
   serverUrl: string;
   isOnline: "checking" | "online" | "offline";
   isChecking: boolean;
+  translationMetadata: TranslationServiceMetadata | null;
   language: AppLanguage;
   labels: AppLayoutLabels;
   children: React.ReactNode;
@@ -45,6 +50,7 @@ export default function AppLayout({
   serverUrl,
   isOnline,
   isChecking,
+  translationMetadata,
   language,
   labels,
   children,
@@ -54,6 +60,13 @@ export default function AppLayout({
   onRefreshStatus,
 }: AppLayoutProps) {
   const statusText = isOnline === "online" ? labels.online : isOnline === "offline" ? labels.offline : labels.checking;
+  const hasQualityRisk = Boolean(translationMetadata?.quality_flags?.google_free_low_quality_risk);
+  const serviceTooltip = [
+    `${labels.service}: ${serverUrl || "-"}`,
+    translationMetadata?.active_channel ? `${labels.channel}: ${translationMetadata.active_channel}` : "",
+    translationMetadata?.glossary_version ? `${labels.glossary}: ${translationMetadata.glossary_version}${translationMetadata.glossary_loaded === false ? " (not loaded)" : ""}` : "",
+    hasQualityRisk ? labels.qualityRisk : "",
+  ].filter(Boolean).join("\n");
 
   return (
     <Layout style={{ height: "100vh", width: "100vw", overflow: "hidden", background: "#f5f7fb" }}>
@@ -95,7 +108,7 @@ export default function AppLayout({
           </Space>
 
           <Space size="middle" style={{ marginLeft: "auto" }}>
-            <Tooltip title={`${labels.service}: ${serverUrl || "-"}`}>
+            <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{serviceTooltip}</span>}>
               <Tag color={statusColor[isOnline]} icon={isOnline === "checking" ? <SyncOutlined spin /> : <WifiOutlined />} style={{ margin: 0, borderRadius: 999, padding: "2px 10px" }}>
                 {statusText}
               </Tag>

@@ -4,12 +4,12 @@ import { CheckCircleOutlined, ExclamationCircleOutlined, GlobalOutlined, VideoCa
 import { useI18n } from "../../i18n";
 import ConfigRecoveryChecklist from "./ConfigRecoveryChecklist";
 import type { RecordingInfo } from "./types";
-import type { YsnOcrRuntimeStatus } from "../../ocr-models";
+import type { RapidOcrStatus } from "../../ocr-models";
 
 const { Text } = Typography;
 
 type ConfigReadinessOverviewProps = {
-  runtimeStatus: YsnOcrRuntimeStatus | null;
+  runtimeStatus: RapidOcrStatus | null;
   recordingInfo: RecordingInfo | null;
   targetLang: string;
 };
@@ -44,11 +44,10 @@ function ReadinessTile({ item }: { item: ReadinessItem }) {
 export default function ConfigReadinessOverview({ runtimeStatus, recordingInfo, targetLang }: ConfigReadinessOverviewProps) {
   const { text } = useI18n();
   const labels = text.config;
-  const modelPackActionLabel = runtimeStatus?.sourceReadiness && !runtimeStatus.sourceReadiness.ready ? labels.overviewModelSourcesAction : labels.overviewModelPacksAction;
   const items: ReadinessItem[] = [
     {
       title: labels.overviewOcrRuntime,
-      desc: runtimeStatus?.runtimeInferenceReady ? labels.overviewOcrRuntimeReady : labels.overviewOcrRuntimePending,
+      desc: runtimeStatus?.runtimeInferenceReady ? "RapidOCR runner 和模型 probe 已通过。" : "RapidOCR runner 尚未完成自测。",
       ready: Boolean(runtimeStatus?.runtimeInferenceReady),
       accent: "#2563eb",
       icon: <CheckCircleOutlined />,
@@ -57,12 +56,12 @@ export default function ConfigReadinessOverview({ runtimeStatus, recordingInfo, 
     },
     {
       title: labels.overviewModelPacks,
-      desc: runtimeStatus?.modelPacksReady ? labels.overviewModelPacksReady : labels.overviewModelPacksPending,
+      desc: runtimeStatus?.modelPacksReady ? `当前模型：Rapid OCR ${(runtimeStatus.rapidOcrModelVersion || "v5").toUpperCase()}` : "请运行 RapidOCR 自测或修复 runner。",
       ready: Boolean(runtimeStatus?.modelPacksReady),
       accent: "#7c3aed",
       icon: <CheckCircleOutlined />,
       readyLabel: labels.readinessReady,
-      actionLabel: modelPackActionLabel || labels.readinessAction,
+      actionLabel: labels.overviewModelPacksAction || labels.readinessAction,
     },
     {
       title: labels.overviewTranslation,

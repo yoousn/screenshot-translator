@@ -1,8 +1,20 @@
 ﻿import type { OcrBlock } from "../types/screenshot";
 import { sampleBackground, getReadableTextColor } from "./background";
-import { clamp } from "./geometry";
+import { buildTranslationEraseRegion, shouldRenderTranslationBlock } from "./renderGeometry";
 import { buildRenderBlocks } from "./renderBlockLayout";
-import { fitText, getTranslationFontFamily } from "./textLayout";
+import { getTranslationFontFamily } from "./textLayout";
+
+const estimateOriginalFontSize = (rawHeight: number) => {
+  const scale = rawHeight <= 18 ? 0.96 : 0.82;
+  return Math.max(10, Math.min(64, Math.round(rawHeight * scale)));
+};
+
+const splitRenderLines = (text: string) => (
+  text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+);
 
 export const renderTranslatedBlocks = (
   base64Image: string,
@@ -29,38 +41,43 @@ export const renderTranslatedBlocks = (
         const rawWidth = Math.max(1, block.maxX - block.minX);
         const rawHeight = Math.max(1, block.maxY - block.minY);
         const text = block.translated || block.text;
-        if (!text) return;
+        if (!shouldRenderTranslationBlock(block)) return;
 
         const background = sampleBackground(ctx, img.width, img.height, block);
         const fontColor = getReadableTextColor(background);
-        const paddingX = Math.max(4, Math.round(rawHeight * 0.18));
-        const paddingY = Math.max(2, Math.round(rawHeight * 0.12));
-        const baseFontSize = Math.max(11, Math.min(36, Math.round(rawHeight * 0.82)));
+        const paddingX = Math.max(2, Math.round(rawHeight * 0.12));
+        const paddingY = Math.max(2, Math.round(rawHeight * 0.16));
+        const baseFontSize = estimateOriginalFontSize(rawHeight);
         const isVertical = rawHeight / rawWidth > 2.6 && !/[A-Za-z0-9]{2,}/.test(block.text);
         ctx.font = `${baseFontSize}px ${getTranslationFontFamily()}`;
-        const measuredWidth = Math.ceil(ctx.measureText(text).width) + paddingX * 2;
-        const maxExpandedWidth = Math.min(img.width, Math.max(rawWidth, rawWidth * 3, rawHeight * 14, 360));
+        const lines = splitRenderLines(text);
+        const lineHeight = Math.round(baseFontSize * 1.12);
+        const measuredWidth = Math.ceil(Math.max(...lines.map((line) => ctx.measureText(line).width), 1)) + paddingX * 2;
+        const maxExpandedWidth = Math.max(rawWidth, img.width - block.minX);
         const desiredWidth = isVertical ? rawWidth : Math.max(rawWidth, Math.min(maxExpandedWidth, measuredWidth));
-        const extraWidth = Math.max(0, desiredWidth - rawWidth);
-        const eraseX = clamp(Math.round(block.minX - extraWidth / 2 - paddingX), 0, img.width - 1);
-        const eraseY = clamp(Math.round(block.minY - paddingY), 0, img.height - 1);
-        const eraseRight = clamp(Math.round(block.maxX + extraWidth / 2 + paddingX), eraseX + 1, img.width);
-        const eraseBottom = clamp(Math.round(block.maxY + paddingY), eraseY + 1, img.height);
-        const drawWidth = Math.max(1, eraseRight - eraseX - paddingX * 2);
-        const drawHeight = Math.max(1, eraseBottom - eraseY - paddingY * 2);
+        const { eraseX, eraseY, eraseRight, eraseBottom } = buildTranslationEraseRegion(
+          block,
+          img.width,
+          img.height,
+          desiredWidth,
+          paddingX,
+          paddingY,
+        );
 
         ctx.fillStyle = `rgb(${background.r}, ${background.g}, ${background.b})`;
         ctx.fillRect(eraseX, eraseY, eraseRight - eraseX, eraseBottom - eraseY);
 
-        const { lines, lineHeight } = fitText(ctx, text, drawWidth, drawHeight, baseFontSize);
+        ctx.font = `${baseFontSize}px ${getTranslationFontFamily()}`;
         ctx.fillStyle = fontColor;
         ctx.textBaseline = "middle";
         ctx.textAlign = block.direction === "rtl" ? "right" : "left";
         ctx.direction = block.direction === "rtl" ? "rtl" : "ltr";
 
         const totalTextHeight = lines.length * lineHeight;
-        let y = eraseY + paddingY + drawHeight / 2 - totalTextHeight / 2 + lineHeight / 2;
-        const textX = block.direction === "rtl" ? eraseRight - paddingX : eraseX + paddingX;
+        let y = lines.length <= 1
+          ? block.minY + rawHeight / 2
+          : block.minY + Math.max(baseFontSize / 2, totalTextHeight / 2 - lineHeight / 2);
+        const textX = block.direction === "rtl" ? block.maxX : block.minX;
         for (const line of lines) {
           ctx.fillText(line, textX, y);
           y += lineHeight;

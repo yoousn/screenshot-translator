@@ -1,0 +1,31 @@
+{
+  "version": "2026-06-03.1",
+  "zh": {
+    "ui": {
+      "save": "\u4fdd\u5b58",
+      "open": "\u6253\u5f00",
+      "copy": "\u590d\u5236",
+      "cancel": "\u53d6\u6d88",
+      "close": "\u5173\u95ed",
+      "delete": "\u5220\u9664",
+      "settings": "\u8bbe\u7f6e",
+      "preview": "\u9884\u89c8",
+      "translate": "\u7ffb\u8bd1",
+      "retry": "\u91cd\u8bd5",
+      "download": "\u4e0b\u8f7d",
+      "upload": "\u4e0a\u4f20",
+      "refresh": "\u5237\u65b0",
+      "apply": "\u5e94\u7528",
+      "confirm": "\u786e\u8ba4",
+      "submit": "\u63d0\u4ea4",
+      "search": "\u641c\u7d22",
+      "edit": "\u7f16\u8f91",
+      "open preview": "\u6253\u5f00\u9884\u89c8",
+      "open preview and": "\u6253\u5f00\u9884\u89c8\u5e76",
+      "copy translated text": "\u590d\u5236\u7ffb\u8bd1\u6587\u672c",
+      "check ocr result window": "\u68c0\u67e5 OCR \u7ed3\u679c\u7a97\u53e3",
+      "translate selected text": "\u7ffb\u8bd1\u6240\u9009\u6587\u672c",
+      "open settings panel": "\u6253\u5f00\u8bbe\u7f6e\u9762\u677f"
+    }
+  }
+}

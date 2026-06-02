@@ -6,15 +6,22 @@ import {
   buildTranslationRequestPayload,
   collectUntranslatedLatinRetryBlocks,
   mergeRetryTranslations,
-  normalizeTranslationResults,
   selectPreferredSourceLanguage,
+  validateAndNormalizeTranslationResults,
   type TranslationSourceLanguage,
 } from "./ocrTranslationRequest";
 import { DEFAULT_TRANSLATION_SERVICE_URL } from "./translationService";
+import {
+  createTranslationMemoryStats,
+  lookupLocalTranslation,
+  storeTranslationMemory,
+} from "./translationMemory";
 import { renderTranslatedBlocks } from "./translatedBlocks";
 
 type LocalTranslateConfig = {
   serverUrl?: string;
+  lanServerUrl?: string;
+  preferLanServer?: boolean;
   clientToken?: string;
   targetLang?: string;
   channel?: string;
@@ -59,8 +66,36 @@ const normalizeTranslationServerUrl = (serverUrl: string) => {
   return parsed.toString().replace(/\/$/, "");
 };
 
+type TranslationServiceTimings = {
+  total_ms?: number;
+  provider_ms?: number;
+  cache_hits?: number;
+  provider_misses?: number;
+  request_duplicates?: number;
+  preserved_hits?: number;
+  blocks?: number;
+};
+
+type TranslationServiceResponse = {
+  translations?: string[];
+  channel?: string;
+  serverUrl?: string;
+  cache_hits?: number;
+  timings?: TranslationServiceTimings;
+};
+
+const buildTranslationServerCandidates = (config: LocalTranslateConfig) => {
+  const remoteUrl = config.serverUrl || DEFAULT_TRANSLATION_SERVICE_URL;
+  const candidates = [
+    ...(config.preferLanServer && config.lanServerUrl ? [config.lanServerUrl] : []),
+    remoteUrl,
+  ];
+  return Array.from(new Set(candidates.map((item) => item.trim()).filter(Boolean)));
+};
+
 const requestTextTranslations = async (serverUrl: string, token: string, blocks: OcrBlock[], sourceLang: TranslationSourceLanguage, targetLang: string, timeoutMs: number) => {
-  const endpoint = `${normalizeTranslationServerUrl(serverUrl)}/api/translate_text`;
+  const normalizedServerUrl = normalizeTranslationServerUrl(serverUrl);
+  const endpoint = `${normalizedServerUrl}/api/translate_text`;
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -73,7 +108,7 @@ const requestTextTranslations = async (serverUrl: string, token: string, blocks:
     if (!response.ok) throw new Error(`Text translation API failed: ${response.status}`);
     const transData = await response.json();
     if (transData.status !== "success") throw new Error(transData.error || "Text translation failed");
-    return transData as { translations?: string[]; channel?: string };
+    return { ...(transData as TranslationServiceResponse), serverUrl: normalizedServerUrl };
   } catch (error: any) {
     if (error?.name === "AbortError") {
       throw new Error(`\u6587\u672c\u7ffb\u8bd1\u670d\u52a1\u8d85\u65f6\uff08${Math.round(timeoutMs / 1000)} \u79d2\uff09`);
@@ -85,7 +120,7 @@ const requestTextTranslations = async (serverUrl: string, token: string, blocks:
 };
 
 const retryUntranslatedLatinBlocks = async (
-  serverUrl: string,
+  serverUrls: string[],
   token: string,
   blocks: OcrBlock[],
   translations: string[],
@@ -99,13 +134,29 @@ const retryUntranslatedLatinBlocks = async (
     return translations;
   }
 
-  const retryData = await requestTextTranslations(serverUrl, token, retryBlocks.map((item) => item.block), "en", targetLang, timeoutMs);
+  const retryData = await requestTextTranslationsWithFallback(serverUrls, token, retryBlocks.map((item) => item.block), "en", targetLang, timeoutMs);
   const retryTranslations = retryData.translations || [];
   return mergeRetryTranslations(translations, retryBlocks, retryTranslations);
 };
 
+const normalizeRequestTextKey = (text: string) => text.replace(/\s+/g, " ").trim();
+
+const dedupeTranslationRequestItems = (items: { block: OcrBlock; index: number }[]) => {
+  const groups = new Map<string, { block: OcrBlock; indexes: number[] }>();
+  for (const item of items) {
+    const key = normalizeRequestTextKey(item.block.text);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.indexes.push(item.index);
+    } else {
+      groups.set(key, { block: item.block, indexes: [item.index] });
+    }
+  }
+  return Array.from(groups.values());
+};
+
 export const translateWithLocalOcr = async (base64: string, config: LocalTranslateConfig) => {
-  const serverUrl = config.serverUrl || DEFAULT_TRANSLATION_SERVICE_URL;
+  const serverUrls = buildTranslationServerCandidates(config);
   const token = config.clientToken || "";
   const targetLang = config.targetLang || "zh";
   const translationTimeoutMs = config.translationTimeoutMs || 20000;
@@ -126,24 +177,85 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
   if (!ocrBlocks.length) throw new Error("\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002");
 
   const preferredSourceLang = selectPreferredSourceLanguage(ocrBlocks, targetLang);
-  let transData: { translations?: string[]; channel?: string };
+  const translationMemoryStats = createTranslationMemoryStats();
+  const translations = new Array<string>(ocrBlocks.length).fill("");
+  const requestItems: { block: OcrBlock; index: number }[] = [];
+
+  ocrBlocks.forEach((block, index) => {
+    const localHit = lookupLocalTranslation(block, preferredSourceLang, targetLang, config.channel);
+    if (localHit) {
+      translations[index] = localHit.translation;
+      if (localHit.source === "preserved") translationMemoryStats.preservedHits += 1;
+      if (localHit.source === "glossary") translationMemoryStats.glossaryHits += 1;
+      if (localHit.source === "memory") translationMemoryStats.memoryHits += 1;
+      return;
+    }
+    requestItems.push({ block, index });
+  });
+  translationMemoryStats.requestedBlocks = requestItems.length;
+  const requestGroups = dedupeTranslationRequestItems(requestItems);
+  translationMemoryStats.deduplicatedBlocks = Math.max(0, requestItems.length - requestGroups.length);
+
+  let transData: TranslationServiceResponse = { channel: config.channel };
+  if (requestGroups.length > 0) {
+    try {
+      transData = await requestTextTranslationsWithFallback(
+        serverUrls,
+        token,
+        requestGroups.map((item) => item.block),
+        preferredSourceLang,
+        targetLang,
+        translationTimeoutMs,
+      );
+      (transData.translations || []).forEach((translated, requestIndex) => {
+        const group = requestGroups[requestIndex];
+        if (!group) return;
+        group.indexes.forEach((originalIndex) => {
+          translations[originalIndex] = translated;
+        });
+      });
+    } catch (error) {
+      throw new Error(normalizeLocalTranslateError(error));
+    }
+  }
+
   try {
-    transData = await requestTextTranslations(serverUrl, token, ocrBlocks, preferredSourceLang, targetLang, translationTimeoutMs);
+    const retriedTranslations = await retryUntranslatedLatinBlocks(
+      serverUrls,
+      token,
+      ocrBlocks,
+      translations,
+      targetLang,
+      preferredSourceLang,
+      translationTimeoutMs,
+    );
+    translations.splice(0, translations.length, ...retriedTranslations);
   } catch (error) {
     throw new Error(normalizeLocalTranslateError(error));
   }
-  const translations = await retryUntranslatedLatinBlocks(
-    serverUrl,
-    token,
-    ocrBlocks,
-    transData.translations || [],
-    targetLang,
-    preferredSourceLang,
-    translationTimeoutMs,
-  );
-  const normalizedTranslations = normalizeTranslationResults(ocrBlocks, translations);
+  const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(ocrBlocks, translations, targetLang);
+  translationMemoryStats.stored = storeTranslationMemory(ocrBlocks, normalizedTranslations, preferredSourceLang, targetLang, transData.channel || config.channel);
 
   const resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, normalizedTranslations);
-  const pairs: TranslatePair[] = buildTranslatePairs(ocrBlocks, normalizedTranslations);
-  return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", blocksCount: ocrBlocks.length, routePlan, normalization };
+  const pairs: TranslatePair[] = buildTranslatePairs(ocrBlocks, normalizedTranslations, targetLang);
+  return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", usedServerUrl: transData.serverUrl || (requestGroups.length > 0 ? serverUrls[0] : "local-cache"), blocksCount: ocrBlocks.length, routePlan, normalization, translationQuality, translationMemoryStats, translationTimings: transData.timings };
+};
+
+const requestTextTranslationsWithFallback = async (
+  serverUrls: string[],
+  token: string,
+  blocks: OcrBlock[],
+  sourceLang: TranslationSourceLanguage,
+  targetLang: string,
+  timeoutMs: number,
+) => {
+  const errors: string[] = [];
+  for (const serverUrl of serverUrls) {
+    try {
+      return await requestTextTranslations(serverUrl, token, blocks, sourceLang, targetLang, timeoutMs);
+    } catch (error: any) {
+      errors.push(`${serverUrl}: ${error?.message || error}`);
+    }
+  }
+  throw new Error(errors.join("; "));
 };

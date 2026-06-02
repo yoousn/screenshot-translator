@@ -789,7 +789,7 @@ export default function ScreenshotPage() {
       return;
     }
 
-    const dataUrl = "data:image/jpeg;base64," + base64;
+    const dataUrl = "data:image/png;base64," + base64;
     const img = new Image();
 
     // Start a 1500ms fallback safety timer
@@ -1362,11 +1362,13 @@ export default function ScreenshotPage() {
       let resultBase64 = "";
       let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
       let blocksCount = 1;
+      let translationQuality: Awaited<ReturnType<typeof translateWithLocalOcr>>["translationQuality"] | null = null;
       try {
         const result = await translateWithLocalOcr(base64, configRef.current);
         resultBase64 = result.resultBase64;
         usedChannel = result.usedChannel;
         blocksCount = result.blocksCount;
+        translationQuality = result.translationQuality;
         setTranslatePairs(result.pairs);
         setTranslateResultPreviewBase64(resultBase64);
       } catch (localErr: any) {
@@ -1378,7 +1380,13 @@ export default function ScreenshotPage() {
       translatedImgRef.current = overlayImg;
       draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
       setTranslatedResult(resultBase64);
-      message.success({ content: "\u7ffb\u8bd1\u5b8c\u6210", key: "translate" });
+      if (translationQuality && translationQuality.translatableCount === 0 && translationQuality.preservedCount > 0) {
+        message.info({ content: "\u5df2\u8bc6\u522b\u5230\u6587\u5b57\uff0c\u4f46\u9009\u533a\u4e3b\u8981\u662f\u6587\u4ef6\u540d\u3001\u8def\u5f84\u6216\u6280\u672f\u6807\u8bc6\uff0c\u5df2\u6309\u89c4\u5219\u4fdd\u7559\u539f\u6587\u3002", key: "translate", duration: 3 });
+      } else if (translationQuality && translationQuality.untranslatedCount > 0) {
+        message.warning({ content: `\u7ffb\u8bd1\u5b8c\u6210\uff0c${translationQuality.untranslatedCount} \u884c\u672a\u8fd4\u56de\u6709\u6548\u8bd1\u6587\uff0c\u53ef\u5728\u7ed3\u679c\u91cc\u67e5\u770b\u3002`, key: "translate", duration: 4 });
+      } else {
+        message.success({ content: "\u7ffb\u8bd1\u5b8c\u6210", key: "translate" });
+      }
 
       try {
         const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
@@ -1418,7 +1426,12 @@ export default function ScreenshotPage() {
 
   const handleShowTranslateResult = async () => {
     if (!translatePairs || translatePairs.length === 0) return;
-    const text = translatePairs.map((pair) => `${pair.o}\n${pair.t}`).join("\n\n");
+    const statusLabel = (status?: TranslatePair["status"]) => {
+      if (status === "preserved") return "\u72b6\u6001\uff1a\u5df2\u6309\u6280\u672f\u6807\u8bc6\u4fdd\u7559";
+      if (status === "untranslated") return "\u72b6\u6001\uff1a\u672a\u8fd4\u56de\u6709\u6548\u8bd1\u6587";
+      return "\u72b6\u6001\uff1a\u5df2\u7ffb\u8bd1";
+    };
+    const text = translatePairs.map((pair) => `${statusLabel(pair.status)}\n${pair.o}\n${pair.t}`).join("\n\n");
     const previewBase64 = translateResultPreviewBase64 || translatedResult || await getOutputBase64();
     await openOcrResultWindow({
       selection: rectRef.current,

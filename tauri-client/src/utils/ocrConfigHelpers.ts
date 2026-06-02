@@ -4,6 +4,12 @@ export interface LocalConfig {
   localOcrTimeoutMs?: number;
   targetLang?: string;
   channel?: string;
+  serverUrl?: string;
+  lanServerUrl?: string;
+  preferLanServer?: boolean;
+  rapidOcrModelVersion?: "v5" | "v4";
+  rapidOcrMode?: "auto" | "full" | "latin";
+  rapidOcrRunnerPath?: string;
   appLanguage?: string;
   recordingFfmpegPath?: string;
 }

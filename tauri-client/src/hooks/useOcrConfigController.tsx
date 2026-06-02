@@ -22,13 +22,22 @@ export default function useOcrConfigController() {
       useLocalOcr: true,
       fallbackToRemoteOcr: false,
       localOcrTimeoutMs: parsed.localOcrTimeoutMs || 15000,
+      rapidOcrModelVersion: parsed.rapidOcrModelVersion === "v4" ? "v4" : "v5",
+      rapidOcrMode: parsed.rapidOcrMode || "auto",
     });
   };
 
   const saveConfig = async (patch: Partial<LocalConfig> = {}, showMessage = true) => {
     setSaving(true);
     try {
-      const next = { ...config, ...patch, useLocalOcr: true, fallbackToRemoteOcr: false };
+      const next = {
+        ...config,
+        ...patch,
+        useLocalOcr: true,
+        fallbackToRemoteOcr: false,
+        rapidOcrModelVersion: patch.rapidOcrModelVersion || config.rapidOcrModelVersion || "v5",
+        rapidOcrMode: patch.rapidOcrMode || config.rapidOcrMode || "auto",
+      };
       await invoke("save_config", { configStr: JSON.stringify(next) });
       setConfig(next);
       if (showMessage) message.success(labels.ocrConfigSaved);

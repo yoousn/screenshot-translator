@@ -1,13 +1,13 @@
 ﻿import { Alert, Card, List, Space, Tag, Typography } from "antd";
 import { CheckCircleOutlined, ExclamationCircleOutlined } from "@ant-design/icons";
 import { useI18n } from "../../i18n";
-import type { YsnOcrRuntimeStatus } from "../../ocr-models";
+import type { RapidOcrStatus } from "../../ocr-models";
 import type { RecordingInfo } from "./types";
 
 const { Text } = Typography;
 
 type ConfigRecoveryChecklistProps = {
-  runtimeStatus: YsnOcrRuntimeStatus | null;
+  runtimeStatus: RapidOcrStatus | null;
   recordingInfo: RecordingInfo | null;
 };
 
@@ -21,22 +21,18 @@ type RecoveryItem = {
 export default function ConfigRecoveryChecklist({ runtimeStatus, recordingInfo }: ConfigRecoveryChecklistProps) {
   const { text } = useI18n();
   const labels = text.config;
-  const sourceReadiness = runtimeStatus?.sourceReadiness;
-  const pendingModelIds = sourceReadiness?.pendingModelIds || [];
 
   const items: RecoveryItem[] = [
     {
-      key: "trusted-sources",
-      title: labels.recoveryTrustedSourcesTitle,
-      detail: sourceReadiness?.ready
-        ? labels.recoveryTrustedSourcesReady
-        : `${labels.trustedSourcesPendingDesc} ${pendingModelIds.length ? `${labels.trustedSourcesPendingModels}: ${pendingModelIds.slice(0, 6).join(", ")}` : ""}`.trim(),
-      ready: Boolean(sourceReadiness?.ready),
+      key: "rapidocr-runner",
+      title: "RapidOCR runner",
+      detail: runtimeStatus?.runnerReady ? "RapidOCR runner 已找到。" : "请安装 rapidocr / onnxruntime，或打包 rapidocr-runner.exe。",
+      ready: Boolean(runtimeStatus?.runnerReady),
     },
     {
-      key: "model-packs",
-      title: labels.recoveryModelPacksTitle,
-      detail: runtimeStatus?.modelPacksReady ? labels.recoveryModelPacksReady : labels.overviewModelPacksPending,
+      key: "rapidocr-model",
+      title: "Rapid OCR V5 / V4",
+      detail: runtimeStatus?.modelPacksReady ? `当前模型 ${runtimeStatus.rapidOcrModelVersion?.toUpperCase() || "V5"} 可初始化。` : "请运行 RapidOCR 自测，确认模型可初始化。",
       ready: Boolean(runtimeStatus?.modelPacksReady),
     },
     {

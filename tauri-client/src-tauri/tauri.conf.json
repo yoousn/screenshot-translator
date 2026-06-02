@@ -42,6 +42,7 @@
     "targets": "all",
     "resources": [
       "resources/ocr/**/*",
+      "resources/rapidocr/**/*",
       "resources/ffmpeg/**/*"
     ],
     "icon": [

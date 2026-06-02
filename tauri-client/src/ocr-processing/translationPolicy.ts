@@ -13,10 +13,10 @@ const protectedTerms = [
   "Windows",
   "OCR",
   "ONNX",
+  "RapidOCR",
   "LocalModel",
   "LocalModel.exe",
   "ffmpeg.exe",
-  "YSN OCR Runtime",
   "Ctrl+D",
   "Ctrl+Q",
 ];

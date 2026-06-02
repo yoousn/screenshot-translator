@@ -1,6 +1,7 @@
 param(
   [switch]$TauriBuild,
   [switch]$SmokeLaunch,
+  [switch]$OcrFixtures,
   [switch]$SelfTestNativeFailureTrap
 )
 
@@ -73,6 +74,15 @@ Run-Step "Rust check" {
 Run-Step "Rust tests" {
   Push-Location $tauriRoot
   try { Run-Native cargo test } finally { Pop-Location }
+}
+
+if ($OcrFixtures) {
+  Run-Step "OCR fixed crop fixtures" {
+    Push-Location $clientRoot
+    try { Run-Native npm run check:ocr-fixtures } finally { Pop-Location }
+  }
+} else {
+  Write-Host "`nSkipped OCR fixed crop fixtures. Re-run with -OcrFixtures when local OCR models are installed." -ForegroundColor Yellow
 }
 
 if ($TauriBuild) {

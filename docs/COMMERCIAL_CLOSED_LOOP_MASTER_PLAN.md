@@ -115,17 +115,17 @@
 - 文件夹按钮打开目录，复制按钮优先复制视频文件，失败则复制路径。
 - 关闭按钮准备态退出，录制态取消并清理临时文件，保存后关闭控制条。
 
-### P3：YSN OCR Runtime 主线闭环
+### P3：RapidOCR / ONNXRuntime 主线闭环
 
-长期方向不是外部 `.exe`，而是产品自有 `YSN OCR Runtime`：
+当前方向已按用户决策从自研 `YSN OCR Runtime` 切换为产品自有打包的 `RapidOCR / ONNXRuntime` 主线：
 
-- 集成 ONNX Runtime。
-- 使用 managed model packs。
-- 自动源语言/脚本检测。
-- 多模型 OCR 池，不假设一个识别模型覆盖所有脚本。
-- 按脚本、置信度、fallback scoring 路由。
+- 默认使用 RapidOCR PP-OCRv5，保留 PP-OCRv4 作为高级可选模型版本。
+- 打包 `rapidocr-runner` 作为产品内置 sidecar，不依赖用户手动安装 PaddleOCR-json 或 Python 环境。
+- 自动源语言/脚本检测，不让普通用户手动选择源语言。
+- 多识别模型池：中文/英文/韩文/阿拉伯文/俄文/泰文等按质量评分 fallback。
+- 按脚本字符、置信度、噪声 block、fallback scoring 路由，避免单个假阳性 block 赢过真实多行文本。
 - 支持低置信度重试和未来 VLM OCR fallback。
-- `runtimeInferenceReady` 只能在真实 ONNX inference、decode、postprocess、self-test 全部通过后变为 true。
+- OCR ready 只能在 RapidOCR runner、模型资产、postprocess、fixture smoke 和真实截图工作流全部通过后展示。
 
 ### P4：翻译质量闭环
 
@@ -140,8 +140,8 @@
 
 - 页面定位为“识字模型 / 视频录制”配置中心。
 - 普通用户看到状态卡、主操作、问题恢复。
-- 高级用户可展开模型、source index、FFmpeg、兼容 OCR、诊断信息。
-- 默认 OCR 主线是 YSN OCR Runtime / ONNX；PaddleOCR-json 仅为兼容模式。
+- 高级用户可展开 RapidOCR 模型版本、runner 状态、FFmpeg、诊断信息。
+- 默认 OCR 主线是 RapidOCR PP-OCRv5 / ONNXRuntime；PaddleOCR-json 和旧自研 YSN OCR Runtime 不再作为主路径。
 - 视频区域保留 FFmpeg 检测、下载/选择、音频设备检测和默认保存目录说明。
 
 ### P6：发布、安装、升级闭环
@@ -160,19 +160,20 @@
 
 ## 3. OCR 模型策略
 
-### 3.1 为什么不是只用轻量 RapidOCR
+### 3.1 为什么切到 RapidOCR 主线
 
-- Snow Shot 使用轻量 ONNX 包可以作为参考，但商业级多语言、自动源语言、翻译质量和可维护性不能只依赖一个轻量模型。
-- 轻量模型适合作为快速、低资源路径；完整产品需要多模型池、脚本路由、置信度 fallback、字典/后处理和 self-test。
-- 我们可以吸收 RapidOCR 的 ONNX 工程化经验，但长期主线应是自有 runtime + managed model packs。
+- 当前自研 OCR Runtime 在真实清晰截图上仍出现漏识别、小字错识别和英文长句不稳定，继续补底层 detector/recognizer 不是当前商业化最优路径。
+- RapidOCR 已经工程化封装 ONNXRuntime、PP-OCRv5/V4 detector/classifier/recognizer 和多语言识别模型，更适合作为当前产品主路径。
+- 产品仍保留所有权：runner、模型资产、候选评分、后处理、翻译保护、配置面板和自测门禁都由项目集成和控制，而不是把用户暴露给外部 OCR exe。
+- 商业级重点转为：更好的脚本路由、候选评分、真实截图 fixture、翻译质量、覆盖层还原和发布体积控制。
 
 ### 3.2 推荐路线
 
-- 第一阶段：建立 manifest、source index、download plan、dictionary artifact、runtime adapter、decode/postprocess、自测门禁。
-- 第二阶段：接入真实 managed source fixture，完成 model/dictionary 下载、校验、加载和失败恢复。
-- 第三阶段：接入真实 ONNX inference，并把 detector、classifier、recognizer 的输出接到 decode/postprocess。
-- 第四阶段：建立多脚本模型池和 fallback scoring。
-- 第五阶段：真实多语言 OCR/翻译样例验收。
+- 第一阶段：打包 RapidOCR runner，默认 PP-OCRv5，提供 PP-OCRv4 高级选择。
+- 第二阶段：建立固定生成式 fixture 和真实截图 fixture，覆盖中文、英文、小字技术文本、日文、韩文、阿拉伯文、混排 UI。
+- 第三阶段：把候选评分、噪声过滤、技术文本清理、RTL/LTR 位置策略纳入门禁。
+- 第四阶段：优化性能：常见中英文 UI 走快速路径，多脚本低置信度才进入完整 fallback。
+- 第五阶段：把 OCR fixture、翻译 smoke、覆盖层视觉回归和真实 Windows 手工验收串进发布门禁。
 
 ### 3.3 语言要求
 
@@ -184,8 +185,8 @@
 
 | 项目 | 默认值 |
 |---|---|
-| 默认 OCR | YSN OCR Runtime / ONNX Runtime 主线 |
-| 备用 OCR | 暂无外部 exe 主路径；低置信度 fallback 后续接入自有 ONNX/VLM 路径 |
+| 默认 OCR | RapidOCR PP-OCRv5 / ONNXRuntime 主线 |
+| 备用 OCR | RapidOCR PP-OCRv4 高级可选；低置信度 fallback 后续接入 VLM OCR |
 | 源语言 | 自动识别 |
 | 默认目标语言 | 简体中文 |
 | 录制 FPS | 30 FPS |
@@ -206,7 +207,7 @@
 
 - `Alt+A` 框选、复制、保存、OCR、翻译全部能用。
 - 录制从框选到准备态、开始、暂停、继续、停止保存、打开目录、复制、取消清理全部闭环。
-- OCR 默认使用自有 runtime 主线；没有模型时清楚显示未就绪并给出恢复路径。
+- OCR 默认使用内置 RapidOCR runner；runner 或模型缺失时清楚显示未就绪并给出恢复路径。
 - 翻译对真实 GitHub 英文列表、技术文本、多语言 UI 文案达到接近 Snow Shot 的质量。
 
 ### 5.3 商业级验收
@@ -216,7 +217,7 @@
 - 诊断报告能帮助定位 OCR、录制、翻译、依赖、权限问题。
 - 真实 Windows 设备验收有记录，有失败项就继续修。
 
-## 6. 当前风险登记（2026-06-02，Chapter 103 后）
+## 6. 当前风险登记（2026-06-03，Chapter 133 后）
 
 > 本节用于无人连续开发时快速判断“哪些已经真实验证，哪些仍然不能对用户承诺”。如果实现或验证状态变化，必须同步更新本节，禁止用 UI 文案假装能力已完成。
 
@@ -225,65 +226,83 @@
 - 长期文档已收敛为两份：`docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md` 负责方向、验收和闭环，`docs/IMPLEMENTATION_CHAPTERS.md` 负责施工日志；Chapter 93 已明确不再保留五六份分散计划。
 - 根目录 `AGENTS.md` 已写入商业级产品标准、OCR 战略方向、UI/UX 标准、代码组织标准、无人执行标准和实现质量红线。
 - 商业级检查入口已统一为根目录 `check_commercial.ps1`。
-- `npm run check:i18n` 已作为 i18n 门禁，当前 `491 zh-CN keys match 491 en-US keys`。
+- `npm run check:i18n` 已作为 i18n 门禁，当前 `520 zh-CN keys match 520 en-US keys`。
 - `npm run check:ocr-processing` 已作为 OCR/翻译处理链路门禁。
 - `npm run build` 前端生产构建已通过。
 - `cargo check` Rust 检查已通过。
-- `cargo test` Rust 测试已通过，当前商业检查结果为 `91 passed; 0 failed`。
-- OCR Runtime 已具备 managed source、model pack、active model health、readiness steps、routing plan、preprocess、ONNX adapter scaffold、decode/postprocess、dictionary artifact contract、dictionary loader、dictionary download plan、model/dictionary artifact download activation、model/dictionary active health、配置中心 artifact 展示，Chapter 94 managed source index 对 model/dictionary artifact 元数据的导入、模板和 dry-run 支持，以及 Chapter 95 本地 managed source fixture 从 dry-run download plan 到 SHA 校验与 active artifact 激活的 smoke 覆盖，以及 Chapter 96 下载器 artifact size 校验与失败清理，以及 Chapter 97 active artifact size/SHA issue 进入 self-test/readiness blocker，以及 Chapter 98 ONNX session readiness probe 缺失/损坏模型结构化 blocker，但仍不能视为真实生产 OCR。
+- `cargo test` Rust 测试已通过，当前本地结果为 `17 passed; 0 failed`。
+- Chapter 133 已按用户决策把 OCR 主路径从自研 `YSN OCR Runtime` 切到产品内置 RapidOCR runner：默认 PP-OCRv5，PP-OCRv4 高级可选，Rust `run_local_ocr` 调用 RapidOCR JSON runner，配置中心改为 RapidOCR 状态面板，旧自研 Rust OCR 模块和旧模型包面板已删除。
+- RapidOCR runner 已完成本地打包：`tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/rapidocr-runner.exe`，预热 V5/V4 多语言模型；清理旧 onefile 遗留 exe 后资源目录约 `340.7 MB`。
+- Chapter 110 已在新电脑完成 LFS 模型落盘、release build、smoke launch、active 字典 LF/SHA 修复、运行时 OCR 热路径提速，以及真实桌面截图 crop 的 Rust OCR smoke；样例从约 `6.6s` 降到约 `2.0s`，但小字和英文长句准确率仍不足。
+- Chapter 111 已补上截图翻译质量门禁：普通英文 UI 文案返回原文/空译文时不再静默成功，技术标识保留会明确提示；覆盖重绘不再擦除重画未变化文本，小选区按原文字边界锚定并限制溢出。
+- Chapter 115 已确认家里内网翻译服务地址为 `http://192.168.1.3:8318`，本机配置已启用内网优先、公网 `https://ocr.yousn.me` 回落；未缓存单句内网约 `465ms`，公网约 `1029ms`。
+- Chapter 116 已加入客户端短 UI 词典、持久化翻译缓存、技术文本本地保留、服务端 `timings` 字段和 smoke timing 输出；重复 UI 文本可在客户端或服务端缓存中毫秒级命中。
+- Chapter 117 已在设置页加入本机翻译缓存状态、刷新和清理按钮，为缓存错译提供用户可见恢复路径。
+- Chapter 118 已将服务端 `timings`、多行 block 保护和短 UI 词典部署到 N100；线上 `/api/translate_text` 已返回 `total_ms/provider_ms/cache_hits/provider_misses`。
+- Chapter 119 已新增并验证 `deploy_n100_translation_server.ps1`，N100 部署流程包含备份、上传、语法检查、重启、health 和 timing smoke。
+- Chapter 120 已修复 Latin 多语种源语言路由，法语/西语不再被强行按英文翻译；smoke 已要求法语/西语包含核心语义关键词，N100 已部署。
+- Chapter 121 已把短 UI 词典抽成 `translationGlossary.json` manifest，前端和服务端共同使用，部署脚本会同步到 N100。
+- Chapter 122 已让 `/api/health` 和 `/api/config/current` 暴露 `translation` metadata，包括术语表版本、加载状态、term 数和质量 flags；前端顶部服务状态 tooltip 会显示 channel、glossary version 和 Google 免费通道质量风险。
+- Chapter 123 已将翻译 metadata 纳入“复制诊断报告”，包括服务 URL、channel、目标语言、本地术语表版本、本机缓存状态、服务端 health 和质量 warnings。
+- Chapter 124 已在设置页对 Google 免费通道显示非阻断质量风险提示，建议正式多语言质量场景配置 Baidu 或 New API。
+- Chapter 125 已在设置页加入翻译通道健康摘要，显示 Google/Baidu/New API 的配置完整性、最近测试状态、服务端当前通道和 Google 质量风险；设置保存、通道测试和 New API 模型拉取均已改成内网优先候选 URL。
+- Chapter 126 已建立固定 OCR crop fixture 门禁：PowerShell 生成英文 UI、中文大字、小字技术文本三张 PNG，Rust ignored test 跑真实 ONNX OCR pipeline 并断言核心关键词；根目录商业检查新增可选 `-OcrFixtures`。
+- Chapter 127 已加入 Latin/技术文本 OCR 异常评分，真实 OCR pipeline 和固定 fixture smoke 会输出 `latin-probable-tail-truncation`、`technical-path-extra-space`、`technical-path-digit-tail`、`technical-command-flag-tail` 等 issue code。
+- Chapter 128 已把 quality issue 接入低风险 Latin 二次识别：命中异常的 Latin 行会尝试更大 recognition width 和更宽 crop；固定英文 UI fixture 已从 `savin/tex` 修复为 `saving/text`，固定技术小字 fixture 已从 `System3:/--hel]` 修复为 `System32/--help`，并补了窄范围 Windows 路径空格修复。
+- Chapter 129 已把真实浏览器截图纳入 OCR fixture 门禁：用 Vite 应用真实页面截图作为调用方提供的 PNG，`check-ocr-fixtures.ps1` 支持 `-RealScreenshotPath` / `-RealExpectContains` / `-RealMinBlocks`，真实样例断言 `YSN`、`OCR` 和最少 block 数通过，并记录 detector 仍是主要耗时。
+- Chapter 130 已优化翻译同轮去重：前端把同一 OCR 结果里的重复文本只发送一次并回填多个 block，服务端 `BaseTranslator.translate_batch` 对同一请求内重复 miss 去重，`timings` 新增 `request_duplicates`；代码已部署到 N100，LAN smoke 显示 `dup=1`，重复文本只打一次 provider。
+- Chapter 131 已把技术文本保护下沉到服务端：路径、命令、文件名、flag、纯中文目标文本等不再进入 provider，`timings` 新增 `preserved_hits`；修复日文汉字+假名被误判为纯中文的 bug，N100 热缓存 smoke 达到 15 blocks / 5 batches 约 `242ms`。
+- Chapter 132 已修复截图翻译覆盖渲染的字号和位置：渲染 block 不再合并相邻 OCR 行，译文按原 OCR 框位置逐 block 锁定，字号从原框高度估算且不再为塞入框内压缩到极小，保留显式换行；本地 canvas 视觉回归确认两行译文与原文位置/字号接近。
+- Chapter 133 RapidOCR fixture 已覆盖中文大字、英文 UI、小字技术文本、韩文、日文、阿拉伯文；开发版和打包版均通过。常见中英/日文走快速 `ch` 路径约 `1.3–2.1s`，韩文/阿拉伯文触发完整 fallback 约 `5.6–6.3s`，是下一轮性能优化重点。
+- `python -m pytest server\tests` 已通过，当前服务端翻译通道完全失败时返回空译文，前端负责拦截和提示恢复路径。
 - Snow Shot 风格录制控制条、自动保存、边框状态色、打开目录、复制视频和取消清理已有核心实现与测试基础。
 
 ### 6.1.1 当前用户使用路径
 
-- 模型和大文件只允许放在项目根目录对应目录，当前 OCR 模型根目录是 `models/ocr`。
-- 用户打开 `.exe` 后，进入“识字模型 / 视频录制”只需要看 PP-OCRv5 模型包状态；普通用户不再选择 OCR 运行时目录。
+- RapidOCR runner 和模型随 Tauri resource 打包，当前主资源目录是 `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner`。
+- 用户打开 `.exe` 后，进入“识字模型 / 视频录制”只需要看 RapidOCR 状态、PP-OCRv5/V4 版本选择和自测按钮；普通用户不再选择 OCR 运行时目录。
 - 截图 OCR / 翻译使用 `Ctrl+D` 框选文字区域；结果窗必须显示识别文本、截图预览或明确错误，不允许白屏。
-- 如果出现 `failed to parse OCR manifest ...`，错误信息必须带 manifest 绝对路径；优先检查项目根目录 `models/ocr/manifest.json`，而不是 C 盘 appdata。
+- 如果出现 RapidOCR runner 或模型缺失，错误信息必须带 runner/resource 绝对路径，并在配置中心给出刷新、自测和恢复提示。
 
 ### 6.2 当前高风险区
 
 | 风险 | 当前真实状态 | 下一步处理 |
 |---|---|---|
-| OCR Runtime 未达到生产 ready | 已有 ONNX Runtime scaffold、source/manifest/model pack/readiness 管理、schema contract、managed source publish layout、source index dry-run、dictionary artifact 元数据导入、本地 fixture 激活 smoke、SHA256/size 校验、active artifact issue readiness blocker、ONNX session readiness probe 错误路径，但真实模型输出到 decode 的业务执行、多模型 fallback 和完整端到端 self-test 仍未闭环 | 接入真实 managed source 中的模型与字典 artifact 下载/校验/加载到生产 pipeline、真实输出到 bridge 的端到端自测样例和低置信度 fallback，保持 `runtimeInferenceReady=false` 直到端到端通过 |
-| 模型源托管未闭环 | 本地已有 managed source index 规则，Chapter 94 已支持 model/dictionary artifact 元数据导入，Chapter 95 已验证本地 fixture 的 SHA 校验和 active artifact 激活，Chapter 96 已补上下载器 size 校验，Chapter 97 已让 size/SHA active artifact issue 阻断 readiness；仍缺少 YSN-controlled model CDN、真实模型/字典 artifact、真实 SHA256、size、license 元数据和签名发布流程 | 基于已固化 publish layout 接入真实托管源、签名 index、下载校验、版本升级和回滚策略 |
-| 真实 Windows 人工验收不足 | release smoke 只能证明进程启动，不能证明 Alt+A、OCR、翻译、录制、复制、保存等桌面交互全部正确 | 建立人工验收清单和可复现样例，逐项记录通过/失败/截图证据 |
-| 翻译质量仍需样例验收 | OCR/翻译处理门禁已有合成 fixture，但用户的 GitHub 英文列表、多语言截图、技术文本仍需真实样例验证 | 补充 OCR blocks fixture、截图样例、translation payload fixture 和重绘对比验收 |
+| RapidOCR 主线仍需真实端到端验收 | 生成式 fixture 和打包 runner fixture 已通过，Rust/前端构建已通过；但仍缺用户真实 `Ctrl+D` 结果窗、真实网页截图、混排长段落和复杂背景验收 | 固化真实截图 fixture，补覆盖层视觉回归，继续记录失败样例并修候选评分/后处理 |
+| RapidOCR 打包体积和冷启动 | 清理旧 onefile 遗留后资源约 `340.7 MB`；onedir runner 可用但仍包含 OpenCV/ONNXRuntime/Python 依赖，韩文/阿拉伯文完整 fallback 约 `5.6–6.3s` | 继续裁剪无用 PyInstaller 依赖，按脚本早停，缓存 detector 结果，必要时拆分多语言模型包 |
+| 真实 Windows 人工验收不足 | Chapter 110 已验证当前 release 可响应 `Alt+A` 并生成 PNG 全屏捕获；Chapter 126 已有生成式 OCR fixture；Computer Use 无法拖拽透明 overlay，真实 `Ctrl+D` 结果窗仍需要用户或人工验收确认 | 建立人工验收清单和真实截图样例，逐项记录通过/失败/截图证据 |
+| 翻译质量仍需样例验收 | Chapter 120 已修复法语/西语被按英文翻译的错误路由，并加入语义关键词 smoke；Chapter 125 已让通道配置和测试状态可见；Chapter 130 已减少重复文本 provider 调用并部署 N100；Chapter 131 已把技术文本保护下沉到服务端并修复日文误伤；但 Google 免费通道仍不是完整商业级多语言质量方案 | 接入更可靠付费/LLM 通道并做真实多语言截图样例验收，继续保留 Google 质量风险提示 |
 | 发布商业闭环未完成 | 安装包和 smoke launch 曾通过，但签名、自动更新、模型托管、错误恢复、真实设备矩阵仍未完整 | 建立发布清单、模型源发布流程、真实设备验收和版本回滚流程 |
 
 ### 6.3 下一轮优先级
 
-1. Chapter 101：当前优先级改为“截图 OCR / 翻译主流程可验证闭环”，不再继续扩大配置页地基。
-2. 已在项目根目录安装 PP-OCRv5 ONNX 验证模型包到 `models/ocr/active`，并同步 `models/ocr/manifest.json` 的 SHA256、size、license 与 installed 状态；以后所有模型和大文件默认放项目根目录对应文件夹，不再默认占用 C 盘 appdata。
-3. 产品配置页和截图 OCR 主流程不再提供 `PaddleOCR-json` 入口；截图 OCR 必须优先进入项目根目录 `models/ocr` 下的 `YSN OCR Runtime / ONNX`，模型缺失或 manifest 损坏时显示明确恢复提示，不再打开莫名其妙的浏览文件窗口。
-4. 已修 `Ctrl+D` 白屏兜底：OCR 成功、失败、模型缺失、payload 未送达时都必须显示产品级结果窗、截图预览、错误原因和下一步。
-5. 已接入最小真实端到端 pipeline：detector → crop → recognizer → dictionary decode → OCR blocks；后续继续做多模型路由、低置信度 fallback 和真实样例调参，未完整验收前 `runtimeInferenceReady=false` 不能改。
-6. 后续再补托管 CDN、签名 source index、模型自动更新、低置信度 fallback 和完整 Windows 人工验收。
+1. Chapter 134：把真实用户截图样例固化进 RapidOCR fixture，重点覆盖清晰英文网页、搜索建议、混排中英、长句和复杂背景。
+2. 优化 RapidOCR fallback 性能：先跑 detector 一次，多语言 recognizer 复用检测框，避免韩文/阿拉伯文每个候选重复 detector。
+3. 将 RapidOCR candidate summary、selectedLang、耗时和低置信度原因暴露到诊断报告或 OCR 结果调试信息。
+4. 继续接入并验证更可靠的付费/LLM 翻译通道，替代 Google 免费通道作为正式质量路线。
+5. OCR ready 必须由 RapidOCR 打包 runner、自测、fixture、真实 `Ctrl+D` 结果窗和翻译覆盖层共同证明。
 
-### 6.4 两小时执行目标（当前）
+### 6.4 下一执行目标（当前）
 
-目标：让当前截图翻译从“只有配置地基”转成“能验证真实 OCR/翻译主流程”的状态。
-
-时间盒：约 2 小时。只做用户现在能验证的链路，不再新增开发者调试面板。
+目标：在 RapidOCR 主线基础上继续压低多语言 fallback 耗时，并把真实截图失败样例纳入可重复 fixture；翻译通道健康摘要已完成，后续只在接入真实付费/LLM 通道时继续扩展。
 
 必须完成：
 
-- PP-OCRv5 基础模型包已下载、安装、校验，并让配置页能识别 installed 状态。
-- `Ctrl+D` OCR 结果窗不再白屏；没有识别结果也必须显示失败原因和截图预览。
-- `run_local_ocr` 或截图 OCR 调用路径优先尝试项目根目录 `models/ocr` 的 `YSN OCR Runtime / ONNX`；普通产品路径不再调用外部 OCR exe。
-- 翻译链路继续保护技术词：`ONNX`、`PP-OCRv5`、`.exe`、路径、命令、包名。
-- 验证要从用户视角描述：打开 exe → 截图 → OCR/翻译 → 看结果，而不是只看 Probe。
+- 保持 RapidOCR 生成式 fixture 和打包版 fixture 可复跑。
+- 补充真实应用页面、搜索建议、英文长句、技术文本和混排截图样例。
+- 优先尝试低风险 detector 复用、脚本早停和候选评分优化，避免牺牲中文和小字召回。
 
-两小时非目标：
+非目标：
 
 - 不承诺完整生产 ready。
-- 不把 `runtimeInferenceReady` 改成 `true`。
-- 不继续扩展 JSON source index、Probe 面板或开发者调试入口。
+- 不恢复旧自研 YSN OCR Runtime 主路径。
+- 不恢复 PaddleOCR-json 作为普通主路径。
 - 不做发布签名、自动更新、CDN 托管和完整商业发布闭环。
 
 ## 7. 当前原则总结
 
 - 商业级优先，不做只为快速落地的短期架构。
-- OCR 是战略能力，长期主线是自有 ONNX Runtime + managed model packs。
+- OCR 是战略能力，当前主线是产品内置 RapidOCR / ONNXRuntime runner，而不是旧自研 YSN OCR Runtime。
 - 源语言自动识别是硬要求，目标语言默认简体中文并可选。
 - 任何 ready 状态必须由真实端到端验证证明。
 - 文档只保留主计划和章节日志，代码每章结束必须留下可恢复现场。

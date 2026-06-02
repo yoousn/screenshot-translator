@@ -22,7 +22,7 @@ function AppContent() {
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const { message, notification } = AntdApp.useApp();
   const { language, setLanguage, text } = useI18n();
-  const { serverUrl, isOnline, isChecking, responseTime, checkStatus, fetchServerUrl } = useServerStatus();
+  const { serverUrl, isOnline, isChecking, responseTime, translationMetadata, checkStatus, fetchServerUrl } = useServerStatus();
 
   useEffect(() => {
     checkShortcutStatus();
@@ -95,6 +95,7 @@ function AppContent() {
       serverUrl={serverUrl}
       isOnline={isOnline}
       isChecking={isChecking}
+      translationMetadata={translationMetadata}
       language={language}
       labels={{
         appName: text.app.name,
@@ -106,6 +107,9 @@ function AppContent() {
         online: text.status.online,
         offline: text.status.offline,
         checking: text.status.checking,
+        channel: text.status.channel,
+        glossary: text.status.glossary,
+        qualityRisk: text.status.qualityRisk,
       }}
       onLanguageChange={setLanguage}
       onMenuSelect={setActiveKey}

@@ -23,7 +23,7 @@ export default function About() {
     { name: "Tauri 2.0 Core Runtime (Rust Desktop)", desc: "提供超轻量本地系统桥接与 IPC 管道驱动" },
     { name: "React 19 + TypeScript compiler", desc: "构建高安全性、强类型的前端模块系统" },
     { name: "Ant Design v5 Layout", desc: "企业级高可交互桌面工具组件规范" },
-    { name: "PP-OCRv5 ONNX Runtime", desc: "项目根目录模型包驱动的本地离线 OCR 引擎" },
+    { name: "RapidOCR + ONNXRuntime", desc: "Rapid OCR V5/V4 驱动的本地离线文本识别引擎" },
   ];
 
   return (
@@ -91,7 +91,7 @@ export default function About() {
             <Col span={12}>
               <Card type="inner" title={<span><SafetyCertificateOutlined style={{ marginRight: 6, color: "#52c41a" }} />本地 OCR 识别</span>}>
                 <Paragraph type="secondary" style={{ fontSize: 11, margin: 0, lineHeight: 1.6 }}>
-                  默认使用项目根目录 models/ocr 下的本地截图翻译模型识别文字。
+                  默认使用 RapidOCR 主路径识别文字，Rapid OCR V5 为默认模型，V4 可在识字模型页切换。
                 </Paragraph>
               </Card>
             </Col>

@@ -2,8 +2,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
 import type { FormInstance } from "antd";
-
-type TranslationChannel = "baidu" | "new-api";
+import type {
+  ServerChannelStatus,
+  TranslationChannel,
+  TranslationChannelTestStatuses,
+} from "../components/settings/types";
 
 type ServerChannelPayload = {
   channel: string;
@@ -12,6 +15,42 @@ type ServerChannelPayload = {
 
 const trimTrailingSlash = (value: string) => value.replace(/\/$/, "");
 
+const buildServerUrlCandidates = (values: any) => {
+  const remoteUrl = values.serverUrl || "";
+  const candidates = [
+    ...(values.preferLanServer && values.lanServerUrl ? [values.lanServerUrl] : []),
+    remoteUrl,
+  ];
+  return Array.from(new Set(candidates.map((item) => String(item || "").trim()).filter(Boolean)));
+};
+
+type CandidateJsonResult<T> = {
+  serverUrl: string;
+  data: T;
+  response: Response;
+};
+
+const requestJsonFromCandidates = async <T>(
+  serverUrls: string[],
+  path: string,
+  init: RequestInit,
+): Promise<CandidateJsonResult<T>> => {
+  const errors: string[] = [];
+  for (const serverUrl of serverUrls) {
+    try {
+      const response = await fetch(`${trimTrailingSlash(serverUrl)}${path}`, init);
+      const data = await response.json().catch(() => ({} as T));
+      if (!response.ok) {
+        throw new Error((data as any).error || `状态码：${response.status}`);
+      }
+      return { serverUrl, data, response };
+    } catch (error: any) {
+      errors.push(`${serverUrl}: ${error?.message || error}`);
+    }
+  }
+  throw new Error(errors.join("; "));
+};
+
 export default function useSettingsController(form: FormInstance, onConfigSaved: () => void) {
   const [isSaving, setIsSaving] = useState(false);
   const [isTestingBaidu, setIsTestingBaidu] = useState(false);
@@ -19,6 +58,8 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [currentChannel, setCurrentChannel] = useState<string>("google");
+  const [channelTestStatuses, setChannelTestStatuses] = useState<TranslationChannelTestStatuses>({});
+  const [serverChannelStatus, setServerChannelStatus] = useState<ServerChannelStatus>({});
 
   useEffect(() => {
     loadSettings();
@@ -41,8 +82,9 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         setAvailableModels([parsedConfig.newApiModel || "gemini-3.5-flash"]);
       }
 
-      if (parsedConfig.serverUrl) {
-        await syncActiveServerChannel(parsedConfig.serverUrl, parsedConfig.clientToken || "");
+      const serverUrls = buildServerUrlCandidates(parsedConfig);
+      if (serverUrls.length > 0) {
+        await syncActiveServerChannel(serverUrls, parsedConfig.clientToken || "");
       }
     } catch (error) {
       console.error(error);
@@ -50,18 +92,28 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
   };
 
-  const syncActiveServerChannel = async (serverUrl: string, clientToken: string) => {
+  const syncActiveServerChannel = async (serverUrls: string[], clientToken: string) => {
     try {
-      const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/current`, {
+      const { serverUrl, data: serverConfig } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/current", {
         headers: { "x-api-key": clientToken },
       });
-      const serverConfig = await response.json();
       if (serverConfig.status === "success" && serverConfig.active_channel) {
         setCurrentChannel(serverConfig.active_channel);
         form.setFieldValue("channel", serverConfig.active_channel);
+        setServerChannelStatus({
+          activeChannel: serverConfig.active_channel,
+          serviceUrl: serverUrl,
+          checkedAt: new Date().toISOString(),
+        });
+      } else {
+        throw new Error(serverConfig.error || "服务端未返回当前翻译通道。");
       }
     } catch (error) {
       console.warn("Failed to sync server active channel", error);
+      setServerChannelStatus({
+        error: error instanceof Error ? error.message : String(error),
+        checkedAt: new Date().toISOString(),
+      });
     }
   };
 
@@ -72,12 +124,13 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   };
 
   const fetchModels = async () => {
-    const serverUrl = form.getFieldValue("serverUrl");
+    const values = form.getFieldsValue(true);
+    const serverUrls = buildServerUrlCandidates(values);
     const clientToken = form.getFieldValue("clientToken") || "";
     const newApiBase = form.getFieldValue("newApiBase");
     const newApiKey = form.getFieldValue("newApiKey");
 
-    if (!serverUrl) {
+    if (serverUrls.length === 0) {
       message.error("请先填写并保存文本翻译服务地址。");
       return;
     }
@@ -88,7 +141,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
 
     setIsFetchingModels(true);
     try {
-      const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/fetch_models`, {
+      const { data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/fetch_models", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -100,7 +153,6 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         }),
       });
 
-      const resData = await response.json();
       if (resData.status === "success" && Array.isArray(resData.models)) {
         setAvailableModels(resData.models);
         message.success(`模型列表拉取成功，共 ${resData.models.length} 个模型。`);
@@ -118,10 +170,11 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   };
 
   const testChannel = async (channel: TranslationChannel) => {
-    const serverUrl = form.getFieldValue("serverUrl");
+    const values = form.getFieldsValue(true);
+    const serverUrls = buildServerUrlCandidates(values);
     const clientToken = form.getFieldValue("clientToken") || "";
 
-    if (!serverUrl) {
+    if (serverUrls.length === 0) {
       message.error("请先填写文本翻译服务地址。");
       return;
     }
@@ -143,8 +196,13 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       };
     }
 
+    setChannelTestStatuses((prev) => ({
+      ...prev,
+      [channel]: { status: "testing", testedAt: new Date().toISOString() },
+    }));
+
     try {
-      const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/test`, {
+      const { serverUrl, data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/test", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -153,17 +211,39 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         body: JSON.stringify(testPayload),
       });
 
-      const resData = await response.json();
       if (resData.status === "success") {
         const channelName = channel === "baidu" ? "百度翻译" : "大模型翻译";
         message.success(`翻译通道「${channelName}」测试通过，并已设为当前活动通道。`);
         form.setFieldValue("channel", channel);
         setCurrentChannel(channel);
+        setChannelTestStatuses((prev) => ({
+          ...prev,
+          [channel]: {
+            status: "passed",
+            message: resData.result,
+            serviceUrl: serverUrl,
+            testedAt: new Date().toISOString(),
+          },
+        }));
+        setServerChannelStatus({
+          activeChannel: channel,
+          serviceUrl: serverUrl,
+          checkedAt: new Date().toISOString(),
+        });
       } else {
         throw new Error(resData.error || "接口验证失败");
       }
     } catch (error: any) {
-      message.error(`测试连接失败：${error.message || error}`);
+      const errorMessage = error.message || String(error);
+      setChannelTestStatuses((prev) => ({
+        ...prev,
+        [channel]: {
+          status: "failed",
+          message: errorMessage,
+          testedAt: new Date().toISOString(),
+        },
+      }));
+      message.error(`测试连接失败：${errorMessage}`);
     } finally {
       setIsTestingBaidu(false);
       setIsTestingNewApi(false);
@@ -189,13 +269,13 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   };
 
   const saveServerChannelConfig = async (values: any) => {
-    const serverUrl = values.serverUrl;
+    const serverUrls = buildServerUrlCandidates(values);
     const clientToken = values.clientToken || "";
-    if (!serverUrl) {
+    if (serverUrls.length === 0) {
       throw new Error("请先填写文本翻译服务地址。");
     }
 
-    const response = await fetch(`${trimTrailingSlash(serverUrl)}/api/config/save`, {
+    const { serverUrl, data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/save", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -203,10 +283,10 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       },
       body: JSON.stringify(buildServerChannelPayload(values)),
     });
-    const resData = await response.json().catch(() => ({}));
-    if (!response.ok || resData.status !== "success") {
-      throw new Error(resData.error || `服务端配置保存失败，状态码：${response.status}`);
+    if (resData.status !== "success") {
+      throw new Error(resData.error || "服务端配置保存失败。");
     }
+    return serverUrl;
   };
 
   const onFinish = async (values: any) => {
@@ -237,9 +317,18 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
 
       let serverSaved = false;
       try {
-        await saveServerChannelConfig(configValues);
+        const savedServerUrl = await saveServerChannelConfig(configValues);
         serverSaved = true;
+        setServerChannelStatus({
+          activeChannel: configValues.channel || "google",
+          serviceUrl: savedServerUrl,
+          checkedAt: new Date().toISOString(),
+        });
       } catch (serverError: any) {
+        setServerChannelStatus({
+          error: serverError.message || String(serverError),
+          checkedAt: new Date().toISOString(),
+        });
         message.warning(`本地设置已保存，但服务端翻译配置未同步：${serverError.message || serverError}`);
       }
 
@@ -264,6 +353,8 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     isFetchingModels,
     availableModels,
     currentChannel,
+    channelTestStatuses,
+    serverChannelStatus,
     handleFormChange,
     fetchModels,
     testChannel,

@@ -12,6 +12,15 @@ from config import load_server_config
 
 client = TestClient(app)
 
+def test_health_exposes_translation_metadata():
+    res = client.get("/api/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert data["translation"]["glossary_loaded"] is True
+    assert data["translation"]["glossary_version"] != "fallback"
+    assert data["translation"]["quality_flags"]["latin_non_english_auto_source"] is True
+
 def test_fetch_models_unauthorized():
     res = client.post("/api/config/fetch_models", json={"base_url": "api.yousn.me", "api_key": "sk-xxx"})
     assert res.status_code == 401
@@ -90,4 +99,16 @@ def test_config_save_google_success():
     data = res.json()
     assert data["status"] == "success"
     assert data["active_channel"] == "google"
+
+
+def test_current_config_exposes_translation_metadata():
+    cfg = load_server_config()
+    token = cfg["client_token"]
+
+    res = client.get("/api/config/current", headers={"X-API-Key": token})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert data["translation"]["glossary_loaded"] is True
+    assert data["translation"]["glossary_terms"] > 0
 

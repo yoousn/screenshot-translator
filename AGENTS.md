@@ -7,8 +7,8 @@
 
 ## Architecture Principles
 - Prefer owned, integrated runtime architecture over opaque external executables when the feature is strategic.
-- OCR is strategic. The long-term direction is `YSN OCR Runtime`: integrated ONNX Runtime inference, managed model packs, automatic language/script routing, confidence scoring, retry/fallback paths, and translation-aware text cleanup.
-- External OCR executables may remain only as compatibility or temporary fallback paths, not as the product's main architecture.
+- OCR is strategic. The current long-term direction is a product-owned `RapidOCR / ONNXRuntime` mainline: bundled RapidOCR runner, PP-OCRv5 default, PP-OCRv4 selectable, automatic language/script routing, confidence scoring, retry/fallback paths, and translation-aware text cleanup.
+- Do not continue the deprecated self-built `YSN OCR Runtime` path unless the user explicitly reopens it. Opaque external OCR executables should not be the main path; the bundled RapidOCR runner is owned packaging, not a PaddleOCR-json compatibility dependency.
 - FFmpeg may remain an external dependency unless/until video encoding becomes a strategic owned runtime.
 
 ## OCR And Translation Requirements
@@ -39,7 +39,7 @@
 - Treat the project as a long-running commercial build: continue chapter-by-chapter from the master plan without waiting for micro-confirmations when the next step is clear.
 - At the start of each work session, inspect `git status`, read the current master-plan priorities, and continue from the last completed chapter in `docs/IMPLEMENTATION_CHAPTERS.md`.
 - At the end of each completed chapter, update `docs/IMPLEMENTATION_CHAPTERS.md` with actual changes, validation results, known risks, and the next recommended chapter.
-- Do not mark strategic systems as ready until they pass real end-to-end behavior. In particular, do not set OCR runtime readiness to true until integrated ONNX inference, decode, postprocess, and self-test all work.
+- Do not mark strategic systems as ready until they pass real end-to-end behavior. In particular, do not show OCR as ready until the bundled RapidOCR runner, model assets, postprocess, fixture smoke, and real screenshot workflow all work.
 - Do not commit, push, create branches, or tag releases unless the user explicitly asks for that action in the current context.
 
 ## Code Organization Standard

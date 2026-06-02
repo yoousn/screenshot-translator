@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
 from config import load_server_config, save_server_config
-from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
+from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, get_translation_runtime_metadata
 from security import normalize_public_base_url, request_public_url
 import logging
 
@@ -120,7 +120,15 @@ def _save_channel_config(channel: str, channel_config: dict):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "ocr": "client-local-only"}
+    channel = get_config().get("active_channel", "google")
+    return {
+        "status": "ok",
+        "ocr": "client-local-only",
+        "translation": {
+            "active_channel": channel,
+            **get_translation_runtime_metadata(channel),
+        },
+    }
 
 @app.get("/c_hello")
 async def c_hello(asker: str = ""):
@@ -153,13 +161,23 @@ async def translate_text_endpoint(
     x_api_key: str = Header(None, alias="x-api-key")
 ):
     verify_token(x_api_key)
+    request_started_at = time.perf_counter()
     
     if not req.blocks:
         return {
             "status": "success",
             "translations": [],
             "cache_hits": 0,
-            "channel": get_config().get("active_channel", "google")
+            "channel": get_config().get("active_channel", "google"),
+            "timings": {
+                "total_ms": 0,
+                "provider_ms": 0,
+                "cache_hits": 0,
+                "provider_misses": 0,
+                "request_duplicates": 0,
+                "preserved_hits": 0,
+                "blocks": 0,
+            },
         }
     
     texts = [block.text for block in req.blocks]
@@ -167,25 +185,41 @@ async def translate_text_endpoint(
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
     
-    stats_ref = {"cache_hits": 0}
+    stats_ref = {"cache_hits": 0, "provider_ms": 0, "provider_misses": 0, "request_duplicates": 0, "preserved_hits": 0}
     try:
+        provider_started_at = time.perf_counter()
         translations = translator.translate_batch(texts, req.source_lang, req.target_lang, stats_ref)
+        stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
     except Exception as e:
         logger.warning("translate_text batch failed, falling back to single: %s", e)
-        # 降级：如果 translate_batch 崩溃，则对单个单词独立处理，容错性极强
         translations = []
+        provider_started_at = time.perf_counter()
+        # 降级：如果 translate_batch 崩溃，则对单个单词独立处理，容错性极强
         for text in texts:
             try:
                 res = translator.translate(text, source_lang=req.source_lang, target_lang=req.target_lang)
                 translations.append(res)
             except Exception:
-                translations.append(text)
+                translations.append("")
+        stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
+        stats_ref["provider_misses"] = max(0, len(texts) - stats_ref["cache_hits"])
                 
+    total_ms = int((time.perf_counter() - request_started_at) * 1000)
+    cache_hits = stats_ref["cache_hits"]
     return {
         "status": "success",
         "translations": translations,
-        "cache_hits": stats_ref["cache_hits"],
-        "channel": get_config().get("active_channel", "google")
+        "cache_hits": cache_hits,
+        "channel": get_config().get("active_channel", "google"),
+        "timings": {
+            "total_ms": total_ms,
+            "provider_ms": stats_ref["provider_ms"],
+            "cache_hits": cache_hits,
+            "provider_misses": stats_ref["provider_misses"],
+            "request_duplicates": stats_ref["request_duplicates"],
+            "preserved_hits": stats_ref["preserved_hits"],
+            "blocks": len(texts),
+        },
     }
 
 
@@ -231,7 +265,12 @@ def current_config(x_api_key: str = Header(None)):
     for secret_key in ("api_key", "secret_key"):
         if active_cfg.get(secret_key):
             active_cfg[secret_key] = "***"
-    return {"status": "success", "active_channel": channel, "config": active_cfg}
+    return {
+        "status": "success",
+        "active_channel": channel,
+        "config": active_cfg,
+        "translation": get_translation_runtime_metadata(channel),
+    }
 
 @app.post("/api/config/fetch_models")
 def fetch_models(payload: dict, x_api_key: str = Header(None)):
@@ -259,4 +298,3 @@ if __name__ == "__main__":
     host = os.environ.get("SS_TRANSLATOR_HOST", "0.0.0.0")
     port = int(os.environ.get("SS_TRANSLATOR_PORT", "8318"))
     uvicorn.run("app:app", host=host, port=port, reload=True)
-

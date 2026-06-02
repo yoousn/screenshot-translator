@@ -1,7 +1,7 @@
 import pytest
 import requests
 from unittest.mock import patch
-from translator import GoogleTranslator, LLMTranslator, BaiduTranslator
+from translator import BaseTranslator, GoogleTranslator, LLMTranslator, BaiduTranslator
 
 
 class FakeLLMResponse:
@@ -90,3 +90,79 @@ def test_llm_segment_validation_falls_back_on_missing_marker():
     result = translator._do_translate_batch(["first", "second"], "en", "zh")
 
     assert result == ["fallback:first", "fallback:second"]
+
+
+class CountingTranslator(BaseTranslator):
+    def __init__(self):
+        super().__init__()
+        self.provider_batches = []
+
+    def cache_namespace(self) -> str:
+        return f"test-dedupe:{id(self)}"
+
+    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        return f"translated:{text}"
+
+    def _do_translate_batch(self, texts, source_lang, target_lang, stats_ref=None):
+        self.provider_batches.append(list(texts))
+        return [f"translated:{text}" for text in texts]
+
+
+def test_base_translator_deduplicates_same_request_misses():
+    translator = CountingTranslator()
+    stats = {"cache_hits": 0}
+
+    result = translator.translate_batch(
+        ["Repeat me", "Repeat me", "Unique text", "Repeat me"],
+        "en",
+        "zh",
+        stats,
+    )
+
+    assert result == [
+        "translated:Repeat me",
+        "translated:Repeat me",
+        "translated:Unique text",
+        "translated:Repeat me",
+    ]
+    assert translator.provider_batches == [["Repeat me", "Unique text"]]
+    assert stats["cache_hits"] == 0
+    assert stats["provider_misses"] == 2
+    assert stats["request_duplicates"] == 2
+
+
+def test_base_translator_preserves_technical_text_without_provider():
+    translator = CountingTranslator()
+    stats = {}
+
+    result = translator.translate_batch(
+        [
+            "COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md",
+            "PATH=C:\\Windows\\System32 && LocalModel.exe --help",
+            "Translate me",
+        ],
+        "en",
+        "zh",
+        stats,
+    )
+
+    assert result == [
+        "COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md",
+        "PATH=C:\\Windows\\System32 && LocalModel.exe --help",
+        "translated:Translate me",
+    ]
+    assert translator.provider_batches == [["Translate me"]]
+    assert stats["preserved_hits"] == 2
+    assert stats["provider_misses"] == 1
+
+
+def test_base_translator_does_not_preserve_japanese_kanji_kana_text():
+    translator = CountingTranslator()
+    stats = {}
+
+    result = translator.translate_batch(["保存する前にプレビューを開く"], "ja", "zh", stats)
+
+    assert result == ["translated:保存する前にプレビューを開く"]
+    assert translator.provider_batches == [["保存する前にプレビューを開く"]]
+    assert stats["preserved_hits"] == 0
+    assert stats["provider_misses"] == 1

@@ -2,20 +2,21 @@
 import { Card, Col, Collapse, Row, Space, Typography } from "antd";
 import ConfigPageHeader from "../components/config/ConfigPageHeader";
 import ConfigReadinessOverview from "../components/config/ConfigReadinessOverview";
-import OcrModelPackPanel from "../components/config/OcrModelPackPanel";
+import RapidOcrPanel from "../components/config/RapidOcrPanel";
 import RecordingDependencyPanel from "../components/config/RecordingDependencyPanel";
 import TranslationLanguagePanel from "../components/config/TranslationLanguagePanel";
 import useOcrConfigController from "../hooks/useOcrConfigController";
+import useRapidOcrController from "../hooks/useRapidOcrController";
 import useRecordingDependencyController from "../hooks/useRecordingDependencyController";
-import useYsnOcrRuntimeController from "../hooks/useYsnOcrRuntimeController";
 import { useI18n } from "../i18n";
+import type { RapidOcrModelVersion } from "../ocr-models";
 
 const { Text } = Typography;
 
 export default function OcrConfig() {
   const { config, setConfig, saveConfig } = useOcrConfigController();
   const recording = useRecordingDependencyController();
-  const ysnOcrRuntime = useYsnOcrRuntimeController();
+  const rapidOcr = useRapidOcrController();
   const { text } = useI18n();
   const labels = text.config;
 
@@ -24,28 +25,32 @@ export default function OcrConfig() {
     await saveConfig({ targetLang });
   };
 
+  const saveRapidOcrModelVersion = async (rapidOcrModelVersion: RapidOcrModelVersion) => {
+    setConfig({ ...config, rapidOcrModelVersion });
+    await saveConfig({ rapidOcrModelVersion }, false);
+    await rapidOcr.refreshStatus();
+  };
+
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <ConfigPageHeader />
       <ConfigReadinessOverview
-        runtimeStatus={ysnOcrRuntime.status}
+        runtimeStatus={rapidOcr.status}
         recordingInfo={recording.recordingInfo}
         targetLang={config.targetLang || "zh"}
       />
 
       <Row gutter={[16, 16]}>
         <Col xs={24}>
-          <OcrModelPackPanel
-            runtimeStatus={ysnOcrRuntime.status}
-            loadingRuntimeStatus={ysnOcrRuntime.loadingStatus}
-            selfTesting={ysnOcrRuntime.selfTesting}
-            runningPackAction={ysnOcrRuntime.runningPackAction}
-            lastSelfTest={ysnOcrRuntime.lastSelfTest}
-            lastOperation={ysnOcrRuntime.lastOperation}
-            onRefreshRuntimeStatus={ysnOcrRuntime.refreshStatus}
-            onRunSelfTest={ysnOcrRuntime.runSelfTest}
-            onInstallPack={ysnOcrRuntime.installPack}
-            onUpdatePack={ysnOcrRuntime.updatePack}
+          <RapidOcrPanel
+            status={rapidOcr.status}
+            loadingStatus={rapidOcr.loadingStatus}
+            selfTesting={rapidOcr.selfTesting}
+            modelVersion={(config.rapidOcrModelVersion || "v5") as RapidOcrModelVersion}
+            lastSelfTest={rapidOcr.lastSelfTest}
+            onModelVersionChange={saveRapidOcrModelVersion}
+            onRefreshStatus={rapidOcr.refreshStatus}
+            onRunSelfTest={rapidOcr.runSelfTest}
           />
         </Col>
       </Row>

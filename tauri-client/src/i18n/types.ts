@@ -32,6 +32,9 @@ export type AppDictionary = {
     online: string;
     offline: string;
     checking: string;
+    channel: string;
+    glossary: string;
+    qualityRisk: string;
   };
   config: Record<string, string>;
   settings: Record<string, string>;

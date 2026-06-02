@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "check:i18n": "node scripts/check-i18n.mjs",
-    "check:ocr-processing": "node scripts/check-ocr-processing.mjs"
+    "check:ocr-processing": "node scripts/check-ocr-processing.mjs",
+    "check:ocr-fixtures": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-ocr-fixtures.ps1",
+    "build:rapidocr-runner": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-rapidocr-runner.ps1",
+    "smoke:translate-service": "node scripts/smoke-translate-service.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.2.3",
