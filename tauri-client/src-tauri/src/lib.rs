@@ -544,35 +544,49 @@ mod win32 {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn set_hwnd_capture_excluded(hwnd: isize, excluded: bool) -> Result<(), String> {
+    const WDA_NONE: u32 = 0x00000000;
+    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+    let affinity = if excluded {
+        WDA_EXCLUDEFROMCAPTURE
+    } else {
+        WDA_NONE
+    };
+    let ok = unsafe { win32::SetWindowDisplayAffinity(hwnd, affinity) };
+    if ok == 0 {
+        return Err("SetWindowDisplayAffinity failed".to_string());
+    }
+    Ok(())
+}
+
+fn set_webview_capture_excluded(
+    app: &tauri::AppHandle,
+    label: &str,
+    excluded: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let window = app
+            .get_webview_window(label)
+            .ok_or_else(|| format!("window not found: {}", label))?;
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        set_hwnd_capture_excluded(hwnd, excluded)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, label, excluded);
+        Ok(())
+    }
+}
+
 #[tauri::command]
 fn set_window_capture_excluded(
     app: tauri::AppHandle,
     label: String,
     excluded: bool,
 ) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        const WDA_NONE: u32 = 0x00000000;
-        const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
-        let window = app
-            .get_webview_window(&label)
-            .ok_or_else(|| format!("window not found: {}", label))?;
-        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
-        let affinity = if excluded {
-            WDA_EXCLUDEFROMCAPTURE
-        } else {
-            WDA_NONE
-        };
-        let ok = unsafe { win32::SetWindowDisplayAffinity(hwnd, affinity) };
-        if ok == 0 {
-            return Err("SetWindowDisplayAffinity failed".to_string());
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (app, label, excluded);
-    }
-    Ok(())
+    set_webview_capture_excluded(&app, &label, excluded)
 }
 
 #[cfg(target_os = "windows")]
@@ -631,6 +645,8 @@ const WS_EX_TRANSPARENT: u32 = 0x00000020;
 const WS_EX_TOOLWINDOW: u32 = 0x00000080;
 #[cfg(target_os = "windows")]
 const WS_EX_LAYERED: u32 = 0x00080000;
+#[cfg(target_os = "windows")]
+const WS_EX_NOACTIVATE: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
 const SW_SHOWNOACTIVATE: i32 = 4;
 #[cfg(target_os = "windows")]
@@ -799,7 +815,11 @@ fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> 
                 };
                 let _ = win32::RegisterClassW(&wnd_class);
                 let hwnd = win32::CreateWindowExW(
-                    WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+                    WS_EX_TOPMOST
+                        | WS_EX_TRANSPARENT
+                        | WS_EX_TOOLWINDOW
+                        | WS_EX_LAYERED
+                        | WS_EX_NOACTIVATE,
                     class_name.as_ptr(),
                     title.as_ptr(),
                     WS_POPUP,
@@ -821,6 +841,7 @@ fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> 
                         255,
                         LWA_COLORKEY,
                     );
+                    let _ = set_hwnd_capture_excluded(hwnd, true);
                     let _ = win32::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                     let _ = win32::UpdateWindow(hwnd);
                     Ok(hwnd)
@@ -888,27 +909,29 @@ fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
 
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
-    let capture_visible_overlay = app
-        .get_webview_window("screenshot")
-        .and_then(|win| win.is_visible().ok())
-        .unwrap_or(false);
-    let main_was_visible = app
-        .get_webview_window("main")
-        .and_then(|win| win.is_visible().ok())
-        .unwrap_or(false);
+    let mut main_hidden_for_capture = false;
+    let mut main_excluded_for_capture = false;
 
-    // Hide app windows before capture. If the screenshot overlay is already visible,
-    // keep it visible so a second hotkey can intentionally capture the current box/tools UI.
+    // Keep the settings panel visually independent from capture. On Windows, prefer
+    // capture exclusion so the panel does not flash; hide only as a fallback.
     if let Some(main_win) = app.get_webview_window("main") {
-        let _ = main_win.hide();
-    }
-    if !capture_visible_overlay {
-        if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-            let _ = screenshot_win.set_always_on_top(false);
-            let _ = screenshot_win.hide();
+        if main_win.is_visible().unwrap_or(false) {
+            if set_webview_capture_excluded(&app, "main", true).is_ok() {
+                main_excluded_for_capture = true;
+            } else {
+                let _ = main_win.hide();
+                main_hidden_for_capture = true;
+            }
         }
     }
+    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
+        let _ = screenshot_win.set_always_on_top(false);
+        let _ = screenshot_win.hide();
+    }
     close_screenshot_windows(&app, false);
+    if main_excluded_for_capture || main_hidden_for_capture {
+        tokio::time::sleep(Duration::from_millis(70)).await;
+    }
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (png_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
@@ -941,7 +964,10 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     .await
     .map_err(|e| format!("Screenshot task failed: {}", e))??;
 
-    if main_was_visible {
+    if main_excluded_for_capture {
+        let _ = set_webview_capture_excluded(&app, "main", false);
+    }
+    if main_hidden_for_capture {
         if let Some(main_win) = app.get_webview_window("main") {
             let _ = main_win.show();
         }
@@ -1020,8 +1046,11 @@ async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>) -> 
 
 #[tauri::command]
 async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
-    // Allow re-entry: pressing hotkey again while capturing restarts the session
-    CAPTURING.store(true, Ordering::SeqCst);
+    // Restart cleanly on repeated hotkey presses instead of racing two overlay sessions.
+    if CAPTURING.swap(true, Ordering::SeqCst) {
+        hide_recording_overlay_internal();
+        close_screenshot_windows(&app, true);
+    }
 
     match start_screenshot_impl(app, mode).await {
         Ok(()) => Ok(()),

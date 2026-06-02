@@ -37,6 +37,19 @@ const closeWindowIfExists = async (label: string) => {
   await win.destroy().catch(() => win.close().catch(() => {}));
 };
 
+const setWindowCaptureExcludedIfExists = async (label: string, excluded: boolean) => {
+  await invoke("set_window_capture_excluded", { label, excluded }).catch(() => {});
+};
+
+const setRecordingCaptureShield = async (excluded: boolean) => {
+  await Promise.all([
+    setWindowCaptureExcludedIfExists("main", excluded),
+    setWindowCaptureExcludedIfExists("screenshot", excluded),
+    setWindowCaptureExcludedIfExists("recording_control", excluded),
+    setWindowCaptureExcludedIfExists("recording_notice", excluded),
+  ]);
+};
+
 function RecordingControlContent() {
   const winRef = useRef(getCurrentWindow());
   const allowCloseRef = useRef(false);
@@ -70,6 +83,11 @@ function RecordingControlContent() {
   const dismissOverlay = async (notifyParent = true) => {
     cancelledRef.current = true;
     allowCloseRef.current = true;
+    await setRecordingCaptureShield(false);
+    if (sessionRef.current?.restoreMainWindow) {
+      const main = await WebviewWindow.getByLabel("main").catch(() => null);
+      await main?.show().catch(() => {});
+    }
     await Promise.all([
       withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
       withTimeout(closeWindowIfExists("recording_notice"), 150),
@@ -128,6 +146,7 @@ function RecordingControlContent() {
         }
       }
       setCountdown(null);
+      await setRecordingCaptureShield(true);
       await startSegment();
     } catch (error: any) {
       message.error(`启动录制失败：${error?.message || error}`);

@@ -54,9 +54,7 @@ function AppContent() {
 
   const handleStartScreenshot = async () => {
     try {
-      message.loading({ content: text.app.startingScreenshot, key: "screenshot" });
       await invoke("start_screenshot");
-      message.success({ content: text.app.screenshotStarted, key: "screenshot" });
     } catch (error: any) {
       message.error({ content: `${text.app.screenshotFailed}${error?.message || error}`, key: "screenshot" });
     }

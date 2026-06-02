@@ -22,6 +22,7 @@ export type RecordingWindowPayload = {
   autoStart?: boolean;
   borderLabels: string[];
   noticeRect?: RecordingBorderRect;
+  restoreMainWindow?: boolean;
 };
 
 export type RecordingBorderRect = { x: number; y: number; w: number; h: number };
@@ -30,6 +31,10 @@ const closeWindowIfExists = async (label: string) => {
   const win = await WebviewWindow.getByLabel(label).catch(() => null);
   if (!win) return;
   await win.destroy().catch(() => win.close().catch(() => {}));
+};
+
+const setWindowCaptureExcludedIfExists = async (label: string, excluded: boolean) => {
+  await invoke("set_window_capture_excluded", { label, excluded }).catch(() => {});
 };
 
 const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> => {
@@ -48,6 +53,10 @@ const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> 
 
 export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
   await Promise.all([
+    setWindowCaptureExcludedIfExists("main", false),
+    setWindowCaptureExcludedIfExists("screenshot", false),
+    setWindowCaptureExcludedIfExists("recording_control", false),
+    setWindowCaptureExcludedIfExists("recording_notice", false),
     withTimeout(invoke("hide_recording_overlay").catch(() => {}), 250),
     withTimeout(closeWindowIfExists("recording_overlay"), 250),
     withTimeout(closeWindowIfExists("recording_control"), 250),
@@ -57,6 +66,15 @@ export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
 
 export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload, "borderLabels">, selection: RecordingBorderRect) => {
   await closeRecordingBorderWindows([]);
+  const mainWindow = await WebviewWindow.getByLabel("main").catch(() => null);
+  const restoreMainWindow = Boolean(await mainWindow?.isVisible().catch(() => false));
+  if (restoreMainWindow) {
+    await mainWindow?.hide().catch(() => {});
+  }
+  await Promise.all([
+    setWindowCaptureExcludedIfExists("main", true),
+    setWindowCaptureExcludedIfExists("screenshot", true),
+  ]);
   const factor = await getCurrentWindow().scaleFactor().catch(() => window.devicePixelRatio || 1);
   const overlayRect = {
     x: Math.round(selection.x / factor),
@@ -77,7 +95,7 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
   const preferredY = belowY + controlSize.h <= screenBottom - 8 ? belowY : aboveY;
   const controlY = Math.min(Math.max(screenTop + 8, preferredY), Math.max(screenTop + 8, screenBottom - controlSize.h - 8));
 
-  const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"], noticeRect: overlayRect };
+  const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"], noticeRect: overlayRect, restoreMainWindow };
   let sent = false;
   const unlistenReady = await listen("recording-overlay-ready", () => {
     sent = true;
@@ -110,7 +128,6 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
 
   control.once("tauri://created", () => {
     invoke("set_window_capture_excluded", { label: "recording_control", excluded: true }).catch(() => {});
-    control.setFocus().catch(() => {});
     window.setTimeout(() => {
       if (!sent) emit("recording-overlay-session", fullPayload).catch(() => {});
     }, 600);
