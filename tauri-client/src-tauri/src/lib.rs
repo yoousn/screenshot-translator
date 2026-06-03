@@ -481,6 +481,10 @@ mod win32 {
         pub fn DestroyWindow(hWnd: isize) -> i32;
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
         pub fn UpdateWindow(hWnd: isize) -> i32;
+        pub fn BringWindowToTop(hWnd: isize) -> i32;
+        pub fn SetForegroundWindow(hWnd: isize) -> i32;
+        pub fn SetActiveWindow(hWnd: isize) -> isize;
+        pub fn SetFocus(hWnd: isize) -> isize;
         pub fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
         pub fn PostQuitMessage(nExitCode: i32);
         pub fn GetMessageW(
@@ -621,6 +625,22 @@ fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W
             );
         }
     }
+}
+
+fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
+    let _ = window.show();
+    let _ = window.set_always_on_top(true);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        let hwnd = hwnd.0 as isize;
+        unsafe {
+            let _ = win32::BringWindowToTop(hwnd);
+            let _ = win32::SetForegroundWindow(hwnd);
+            let _ = win32::SetActiveWindow(hwnd);
+            let _ = win32::SetFocus(hwnd);
+        }
+    }
+    let _ = window.set_focus();
 }
 
 #[cfg(target_os = "windows")]
@@ -909,29 +929,14 @@ fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
 
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
-    let mut main_hidden_for_capture = false;
-    let mut main_excluded_for_capture = false;
 
-    // Keep the settings panel visually independent from capture. On Windows, prefer
-    // capture exclusion so the panel does not flash; hide only as a fallback.
-    if let Some(main_win) = app.get_webview_window("main") {
-        if main_win.is_visible().unwrap_or(false) {
-            if set_webview_capture_excluded(&app, "main", true).is_ok() {
-                main_excluded_for_capture = true;
-            } else {
-                let _ = main_win.hide();
-                main_hidden_for_capture = true;
-            }
-        }
-    }
+    // Treat the settings panel like any other app window during screenshots.
+    // If it is visible on screen it is captured; if it is covered it is not.
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let _ = screenshot_win.set_always_on_top(false);
         let _ = screenshot_win.hide();
     }
     close_screenshot_windows(&app, false);
-    if main_excluded_for_capture || main_hidden_for_capture {
-        tokio::time::sleep(Duration::from_millis(70)).await;
-    }
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime
     let (png_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
@@ -963,15 +968,6 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     )
     .await
     .map_err(|e| format!("Screenshot task failed: {}", e))??;
-
-    if main_excluded_for_capture {
-        let _ = set_webview_capture_excluded(&app, "main", false);
-    }
-    if main_hidden_for_capture {
-        if let Some(main_win) = app.get_webview_window("main") {
-            let _ = main_win.show();
-        }
-    }
 
     // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
     if let Ok(mut guard) = get_screenshot_image().lock() {
@@ -1037,9 +1033,9 @@ async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>) -> 
         return Ok(());
     }
     if let Some(screenshot_win) = app.get_webview_window(&target_label) {
-        let _ = screenshot_win.show();
-        let _ = screenshot_win.set_focus();
-        let _ = screenshot_win.set_always_on_top(true);
+        activate_webview_window(&screenshot_win);
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        activate_webview_window(&screenshot_win);
     }
     Ok(())
 }

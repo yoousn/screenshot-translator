@@ -229,6 +229,7 @@ export default function ScreenshotPage() {
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const [overlayVisible, setOverlayVisible] = useState(false);
+  const overlayVisibleRef = useRef(false);
   const isTranslatingRef = useRef(false);
   const isOCRingRef = useRef(false);
   const isScrollCapturingRef = useRef(false);
@@ -340,6 +341,7 @@ export default function ScreenshotPage() {
     setScreenshotMode("normal");
     screenshotModeRef.current = "normal";
     setScreenshotState("initializing");
+    overlayVisibleRef.current = false;
     setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
 
@@ -855,10 +857,11 @@ export default function ScreenshotPage() {
       requestAnimationFrame(() => {
         requestAnimationFrame(async () => {
           if (sessionId !== captureIdRef.current) return;
+          overlayVisibleRef.current = true;
+          setOverlayVisible(true);
           await invoke("overlay_ready_to_show", { label: getCurrentWindow().label }).catch((err) => {
             console.error("[ScreenshotPage] overlay_ready_to_show failed:", err);
           });
-          setOverlayVisible(true);
         });
       });
     };
@@ -979,7 +982,7 @@ export default function ScreenshotPage() {
   const cancelTextDraft = () => setEditingTextDraft(null);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!overlayVisible) return;
+    if (!overlayVisibleRef.current) return;
     if (e.button === 2) {
       e.preventDefault();
       if (hasSelectedRef.current) {
@@ -1079,7 +1082,7 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!overlayVisible) return;
+    if (!overlayVisibleRef.current) return;
     const cx = e.clientX;
     const cy = e.clientY;
     lastMouseRef.current = { x: cx, y: cy };
@@ -1225,7 +1228,7 @@ export default function ScreenshotPage() {
   };
 
   const handleMouseUp = () => {
-    if (!overlayVisible) return;
+    if (!overlayVisibleRef.current) return;
     const wasSelecting = isSelectingRef.current;
     const pendingDetection = pendingDetectionRef.current;
     pendingDetectionRef.current = null;
@@ -1270,7 +1273,7 @@ export default function ScreenshotPage() {
   };
 
   const handleDoubleClick = () => {
-    if (!overlayVisible) return;
+    if (!overlayVisibleRef.current) return;
     if (hasSelectedRef.current) confirmScreenshot("copy");
   };
 
