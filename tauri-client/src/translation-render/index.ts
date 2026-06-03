@@ -4,3 +4,4 @@ export * from "./background";
 export * from "./textLayout";
 export * from "./renderBlockLayout";
 export * from "./renderTranslatedBlocks";
+export * from "./renderTranslationDistribution";

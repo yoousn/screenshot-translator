@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { Button, Space, message } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -15,18 +15,23 @@ import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { renderTranslatedBlocks } from "../utils/translatedBlocks";
 import { openPinWindow } from "../utils/pinWindows";
 import { getDetectionCandidatesAt, rectSignature } from "../utils/detectionCandidates";
-import { translateWithLocalOcr } from "../utils/localOcrTranslate";
+import { prewarmTranslationServices, translateOcrBlocks, translateWithLocalOcr, type TranslationServicePrewarmSummary } from "../utils/localOcrTranslate";
 import { renderScreenshotCanvas } from "../utils/renderScreenshotCanvas";
 import { openRecordingWindows } from "../utils/recordingWindows";
+import { buildTextSourceBlocksForPhysicalSelection } from "../utils/textSourceSelection";
 import { buildOcrNormalizationReport } from "../ocr-processing";
 import RecordingTargetPicker from "../components/recording/RecordingTargetPicker";
 
 interface Config {
   serverUrl?: string;
+  lanServerUrl?: string;
+  preferLanServer?: boolean;
   clientToken?: string;
   useLocalOcr?: boolean;
   fallbackToRemoteOcr?: boolean;
   localOcrTimeoutMs?: number;
+  translationTimeoutMs?: number;
+  rapidOcrWorkerEnabled?: boolean;
   targetLang?: string;
   channel?: string;
   enableUiControlDetection?: boolean;
@@ -76,11 +81,72 @@ type RecordingTargets = {
   displays: RecordingTarget[];
 };
 
+type NativePointerState = {
+  leftDown?: boolean;
+  x?: number;
+  y?: number;
+};
+
+type ScreenshotUpdatedPayload = string | {
+  kind?: "file" | "base64";
+  path?: string;
+  base64?: string;
+  bytes?: number;
+};
+
+type TranslateRuntimeInfo = {
+  source?: string;
+  serviceUrl: string;
+  channel: string;
+  blocks: number;
+  captureMs: number;
+  totalMs: number;
+  ocrMs?: number;
+  translationMs?: number;
+  retryMs?: number;
+  renderMs?: number;
+  serverTotalMs?: number;
+  providerMs?: number;
+  cacheHits?: number;
+  requestedBlocks?: number;
+  memoryHits?: number;
+  glossaryHits?: number;
+  preservedHits?: number;
+  badTranslationCount?: number;
+  untranslatedCount?: number;
+  prewarm?: TranslationServicePrewarmSummary | null;
+};
+
+type TextSourceElement = {
+  text?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+};
+
+type TextSourceSnapshot = {
+  status?: string;
+  capturedAt?: string;
+  screen?: { x?: number; y?: number; w?: number; h?: number };
+  timings?: { totalMs?: number };
+  elements?: TextSourceElement[];
+};
+
 const formatRecordingTime = (ms: number) => {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
   const seconds = (totalSeconds % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+};
+
+const formatServiceHost = (serverUrl: string) => {
+  if (!serverUrl || serverUrl === "local-cache") return "local-cache";
+  try {
+    return new URL(serverUrl).host;
+  } catch {
+    return serverUrl.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") || serverUrl;
+  }
 };
 
 const getImageDataFromImage = (image: HTMLImageElement) => {
@@ -185,6 +251,7 @@ export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mouseTrackerRef = useRef<HTMLDivElement>(null);
   const actionToolbarRef = useRef<HTMLDivElement>(null);
+  const activePointerIdRef = useRef<number | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
   const [actionToolbarSize, setActionToolbarSize] = useState(ACTION_TOOLBAR_FALLBACK_SIZE);
@@ -216,6 +283,8 @@ export default function ScreenshotPage() {
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
   const [translateResultPreviewBase64, setTranslateResultPreviewBase64] = useState("");
+  const [translationPrewarm, setTranslationPrewarm] = useState<TranslationServicePrewarmSummary | null>(null);
+  const [translateRuntimeInfo, setTranslateRuntimeInfo] = useState<TranslateRuntimeInfo | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [annotationTool, setAnnotationToolState] = useState<AnnotationTool | null>(null);
   const [annotationColor, setAnnotationColor] = useState(DEFAULT_ANNOTATION_COLOR);
@@ -237,6 +306,11 @@ export default function ScreenshotPage() {
   const recordingPickerModeRef = useRef<"window" | "display" | null>(null);
   const scrollFramesRef = useRef<string[]>([]);
   const scrollTimerRef = useRef<number | null>(null);
+  const nativePointerRecoveryTimerRef = useRef<number | null>(null);
+  const nativePointerRecoveryPendingRef = useRef(false);
+  const nativePointerRecoveryStartedRef = useRef(false);
+  const textSourceSnapshotPromiseRef = useRef<Promise<TextSourceSnapshot | null> | null>(null);
+  const ocrPrewarmPromiseRef = useRef<Promise<unknown> | null>(null);
   const isScrollFramePendingRef = useRef(false);
   const recordingStatusRef = useRef<RecordingStatus>("idle");
   const recordingSegmentsRef = useRef<string[]>([]);
@@ -293,9 +367,11 @@ export default function ScreenshotPage() {
     imageRef.current = null;
     translatedImgRef.current = null;
     analysisImageDataRef.current = null;
+    textSourceSnapshotPromiseRef.current = null;
     setTranslatedResult(null);
     setTranslatePairs(null);
     setTranslateResultPreviewBase64("");
+    setTranslateRuntimeInfo(null);
     setIsEditing(false);
     annotationSizesRef.current = { ...DEFAULT_ANNOTATION_SIZES };
     setAnnotationToolState(null);
@@ -516,6 +592,101 @@ export default function ScreenshotPage() {
   };
 
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+  const readTextSourceSnapshot = async (timeoutMs = 80): Promise<TextSourceSnapshot | null> => {
+    const deadline = performance.now() + timeoutMs;
+    let latest: TextSourceSnapshot | null = null;
+    while (performance.now() <= deadline) {
+      try {
+        latest = await invoke<TextSourceSnapshot>("get_text_source_snapshot");
+        if (latest?.status && latest.status !== "pending") return latest;
+      } catch {
+        return latest;
+      }
+      await sleep(12);
+    }
+    return latest;
+  };
+
+  const primeTextSourceSnapshot = (reason: string, timeoutMs = 120) => {
+    const promise = readTextSourceSnapshot(timeoutMs).then((snapshot) => {
+      if (snapshot?.status === "success") {
+        console.info("[Text Source Snapshot]", reason, {
+          elements: snapshot.elements?.length || 0,
+          timings: snapshot.timings,
+        });
+      }
+      return snapshot;
+    });
+    textSourceSnapshotPromiseRef.current = promise;
+    return promise;
+  };
+
+  const prewarmLocalOcrWorker = (reason: string) => {
+    if (configRef.current.rapidOcrWorkerEnabled === false) return null;
+    if (ocrPrewarmPromiseRef.current) return ocrPrewarmPromiseRef.current;
+
+    const promise = invoke("prewarm_local_ocr_models")
+      .then((result) => {
+        console.info("[RapidOCR Worker Prewarm]", reason, result);
+        return result;
+      })
+      .catch((error) => {
+        console.warn("[RapidOCR Worker Prewarm] failed", reason, error);
+        return null;
+      })
+      .finally(() => {
+        window.setTimeout(() => {
+          if (ocrPrewarmPromiseRef.current === promise) {
+            ocrPrewarmPromiseRef.current = null;
+          }
+        }, 5000);
+      });
+    ocrPrewarmPromiseRef.current = promise;
+    return promise;
+  };
+
+  const buildTextSourceBlocksForSelection = (snapshot: TextSourceSnapshot | null, selection: Rect) => {
+    if (!snapshot || snapshot.status !== "success" || !snapshot.screen || !snapshot.elements?.length) {
+      return buildTextSourceBlocksForPhysicalSelection([], undefined, { x: 0, y: 0, w: 0, h: 0 });
+    }
+    let physicalSelection: Rect;
+    try {
+      physicalSelection = getPhysicalSelection({
+        canvas: canvasRef.current,
+        image: imageRef.current,
+        rect: selection,
+      });
+    } catch {
+      return buildTextSourceBlocksForPhysicalSelection([], undefined, { x: 0, y: 0, w: 0, h: 0 });
+    }
+    return buildTextSourceBlocksForPhysicalSelection(snapshot.elements, snapshot.screen, physicalSelection);
+  };
+
+  const getTextSourceBlocksForCurrentSelection = async (timeoutMs = 80) => {
+    const started = performance.now();
+    const snapshot = await Promise.race([
+      textSourceSnapshotPromiseRef.current || readTextSourceSnapshot(timeoutMs),
+      sleep(timeoutMs).then(() => null),
+    ]);
+    const textSourceSelection = buildTextSourceBlocksForSelection(snapshot, rectRef.current);
+    const blocks = textSourceSelection.blocks;
+    const charCount = blocks.reduce((sum, block) => sum + block.text.length, 0);
+    const usable = blocks.length > 0 && charCount >= 2 && textSourceSelection.maxElementCoverage >= 0.55;
+    return {
+      usable,
+      blocks: usable ? blocks : [],
+      elapsedMs: Math.round(performance.now() - started),
+      status: snapshot?.status || "empty",
+      rawCount: snapshot?.elements?.length || 0,
+      matchedRawCount: textSourceSelection.matchedRawCount,
+      rejectedRawCount: textSourceSelection.rejectedRawCount,
+      rejectedAggregateCount: textSourceSelection.rejectedAggregateCount,
+      maxElementCoverage: Number(textSourceSelection.maxElementCoverage.toFixed(3)),
+      maxSelectionCoverage: Number(textSourceSelection.maxSelectionCoverage.toFixed(3)),
+    };
+  };
 
   const waitForStableViewport = async (img: HTMLImageElement) => {
     let lastW = 0;
@@ -529,6 +700,82 @@ export default function ScreenshotPage() {
       lastW = w;
       lastH = h;
     }
+  };
+
+  const focusScreenshotCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.focus({ preventScroll: true });
+  };
+
+  const releaseCanvasPointer = (canvas: HTMLCanvasElement, pointerId = activePointerIdRef.current) => {
+    if (pointerId === null) return;
+    try {
+      if (canvas.hasPointerCapture(pointerId)) {
+        canvas.releasePointerCapture(pointerId);
+      }
+    } catch {
+    }
+    if (activePointerIdRef.current === pointerId) {
+      activePointerIdRef.current = null;
+    }
+  };
+
+  const startPlainSelectionAt = (cx: number, cy: number) => {
+    if (!overlayVisibleRef.current) return false;
+    if (hasSelectedRef.current || isSelectingRef.current || isDraggingRef.current || isResizingRef.current) return false;
+    if (isEditingRef.current || recordingPickerModeRef.current || scrollCaptureModeRef.current !== "idle") return false;
+    pendingDetectionRef.current = null;
+    mouseDownRef.current = { x: cx, y: cy };
+    startPosRef.current = { x: cx, y: cy };
+    isSelectingRef.current = true;
+    setIsSelecting(true);
+    setHoverCandidate(null);
+    setCurrentRect({ x: cx, y: cy, w: 0, h: 0 }, true);
+    setSelection(false);
+    nativePointerRecoveryStartedRef.current = true;
+    renderNeededRef.current = true;
+    return true;
+  };
+
+  const stopNativePointerRecovery = () => {
+    if (nativePointerRecoveryTimerRef.current !== null) {
+      window.clearInterval(nativePointerRecoveryTimerRef.current);
+      nativePointerRecoveryTimerRef.current = null;
+    }
+    nativePointerRecoveryPendingRef.current = false;
+  };
+
+  const tryRecoverNativePointerDown = async () => {
+    if (nativePointerRecoveryPendingRef.current || nativePointerRecoveryStartedRef.current) return;
+    if (!overlayVisibleRef.current || hasSelectedRef.current || isSelectingRef.current) return;
+    nativePointerRecoveryPendingRef.current = true;
+    try {
+      const state = await invoke<NativePointerState>("get_screenshot_pointer_state", { label: getCurrentWindow().label });
+      const x = Math.round(Number(state?.x ?? -1));
+      const y = Math.round(Number(state?.y ?? -1));
+      const inBounds = x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight;
+      if (state?.leftDown && inBounds && startPlainSelectionAt(x, y)) {
+        stopNativePointerRecovery();
+      }
+    } catch {
+    } finally {
+      nativePointerRecoveryPendingRef.current = false;
+    }
+  };
+
+  const startNativePointerRecovery = () => {
+    stopNativePointerRecovery();
+    nativePointerRecoveryStartedRef.current = false;
+    const deadline = performance.now() + 900;
+    nativePointerRecoveryTimerRef.current = window.setInterval(() => {
+      if (!overlayVisibleRef.current || performance.now() > deadline || nativePointerRecoveryStartedRef.current) {
+        stopNativePointerRecovery();
+        return;
+      }
+      tryRecoverNativePointerDown();
+    }, 16);
+    tryRecoverNativePointerDown();
   };
 
   useEffect(() => {
@@ -555,6 +802,12 @@ export default function ScreenshotPage() {
     listen<string>("screenshot-mode", (event) => {
       const nextMode = event.payload || "normal";
       setScreenshotMode(nextMode);
+      if (nextMode === "translate") {
+        prewarmLocalOcrWorker("translate-hotkey");
+        prewarmTranslationServices(configRef.current, { reason: "translate-hotkey" })
+          .then(setTranslationPrewarm)
+          .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
+      }
       if (nextMode === "record") {
         setRecordingMode("region");
         recordingModeRef.current = "region";
@@ -577,13 +830,23 @@ export default function ScreenshotPage() {
       .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
-    listen("screenshot-updated", (event) => {
-      const base64 = event.payload as string;
-      if (base64) {
-        loadFullscreenFromBase64(base64);
-      } else {
-        loadFullscreen();
+    listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => {
+      primeTextSourceSnapshot("screenshot-updated", 160);
+      const payload = event.payload;
+      if (typeof payload === "string") {
+        if (payload) loadFullscreenFromBase64(payload);
+        else loadFullscreen();
+        return;
       }
+      if (payload?.kind === "file" && payload.path) {
+        loadFullscreenFromFile(payload.path, payload.bytes);
+        return;
+      }
+      if (payload?.base64) {
+        loadFullscreenFromBase64(payload.base64);
+        return;
+      }
+      loadFullscreen();
     })
       .then((unsub) => { unlistenEvent = unsub; })
       .catch(() => {});
@@ -706,6 +969,7 @@ export default function ScreenshotPage() {
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      stopNativePointerRecovery();
     };
   }, []);
 
@@ -741,7 +1005,13 @@ export default function ScreenshotPage() {
 
   const loadConfig = async () => {
     try {
-      setConfig(JSON.parse(await invoke<string>("get_config")));
+      const parsedConfig = JSON.parse(await invoke<string>("get_config"));
+      configRef.current = parsedConfig;
+      setConfig(parsedConfig);
+      prewarmLocalOcrWorker("screenshot-page-load");
+      prewarmTranslationServices(parsedConfig, { reason: "screenshot-page-load" })
+        .then(setTranslationPrewarm)
+        .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
     } catch {
       setConfig({});
     }
@@ -807,6 +1077,23 @@ export default function ScreenshotPage() {
     }
   };
 
+  const loadFullscreenFromFile = (path: string, bytes?: number) => {
+    const sessionId = startNewCaptureSession();
+    try {
+      if (!path) {
+        loadFullscreen();
+        return;
+      }
+      loadWindowRects(true);
+      loadImageFromSource(`${convertFileSrc(path)}?t=${Date.now()}`, sessionId, bytes);
+    } catch (err: any) {
+      if (sessionId !== captureIdRef.current) return;
+      const msg = err?.message || err?.toString?.() || String(err);
+      console.error("[ScreenshotPage] loadFullscreenFromFile failed:", msg);
+      loadFullscreen();
+    }
+  };
+
   const loadImageFromBase64 = (base64: string, sessionId: number) => {
     if (sessionId !== captureIdRef.current) return;
 
@@ -816,7 +1103,14 @@ export default function ScreenshotPage() {
     }
 
     const dataUrl = "data:image/png;base64," + base64;
+    loadImageFromSource(dataUrl, sessionId, Math.round(base64.length * 0.75));
+  };
+
+  const loadImageFromSource = (source: string, sessionId: number, bytes?: number) => {
+    if (sessionId !== captureIdRef.current) return;
+
     const img = new Image();
+    img.crossOrigin = "anonymous";
 
     // Start a 1500ms fallback safety timer
     timeoutRef.current = setTimeout(() => {
@@ -847,22 +1141,23 @@ export default function ScreenshotPage() {
         imageLoaded: true, 
         imageWidth: img.naturalWidth, 
         imageHeight: img.naturalHeight, 
-        screenshotBytes: Math.round(base64.length * 0.75), 
+        screenshotBytes: bytes || 0,
         errorMsg: "" 
       });
       setScreenshotState("ready");
-      await waitForStableViewport(img);
+      await nextFrame();
       initCanvas(img);
 
       requestAnimationFrame(() => {
-        requestAnimationFrame(async () => {
-          if (sessionId !== captureIdRef.current) return;
-          overlayVisibleRef.current = true;
-          setOverlayVisible(true);
-          await invoke("overlay_ready_to_show", { label: getCurrentWindow().label }).catch((err) => {
-            console.error("[ScreenshotPage] overlay_ready_to_show failed:", err);
-          });
+        if (sessionId !== captureIdRef.current) return;
+        overlayVisibleRef.current = true;
+        setOverlayVisible(true);
+        focusScreenshotCanvas();
+        invoke("overlay_ready_to_show", { label: getCurrentWindow().label }).catch((err) => {
+          console.error("[ScreenshotPage] overlay_ready_to_show failed:", err);
         });
+        requestAnimationFrame(focusScreenshotCanvas);
+        startNativePointerRecovery();
       });
     };
 
@@ -872,10 +1167,10 @@ export default function ScreenshotPage() {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
-      console.warn("[ScreenshotPage] image decode failed", sessionId, dataUrl.length);
+      console.warn("[ScreenshotPage] image decode failed", sessionId, source.length);
       cancelScreenshot();
     };
-    img.src = dataUrl;
+    img.src = source;
   };
 
   const initCanvas = (img: HTMLImageElement) => {
@@ -981,8 +1276,15 @@ export default function ScreenshotPage() {
 
   const cancelTextDraft = () => setEditingTextDraft(null);
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!overlayVisibleRef.current) return;
+    focusScreenshotCanvas();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      activePointerIdRef.current = e.pointerId;
+    } catch {
+      activePointerIdRef.current = null;
+    }
     if (e.button === 2) {
       e.preventDefault();
       if (hasSelectedRef.current) {
@@ -1073,18 +1375,23 @@ export default function ScreenshotPage() {
       return;
     }
 
-    isSelectingRef.current = true;
-    setIsSelecting(true);
-    setHoverCandidate(null);
-    startPosRef.current = { x: cx, y: cy };
-    setCurrentRect({ x: cx, y: cy, w: 0, h: 0 }, true);
-    setSelection(false);
+    startPlainSelectionAt(cx, cy);
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!overlayVisibleRef.current) return;
     const cx = e.clientX;
     const cy = e.clientY;
+    if (
+      (e.buttons & 1) === 1
+      && !nativePointerRecoveryStartedRef.current
+      && !hasSelectedRef.current
+      && !isSelectingRef.current
+      && !isDraggingRef.current
+      && !isResizingRef.current
+    ) {
+      startPlainSelectionAt(cx, cy);
+    }
     lastMouseRef.current = { x: cx, y: cy };
     if (mouseTrackerRef.current) {
       mouseTrackerRef.current.style.left = `${cx + 16}px`;
@@ -1227,8 +1534,9 @@ export default function ScreenshotPage() {
     e.currentTarget.style.cursor = detected ? "pointer" : "crosshair";
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
     if (!overlayVisibleRef.current) return;
+    if (e) releaseCanvasPointer(e.currentTarget, e.pointerId);
     const wasSelecting = isSelectingRef.current;
     const pendingDetection = pendingDetectionRef.current;
     pendingDetectionRef.current = null;
@@ -1275,6 +1583,17 @@ export default function ScreenshotPage() {
   const handleDoubleClick = () => {
     if (!overlayVisibleRef.current) return;
     if (hasSelectedRef.current) confirmScreenshot("copy");
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    releaseCanvasPointer(e.currentTarget, e.pointerId);
+    isSelectingRef.current = false;
+    setIsSelecting(false);
+    isDraggingRef.current = false;
+    isResizingRef.current = null;
+    isDraggingAnnotationRef.current = false;
+    isResizingAnnotationRef.current = false;
+    annotationResizeHandleRef.current = null;
   };
 
   function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement) {
@@ -1342,6 +1661,12 @@ export default function ScreenshotPage() {
 
   const captureRegionBase64 = async () => {
     const { x, y, w, h } = getCurrentPhysicalSelection();
+    try {
+      const cropped = cropCurrentSelectionFromLoadedImage();
+      if (cropped.base64) return cropped.base64;
+    } catch (error) {
+      console.warn("[ScreenshotPage] client-side crop failed, falling back to Rust crop", error);
+    }
     return await invoke<string>("capture_region", { x, y, w, h });
   };
 
@@ -1393,23 +1718,77 @@ export default function ScreenshotPage() {
     if (isTranslatingRef.current || isOCRingRef.current) return;
     const startTime = performance.now();
     let base64 = "";
+    prewarmLocalOcrWorker("translate-action");
+    prewarmTranslationServices(configRef.current, { reason: "translate-action" })
+      .then((summary) => {
+        setTranslationPrewarm(summary);
+        return summary;
+      })
+      .catch((error) => {
+        console.warn("[Translation Service Prewarm] failed", error);
+        return null;
+      });
     try {
       setIsTranslating(true);
+      setTranslateRuntimeInfo(null);
       message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u5e76\u7ffb\u8bd1...", key: "translate", duration: 0 });
+      const captureStarted = performance.now();
       base64 = await captureRegionBase64();
+      const captureMs = Math.round(performance.now() - captureStarted);
 
       let resultBase64 = "";
       let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
       let blocksCount = 1;
       let translationQuality: Awaited<ReturnType<typeof translateWithLocalOcr>>["translationQuality"] | null = null;
       try {
-        const result = await translateWithLocalOcr(base64, configRef.current);
+        const localFlowStarted = performance.now();
+        const textSource = await getTextSourceBlocksForCurrentSelection(80);
+        const result = textSource.usable
+          ? await translateOcrBlocks(base64, textSource.blocks, configRef.current, {
+              flowStarted: localFlowStarted,
+              ocrMs: textSource.elapsedMs,
+              source: "text-source",
+            })
+          : await translateWithLocalOcr(base64, configRef.current);
+        console.info("[Local Translate Flow] timings", {
+          captureMs,
+          ocrTranslateRenderMs: Math.round(performance.now() - localFlowStarted),
+          totalMs: Math.round(performance.now() - startTime),
+          server: result.usedServerUrl,
+          channel: result.usedChannel,
+          blocks: result.blocksCount,
+          textSource,
+          localTimings: result.localTimings,
+          serverTimings: result.translationTimings,
+        });
         resultBase64 = result.resultBase64;
         usedChannel = result.usedChannel;
         blocksCount = result.blocksCount;
         translationQuality = result.translationQuality;
         setTranslatePairs(result.pairs);
         setTranslateResultPreviewBase64(resultBase64);
+        setTranslateRuntimeInfo({
+          source: result.localTimings?.source,
+          serviceUrl: result.usedServerUrl,
+          channel: result.usedChannel,
+          blocks: result.blocksCount,
+          captureMs,
+          totalMs: Math.round(performance.now() - startTime),
+          ocrMs: result.localTimings?.ocrMs,
+          translationMs: result.localTimings?.translationMs,
+          retryMs: result.localTimings?.retryMs,
+          renderMs: result.localTimings?.renderMs,
+          serverTotalMs: result.translationTimings?.total_ms,
+          providerMs: result.translationTimings?.provider_ms,
+          cacheHits: result.translationTimings?.cache_hits,
+          requestedBlocks: result.translationMemoryStats?.requestedBlocks,
+          memoryHits: result.translationMemoryStats?.memoryHits,
+          glossaryHits: result.translationMemoryStats?.glossaryHits,
+          preservedHits: result.translationMemoryStats?.preservedHits,
+          badTranslationCount: result.translationQuality?.badTranslationCount,
+          untranslatedCount: result.translationQuality?.untranslatedCount,
+          prewarm: result.servicePrewarm || translationPrewarm,
+        });
       } catch (localErr: any) {
         console.warn("[Local Translate Flow] failed", localErr);
         throw localErr;
@@ -1888,6 +2267,7 @@ export default function ScreenshotPage() {
   };
 
   const resetScreenshotState = () => {
+    stopNativePointerRecovery();
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -1988,6 +2368,25 @@ export default function ScreenshotPage() {
 
   const currentToolbarStyle = getActionToolbarStyle({ rect, toolbarSize: actionToolbarSize, fallbackSize: recordingStatus !== "idle" || recordingPickerMode || scrollCaptureMode !== "idle" ? RECORDING_TOOLBAR_FALLBACK_SIZE : ACTION_TOOLBAR_FALLBACK_SIZE, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, margin: FLOATING_PANEL_MARGIN, gap: FLOATING_PANEL_GAP });
   const currentOverlayToolbarStyle: React.CSSProperties = { ...currentToolbarStyle, padding: 0, border: "none", boxShadow: "none", background: "transparent" };
+  const translateDiagnosticTop = hasSelected ? Math.max(12, rect.y - 36) : 12;
+  const translateDiagnosticLeft = hasSelected ? clamp(rect.x, 12, Math.max(12, window.innerWidth - 520)) : 12;
+  const translateDiagnosticText = isTranslating
+    ? "正在识别并翻译…"
+    : translateRuntimeInfo
+      ? [
+          `总 ${translateRuntimeInfo.totalMs}ms`,
+          translateRuntimeInfo.source === "text-source" ? "源 文本" : "源 OCR",
+          `OCR ${translateRuntimeInfo.ocrMs ?? "-"}ms`,
+          `翻译 ${translateRuntimeInfo.translationMs ?? "-"}ms`,
+          translateRuntimeInfo.serverTotalMs !== undefined ? `服务端 ${translateRuntimeInfo.serverTotalMs}ms` : "",
+          translateRuntimeInfo.providerMs !== undefined ? `模型 ${translateRuntimeInfo.providerMs}ms` : "",
+          `服务 ${formatServiceHost(translateRuntimeInfo.serviceUrl)}`,
+          translateRuntimeInfo.requestedBlocks !== undefined ? `请求 ${translateRuntimeInfo.requestedBlocks}/${translateRuntimeInfo.blocks}` : `${translateRuntimeInfo.blocks} 行`,
+          translateRuntimeInfo.cacheHits !== undefined ? `缓存 ${translateRuntimeInfo.cacheHits}` : "",
+          translateRuntimeInfo.badTranslationCount ? `风险 ${translateRuntimeInfo.badTranslationCount}` : "",
+          translateRuntimeInfo.untranslatedCount ? `未译 ${translateRuntimeInfo.untranslatedCount}` : "",
+        ].filter(Boolean).join(" · ")
+      : "";
   const currentRecordingDevices = getRecordingDevices();
   const audioOptions = [
     { label: "静音", value: "none" },
@@ -2004,6 +2403,34 @@ export default function ScreenshotPage() {
 
       {isTranslating && <TranslationLoadingOverlay rect={rect} />}
 
+      {overlayVisible && hasSelected && translateDiagnosticText && (
+        <div
+          style={{
+            position: "absolute",
+            top: translateDiagnosticTop,
+            left: translateDiagnosticLeft,
+            zIndex: 22,
+            maxWidth: Math.min(520, window.innerWidth - 24),
+            padding: "7px 10px",
+            borderRadius: 999,
+            background: "rgba(15, 23, 42, 0.82)",
+            color: "#fff",
+            fontSize: 12,
+            fontWeight: 700,
+            lineHeight: "18px",
+            boxShadow: "0 10px 28px rgba(15,23,42,0.24)",
+            backdropFilter: "blur(10px)",
+            pointerEvents: "none",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+          title={translateDiagnosticText}
+        >
+          {translateDiagnosticText}
+        </div>
+      )}
+
       {editingTextDraft && (
         <TextAnnotationEditor
           draft={editingTextDraft}
@@ -2013,7 +2440,7 @@ export default function ScreenshotPage() {
         />
       )}
 
-      <canvas ref={canvasRef} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair" }} />
+      <canvas ref={canvasRef} tabIndex={-1} onPointerDown={handleMouseDown} onPointerMove={handleMouseMove} onPointerUp={handleMouseUp} onPointerCancel={handlePointerCancel} onDoubleClick={handleDoubleClick} style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none" }} />
 
 
       {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (

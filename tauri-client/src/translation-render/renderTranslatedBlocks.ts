@@ -6,7 +6,7 @@ import { getTranslationFontFamily } from "./textLayout";
 
 const estimateOriginalFontSize = (rawHeight: number) => {
   const scale = rawHeight <= 18 ? 0.96 : 0.82;
-  return Math.max(10, Math.min(64, Math.round(rawHeight * scale)));
+  return Math.max(7, Math.min(64, Math.round(rawHeight * scale)));
 };
 
 const splitRenderLines = (text: string) => (
@@ -15,6 +15,59 @@ const splitRenderLines = (text: string) => (
     .map((line) => line.trim())
     .filter(Boolean)
 );
+
+const splitWrappableUnits = (line: string) => {
+  if (/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(line)) return Array.from(line);
+  const words = line.split(/(\s+)/).filter((item) => item.length > 0);
+  return words.length > 1 ? words : Array.from(line);
+};
+
+const wrapLineToWidth = (ctx: CanvasRenderingContext2D, line: string, maxWidth: number) => {
+  if (ctx.measureText(line).width <= maxWidth) return [line];
+  const wrapped: string[] = [];
+  let current = "";
+  for (const unit of splitWrappableUnits(line)) {
+    const next = current + unit;
+    if (current && ctx.measureText(next.trim()).width > maxWidth) {
+      wrapped.push(current.trim());
+      current = unit.trimStart();
+    } else {
+      current = next;
+    }
+  }
+  if (current.trim()) wrapped.push(current.trim());
+  return wrapped.length ? wrapped : [line];
+};
+
+const wrapLinesToWidth = (ctx: CanvasRenderingContext2D, lines: string[], maxWidth: number) => (
+  lines.flatMap((line) => wrapLineToWidth(ctx, line, maxWidth))
+);
+
+const fitTextInRegion = (
+  ctx: CanvasRenderingContext2D,
+  lines: string[],
+  baseFontSize: number,
+  drawWidth: number,
+  drawHeight: number,
+) => {
+  let fontSize = baseFontSize;
+  let renderLines = lines;
+  let lineHeight = Math.max(8, Math.round(fontSize * 1.12));
+  const minFontSize = Math.min(10, Math.max(6, baseFontSize - 4));
+  while (fontSize > minFontSize) {
+    ctx.font = `${fontSize}px ${getTranslationFontFamily()}`;
+    renderLines = wrapLinesToWidth(ctx, lines, drawWidth);
+    lineHeight = Math.max(8, Math.round(fontSize * 1.12));
+    const maxLineWidth = Math.max(...renderLines.map((line) => ctx.measureText(line).width), 1);
+    const totalTextHeight = renderLines.length * lineHeight;
+    if (maxLineWidth <= drawWidth + 0.5 && totalTextHeight <= drawHeight + lineHeight * 0.35) break;
+    fontSize -= 1;
+  }
+  ctx.font = `${fontSize}px ${getTranslationFontFamily()}`;
+  renderLines = wrapLinesToWidth(ctx, lines, drawWidth);
+  lineHeight = Math.max(8, Math.round(fontSize * 1.12));
+  return { fontSize, renderLines, lineHeight };
+};
 
 export const renderTranslatedBlocks = (
   base64Image: string,
@@ -67,21 +120,36 @@ export const renderTranslatedBlocks = (
         ctx.fillStyle = `rgb(${background.r}, ${background.g}, ${background.b})`;
         ctx.fillRect(eraseX, eraseY, eraseRight - eraseX, eraseBottom - eraseY);
 
-        ctx.font = `${baseFontSize}px ${getTranslationFontFamily()}`;
+        const fitted = fitTextInRegion(
+          ctx,
+          lines,
+          baseFontSize,
+          Math.max(1, eraseRight - eraseX - paddingX * 2),
+          Math.max(1, eraseBottom - eraseY - paddingY * 2),
+        );
+        ctx.font = `${fitted.fontSize}px ${getTranslationFontFamily()}`;
         ctx.fillStyle = fontColor;
         ctx.textBaseline = "middle";
         ctx.textAlign = block.direction === "rtl" ? "right" : "left";
         ctx.direction = block.direction === "rtl" ? "rtl" : "ltr";
 
-        const totalTextHeight = lines.length * lineHeight;
-        let y = lines.length <= 1
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(eraseX, eraseY, eraseRight - eraseX, eraseBottom - eraseY);
+        ctx.clip();
+
+        const totalTextHeight = fitted.renderLines.length * fitted.lineHeight;
+        let y = fitted.renderLines.length <= 1
           ? block.minY + rawHeight / 2
-          : block.minY + Math.max(baseFontSize / 2, totalTextHeight / 2 - lineHeight / 2);
-        const textX = block.direction === "rtl" ? block.maxX : block.minX;
-        for (const line of lines) {
+          : Math.max(eraseY + paddingY + fitted.fontSize / 2, block.minY + Math.max(fitted.fontSize / 2, totalTextHeight / 2 - fitted.lineHeight / 2));
+        const textX = block.direction === "rtl"
+          ? Math.min(block.maxX, eraseRight - paddingX)
+          : Math.max(block.minX, eraseX + paddingX);
+        for (const line of fitted.renderLines) {
           ctx.fillText(line, textX, y);
-          y += lineHeight;
+          y += fitted.lineHeight;
         }
+        ctx.restore();
       });
 
       const base64Png = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");

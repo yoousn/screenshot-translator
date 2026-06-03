@@ -24,6 +24,7 @@ export default function useOcrConfigController() {
       localOcrTimeoutMs: parsed.localOcrTimeoutMs || 15000,
       rapidOcrModelVersion: parsed.rapidOcrModelVersion === "v4" ? "v4" : "v5",
       rapidOcrMode: parsed.rapidOcrMode || "auto",
+      rapidOcrWorkerEnabled: parsed.rapidOcrWorkerEnabled !== false,
     });
   };
 
@@ -37,6 +38,10 @@ export default function useOcrConfigController() {
         fallbackToRemoteOcr: false,
         rapidOcrModelVersion: patch.rapidOcrModelVersion || config.rapidOcrModelVersion || "v5",
         rapidOcrMode: patch.rapidOcrMode || config.rapidOcrMode || "auto",
+        rapidOcrWorkerEnabled:
+          typeof patch.rapidOcrWorkerEnabled === "boolean"
+            ? patch.rapidOcrWorkerEnabled
+            : config.rapidOcrWorkerEnabled !== false,
       };
       await invoke("save_config", { configStr: JSON.stringify(next) });
       setConfig(next);

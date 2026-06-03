@@ -12,6 +12,7 @@ export default function useRapidOcrController(options: UseRapidOcrControllerOpti
   const [status, setStatus] = useState<RapidOcrStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [selfTesting, setSelfTesting] = useState(false);
+  const [workerBusy, setWorkerBusy] = useState(false);
   const [lastSelfTest, setLastSelfTest] = useState<RapidOcrSelfTestResult | null>(null);
 
   const refreshStatus = async () => {
@@ -48,6 +49,45 @@ export default function useRapidOcrController(options: UseRapidOcrControllerOpti
     }
   };
 
+  const startWorker = async () => {
+    setWorkerBusy(true);
+    try {
+      await invoke("start_rapid_ocr_worker");
+      message.success("RapidOCR 常驻识别服务已启动。");
+      await refreshStatus();
+    } catch (error: any) {
+      message.error(`启动 RapidOCR 常驻服务失败：${error?.message || error}`);
+    } finally {
+      setWorkerBusy(false);
+    }
+  };
+
+  const stopWorker = async () => {
+    setWorkerBusy(true);
+    try {
+      await invoke("stop_rapid_ocr_worker");
+      message.success("RapidOCR 常驻识别服务已停止。");
+      await refreshStatus();
+    } catch (error: any) {
+      message.error(`停止 RapidOCR 常驻服务失败：${error?.message || error}`);
+    } finally {
+      setWorkerBusy(false);
+    }
+  };
+
+  const restartWorker = async () => {
+    setWorkerBusy(true);
+    try {
+      await invoke("restart_rapid_ocr_worker");
+      message.success("RapidOCR 常驻识别服务已重启。");
+      await refreshStatus();
+    } catch (error: any) {
+      message.error(`重启 RapidOCR 常驻服务失败：${error?.message || error}`);
+    } finally {
+      setWorkerBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (autoRefresh) {
       refreshStatus();
@@ -64,8 +104,12 @@ export default function useRapidOcrController(options: UseRapidOcrControllerOpti
     status,
     loadingStatus,
     selfTesting,
+    workerBusy,
     lastSelfTest,
     refreshStatus,
     runSelfTest,
+    startWorker,
+    stopWorker,
+    restartWorker,
   };
 }

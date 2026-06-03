@@ -18,6 +18,18 @@ export type RapidOcrStatus = {
   modelPacksReady?: boolean;
   activeModelsReady?: boolean;
   selfTestReady?: boolean;
+  workerEnabled?: boolean;
+  workerRunning?: boolean;
+  worker?: {
+    enabled?: boolean;
+    running?: boolean;
+    pid?: number;
+    runnerKind?: string;
+    runnerPath?: string;
+    lastError?: string | null;
+    cachedEngines?: Array<{ lang?: string; version?: string; modelRoot?: string }>;
+    status?: Record<string, unknown>;
+  } | null;
   runtime: "rapidocr" | string;
   engine?: string;
   runnerKind?: string;

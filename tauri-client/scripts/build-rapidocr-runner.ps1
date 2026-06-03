@@ -68,6 +68,12 @@ if (-not $SkipInstall) {
   --specpath $specDir `
   --collect-data rapidocr `
   --collect-binaries onnxruntime `
+  --hidden-import _socket `
+  --hidden-import select `
+  --hidden-import _ssl `
+  --hidden-import _hashlib `
+  --hidden-import _bz2 `
+  --hidden-import _lzma `
   --exclude-module torch `
   --exclude-module paddle `
   --exclude-module tensorflow `
@@ -86,6 +92,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 if (-not (Test-Path -LiteralPath $runnerExe)) {
   throw "RapidOCR runner build did not create: $runnerExe"
+}
+
+$internalDir = Join-Path $runnerDir "_internal"
+foreach ($requiredPattern in @("_socket*.pyd", "select*.pyd")) {
+  $found = Get-ChildItem -Path $internalDir -Recurse -Filter $requiredPattern -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $found) {
+    throw "RapidOCR runner is missing required Python extension: $requiredPattern"
+  }
 }
 
 New-Item -ItemType Directory -Path $modelRoot -Force | Out-Null

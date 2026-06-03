@@ -1,15 +1,17 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+mod text_source;
+
 use arboard::{Clipboard, ImageData};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use futures_util::StreamExt;
 use screenshots::Screen;
 use std::borrow::Cow;
 use std::fs;
-use std::io::Cursor;
+use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{ChildStdin, ChildStdout, Command};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -28,6 +30,11 @@ static STARTUP_READINESS: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock:
 static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 fn get_screenshot_image() -> &'static Mutex<Option<Vec<u8>>> {
     SCREENSHOT_IMAGE.get_or_init(|| Mutex::new(None))
+}
+
+static TEXT_SOURCE_SNAPSHOT: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+fn get_text_source_snapshot_state() -> &'static Mutex<Option<serde_json::Value>> {
+    TEXT_SOURCE_SNAPSHOT.get_or_init(|| Mutex::new(None))
 }
 
 #[derive(Clone, Copy)]
@@ -284,6 +291,7 @@ fn app_data_dir() -> PathBuf {
 
 fn cleanup_temp_files() {
     let _ = stop_recording_internal(1500);
+    let _ = stop_rapid_ocr_worker_internal(1500);
     let mut path = app_data_dir();
     path.push("fullscreen_temp.png");
     if path.exists() {
@@ -331,6 +339,22 @@ fn config_value_string(key: &str) -> Option<String> {
         .and_then(|value| value.as_str())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn config_value_bool(key: &str) -> Option<bool> {
+    let mut path = app_data_dir();
+    path.push("config.json");
+    let content = fs::read_to_string(path).ok()?;
+    let config = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    match config.get(key)? {
+        serde_json::Value::Bool(value) => Some(*value),
+        serde_json::Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn sanitize_tag(tag: &str) -> String {
@@ -481,10 +505,22 @@ mod win32 {
         pub fn DestroyWindow(hWnd: isize) -> i32;
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
         pub fn UpdateWindow(hWnd: isize) -> i32;
+        pub fn SetWindowPos(
+            hWnd: isize,
+            hWndInsertAfter: isize,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: u32,
+        ) -> i32;
         pub fn BringWindowToTop(hWnd: isize) -> i32;
         pub fn SetForegroundWindow(hWnd: isize) -> i32;
         pub fn SetActiveWindow(hWnd: isize) -> isize;
         pub fn SetFocus(hWnd: isize) -> isize;
+        pub fn GetForegroundWindow() -> isize;
+        pub fn GetCurrentThreadId() -> u32;
+        pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
         pub fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
         pub fn PostQuitMessage(nExitCode: i32);
         pub fn GetMessageW(
@@ -508,11 +544,8 @@ mod win32 {
         pub fn GetWindowTextLengthW(hWnd: isize) -> i32;
         pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
         pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
-        pub fn OpenProcess(
-            dwDesiredAccess: u32,
-            bInheritHandle: i32,
-            dwProcessId: u32,
-        ) -> isize;
+        pub fn GetAsyncKeyState(vKey: i32) -> i16;
+        pub fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> isize;
         pub fn QueryFullProcessImageNameW(
             hProcess: isize,
             dwFlags: u32,
@@ -634,15 +667,48 @@ fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) 
     if let Ok(hwnd) = window.hwnd() {
         let hwnd = hwnd.0 as isize;
         unsafe {
+            let foreground = win32::GetForegroundWindow();
+            let current_thread = win32::GetCurrentThreadId();
+            let foreground_thread = if foreground != 0 {
+                win32::GetWindowThreadProcessId(foreground, std::ptr::null_mut())
+            } else {
+                0
+            };
+            let attached = foreground_thread != 0
+                && foreground_thread != current_thread
+                && win32::AttachThreadInput(current_thread, foreground_thread, 1) != 0;
+            let _ = win32::ShowWindow(hwnd, SW_SHOW);
+            let _ = win32::SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
             let _ = win32::BringWindowToTop(hwnd);
             let _ = win32::SetForegroundWindow(hwnd);
             let _ = win32::SetActiveWindow(hwnd);
             let _ = win32::SetFocus(hwnd);
+            if attached {
+                let _ = win32::AttachThreadInput(current_thread, foreground_thread, 0);
+            }
         }
     }
     let _ = window.set_focus();
 }
 
+#[cfg(target_os = "windows")]
+const SW_SHOW: i32 = 5;
+#[cfg(target_os = "windows")]
+const HWND_TOPMOST: isize = -1;
+#[cfg(target_os = "windows")]
+const SWP_NOSIZE: u32 = 0x0001;
+#[cfg(target_os = "windows")]
+const SWP_NOMOVE: u32 = 0x0002;
+#[cfg(target_os = "windows")]
+const SWP_SHOWWINDOW: u32 = 0x0040;
 #[cfg(target_os = "windows")]
 const RECORDING_OVERLAY_CLASS: &str = "YSNRecordingOverlayNative";
 #[cfg(target_os = "windows")]
@@ -929,6 +995,7 @@ fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
 
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
+    start_text_source_snapshot_capture(&app);
 
     // Treat the settings panel like any other app window during screenshots.
     // If it is visible on screen it is captured; if it is covered it is not.
@@ -938,9 +1005,9 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     }
     close_screenshot_windows(&app, false);
 
-    // Capture and encode on a blocking thread to avoid blocking the async runtime
-    let (png_bytes, base64_data, screen_info) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<u8>, String, (i32, i32, u32, u32)), String> {
+    // Capture and encode on a blocking thread to avoid blocking the async runtime.
+    let (png_bytes, screen_info) = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
             let screens =
                 Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
             if screens.is_empty() {
@@ -962,8 +1029,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
                 .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
                 .map_err(|e| format!("Encode PNG failed: {}", e))?;
             let png_bytes = buffer.into_inner();
-            let base64_data = BASE64_STANDARD.encode(&png_bytes);
-            Ok((png_bytes, base64_data, screen_info))
+            Ok((png_bytes, screen_info))
         },
     )
     .await
@@ -979,15 +1045,20 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     let write_path = write_dir.join("fullscreen_temp.png");
     let legacy_write_path = write_dir.join("fullscreen_temp.jpg");
     let png_for_write = png_bytes.clone();
-    tokio::task::spawn_blocking(move || {
+    let write_result = tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
         if let Some(parent) = write_path.parent() {
             if !parent.exists() {
-                let _ = fs::create_dir_all(parent);
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Create screenshot temp directory failed: {}", e))?;
             }
         }
-        let _ = fs::write(&write_path, &png_for_write);
+        fs::write(&write_path, &png_for_write)
+            .map_err(|e| format!("Write screenshot temp image failed: {}", e))?;
         let _ = fs::remove_file(&legacy_write_path);
-    });
+        Ok(write_path)
+    })
+    .await
+    .map_err(|e| format!("Screenshot file write task failed: {}", e))?;
 
     let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
         win
@@ -1021,7 +1092,22 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     let _ = screenshot_win.set_always_on_top(true);
 
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
-    let _ = screenshot_win.emit("screenshot-updated", base64_data);
+    let payload = match write_result {
+        Ok(path) => serde_json::json!({
+            "kind": "file",
+            "path": path.to_string_lossy().to_string(),
+            "bytes": png_bytes.len(),
+        }),
+        Err(error) => {
+            eprintln!("[screenshot] failed to write temp file, falling back to base64 event: {error}");
+            serde_json::json!({
+                "kind": "base64",
+                "base64": BASE64_STANDARD.encode(&png_bytes),
+                "bytes": png_bytes.len(),
+            })
+        }
+    };
+    let _ = screenshot_win.emit("screenshot-updated", payload);
 
     Ok(())
 }
@@ -1038,6 +1124,43 @@ async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>) -> 
         activate_webview_window(&screenshot_win);
     }
     Ok(())
+}
+
+#[tauri::command]
+fn get_screenshot_pointer_state(
+    app: tauri::AppHandle,
+    label: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let target_label = label.unwrap_or_else(|| "screenshot".to_string());
+    if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
+        return Ok(serde_json::json!({
+            "leftDown": false,
+            "x": 0,
+            "y": 0,
+            "globalX": 0,
+            "globalY": 0
+        }));
+    }
+    let (global_x, global_y) = get_cursor_position().unwrap_or((0, 0));
+    let mut window_x = 0;
+    let mut window_y = 0;
+    if let Some(window) = app.get_webview_window(&target_label) {
+        if let Ok(position) = window.outer_position() {
+            window_x = position.x;
+            window_y = position.y;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    let left_down = unsafe { (win32::GetAsyncKeyState(0x01) & i16::MIN) != 0 };
+    #[cfg(not(target_os = "windows"))]
+    let left_down = false;
+    Ok(serde_json::json!({
+        "leftDown": left_down,
+        "x": global_x - window_x,
+        "y": global_y - window_y,
+        "globalX": global_x,
+        "globalY": global_y
+    }))
 }
 
 #[tauri::command]
@@ -1836,7 +1959,9 @@ fn process_path_for_hwnd(hwnd: isize) -> Option<PathBuf> {
     if ok == 0 || size == 0 {
         return None;
     }
-    Some(PathBuf::from(String::from_utf16_lossy(&buffer[..size as usize])))
+    Some(PathBuf::from(String::from_utf16_lossy(
+        &buffer[..size as usize],
+    )))
 }
 
 #[cfg(target_os = "windows")]
@@ -1845,6 +1970,140 @@ fn exe_name_from_path(path: Option<&PathBuf>) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or("app.exe")
         .to_string()
+}
+
+fn set_text_source_snapshot(value: serde_json::Value) {
+    if let Ok(mut guard) = get_text_source_snapshot_state().lock() {
+        *guard = Some(value);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_text_source_snapshot_capture(app: &tauri::AppHandle) {
+    let hwnd = unsafe { win32::GetForegroundWindow() };
+    if hwnd == 0 || excluded_app_hwnds(app).contains(&hwnd) {
+        set_text_source_snapshot(serde_json::json!({
+            "status": "empty",
+            "reason": "no-eligible-foreground-window",
+            "capturedAt": chrono::Local::now().to_rfc3339(),
+            "elements": [],
+        }));
+        return;
+    }
+
+    let screen = current_screen_origin();
+    let rect = hwnd_rect(hwnd, true);
+    let title = window_title(hwnd);
+    let process_path = process_path_for_hwnd(hwnd);
+    let exe_name = exe_name_from_path(process_path.as_ref());
+    let process_path_text = process_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let captured_at = chrono::Local::now().to_rfc3339();
+    set_text_source_snapshot(serde_json::json!({
+        "status": "pending",
+        "capturedAt": captured_at,
+        "window": {
+            "hwnd": hwnd.to_string(),
+            "title": title,
+            "exeName": exe_name,
+            "processPath": process_path_text,
+            "rect": rect.map(|value| serde_json::json!({
+                "x": value.left,
+                "y": value.top,
+                "w": value.right - value.left,
+                "h": value.bottom - value.top,
+            })),
+        },
+        "screen": {
+            "x": screen.0,
+            "y": screen.1,
+            "w": screen.2,
+            "h": screen.3,
+        },
+        "elements": [],
+    }));
+
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let result = text_source::collect_text_elements(hwnd, 240, 90);
+        match result {
+            Ok(elements) => {
+                set_text_source_snapshot(serde_json::json!({
+                    "status": "success",
+                    "capturedAt": captured_at,
+                    "window": {
+                        "hwnd": hwnd.to_string(),
+                        "title": title,
+                        "exeName": exe_name,
+                        "processPath": process_path_text,
+                        "rect": rect.map(|value| serde_json::json!({
+                            "x": value.left,
+                            "y": value.top,
+                            "w": value.right - value.left,
+                            "h": value.bottom - value.top,
+                        })),
+                    },
+                    "screen": {
+                        "x": screen.0,
+                        "y": screen.1,
+                        "w": screen.2,
+                        "h": screen.3,
+                    },
+                    "timings": {
+                        "totalMs": started.elapsed().as_millis(),
+                    },
+                    "elements": elements,
+                }));
+            }
+            Err(error) => {
+                set_text_source_snapshot(serde_json::json!({
+                    "status": "failed",
+                    "capturedAt": captured_at,
+                    "error": error,
+                    "window": {
+                        "hwnd": hwnd.to_string(),
+                        "title": title,
+                        "exeName": exe_name,
+                        "processPath": process_path_text,
+                    },
+                    "screen": {
+                        "x": screen.0,
+                        "y": screen.1,
+                        "w": screen.2,
+                        "h": screen.3,
+                    },
+                    "timings": {
+                        "totalMs": started.elapsed().as_millis(),
+                    },
+                    "elements": [],
+                }));
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_text_source_snapshot_capture(_app: &tauri::AppHandle) {
+    set_text_source_snapshot(serde_json::json!({
+        "status": "unsupported",
+        "capturedAt": chrono::Local::now().to_rfc3339(),
+        "elements": [],
+    }));
+}
+
+#[tauri::command]
+fn get_text_source_snapshot() -> Result<serde_json::Value, String> {
+    Ok(get_text_source_snapshot_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "status": "empty",
+                "elements": [],
+            })
+        }))
 }
 
 #[cfg(target_os = "windows")]
@@ -2182,12 +2441,14 @@ fn get_startup_readiness_snapshot() -> Result<serde_json::Value, String> {
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    Ok(snapshot.unwrap_or_else(|| serde_json::json!({
-        "checkedAt": null,
-        "rapidOcr": null,
-        "recording": null,
-        "pending": true,
-    })))
+    Ok(snapshot.unwrap_or_else(|| {
+        serde_json::json!({
+            "checkedAt": null,
+            "rapidOcr": null,
+            "recording": null,
+            "pending": true,
+        })
+    }))
 }
 
 #[tauri::command]
@@ -2850,7 +3111,6 @@ fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
 }
 
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::process::{Child, Stdio};
 use std::time::Instant;
 
@@ -2874,6 +3134,8 @@ struct RapidOcrRunnerOutput {
     model_version: Option<String>,
     #[serde(rename = "selectedLang")]
     selected_lang: Option<String>,
+    #[serde(rename = "selectedVariant")]
+    selected_variant: Option<String>,
     blocks: Option<Vec<OcrBlock>>,
     timings: Option<serde_json::Value>,
     candidates: Option<Vec<serde_json::Value>>,
@@ -2887,12 +3149,40 @@ struct RapidOcrCommandSpec {
     kind: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RapidOcrWorkerEnvelope {
+    id: u64,
+    ok: bool,
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+struct RapidOcrWorkerProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    request_id: u64,
+    spec: RapidOcrCommandSpec,
+    last_error: Option<String>,
+}
+
+static RAPID_OCR_WORKER: OnceLock<Mutex<Option<RapidOcrWorkerProcess>>> = OnceLock::new();
+
+fn rapid_ocr_worker_state() -> &'static Mutex<Option<RapidOcrWorkerProcess>> {
+    RAPID_OCR_WORKER.get_or_init(|| Mutex::new(None))
+}
+
 #[tauri::command]
 async fn prewarm_local_ocr_models(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(move || {
         let model_version = rapid_ocr_model_version();
-        run_rapidocr_probe(&app, &model_version)?;
-        Ok(vec![format!("rapidocr-{model_version}")])
+        if rapid_ocr_worker_enabled() {
+            start_rapid_ocr_worker_sync(&app, true)?;
+            Ok(vec![format!("rapidocr-{model_version}-worker")])
+        } else {
+            run_rapidocr_probe(&app, &model_version)?;
+            Ok(vec![format!("rapidocr-{model_version}")])
+        }
     })
     .await
     .map_err(|error| format!("RapidOCR prewarm task failed: {error}"))?
@@ -2938,7 +3228,7 @@ fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<O
     let temp_path = write_rapidocr_temp_image(&image_bytes)?;
     let model_version = rapid_ocr_model_version();
     let mode = rapid_ocr_mode();
-    let model_root = rapid_ocr_model_root();
+    let model_root = rapid_ocr_model_root(app);
     let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
     if !missing_models.is_empty() {
         let _ = fs::remove_file(&temp_path);
@@ -2954,11 +3244,23 @@ fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<O
         "--model-version".to_string(),
         model_version.clone(),
         "--mode".to_string(),
-        mode,
+        mode.clone(),
         "--model-root".to_string(),
         model_root.to_string_lossy().to_string(),
     ];
-    let result = run_rapidocr_json(app, args);
+    let result = if rapid_ocr_worker_enabled() {
+        match run_rapidocr_worker_ocr(app, &temp_path, &model_version, &mode, &model_root) {
+            Ok(output) => Ok(output),
+            Err(error) => {
+                eprintln!(
+                    "[local-screenshot-translate] rapidocr worker failed, falling back to one-shot runner: {error}"
+                );
+                run_rapidocr_json(app, args)
+            }
+        }
+    } else {
+        run_rapidocr_json(app, args)
+    };
     let _ = fs::remove_file(&temp_path);
     let output = result?;
     if output.status != "success" {
@@ -2968,11 +3270,12 @@ fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<O
     }
     let blocks = output.blocks.unwrap_or_default();
     eprintln!(
-        "[local-screenshot-translate] rapidocr total={}ms runner={} model={} lang={} blocks={} timings={}",
+        "[local-screenshot-translate] rapidocr total={}ms runner={} model={} lang={} variant={} blocks={} timings={}",
         total_started.elapsed().as_millis(),
         output.engine.as_deref().unwrap_or("rapidocr"),
         output.model_version.as_deref().unwrap_or(&model_version),
         output.selected_lang.as_deref().unwrap_or("auto"),
+        output.selected_variant.as_deref().unwrap_or("original"),
         blocks.len(),
         serde_json::to_string(&output.timings).unwrap_or_else(|_| "null".to_string())
     );
@@ -3008,6 +3311,10 @@ fn rapid_ocr_mode() -> String {
     }
 }
 
+fn rapid_ocr_worker_enabled() -> bool {
+    config_value_bool("rapidOcrWorkerEnabled").unwrap_or(true)
+}
+
 fn repo_root_from_manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -3016,28 +3323,72 @@ fn repo_root_from_manifest() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-fn rapid_ocr_model_root_candidates() -> Vec<PathBuf> {
+fn push_unique_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !candidates.iter().any(|candidate| candidate == &path) {
+        candidates.push(path);
+    }
+}
+
+fn push_rapid_ocr_model_candidates_from_base(candidates: &mut Vec<PathBuf>, base: &Path) {
+    push_unique_path(candidates, base.join("models").join("rapidocr"));
+    push_unique_path(
+        candidates,
+        base.join("resources").join("models").join("rapidocr"),
+    );
+    push_unique_path(
+        candidates,
+        base.join("resources")
+            .join("_up_")
+            .join("_up_")
+            .join("models")
+            .join("rapidocr"),
+    );
+    push_unique_path(
+        candidates,
+        base.join("_up_")
+            .join("_up_")
+            .join("models")
+            .join("rapidocr"),
+    );
+}
+
+fn rapid_ocr_model_root_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = config_value_string("rapidOcrModelRoot")
         .or_else(|| std::env::var("YSN_RAPIDOCR_MODEL_ROOT").ok())
         .map(PathBuf::from)
     {
-        candidates.push(path);
+        push_unique_path(&mut candidates, path);
     }
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join("models").join("rapidocr"));
+            push_rapid_ocr_model_candidates_from_base(&mut candidates, exe_dir);
             if let Some(parent) = exe_dir.parent() {
-                candidates.push(parent.join("models").join("rapidocr"));
+                push_rapid_ocr_model_candidates_from_base(&mut candidates, parent);
             }
         }
     }
-    candidates.push(repo_root_from_manifest().join("models").join("rapidocr"));
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_rapid_ocr_model_candidates_from_base(&mut candidates, &resource_dir);
+    }
+
+    use tauri::path::BaseDirectory;
+    for resource_path in ["models/rapidocr", "../../models/rapidocr"] {
+        if let Ok(path) = app.path().resolve(resource_path, BaseDirectory::Resource) {
+            push_unique_path(&mut candidates, path);
+        }
+    }
+
+    push_unique_path(
+        &mut candidates,
+        repo_root_from_manifest().join("models").join("rapidocr"),
+    );
     candidates
 }
 
-fn rapid_ocr_model_root() -> PathBuf {
-    rapid_ocr_model_root_candidates()
+fn rapid_ocr_model_root(app: &tauri::AppHandle) -> PathBuf {
+    rapid_ocr_model_root_candidates(app)
         .into_iter()
         .find(|path| path.is_dir())
         .unwrap_or_else(|| repo_root_from_manifest().join("models").join("rapidocr"))
@@ -3078,7 +3429,9 @@ fn rapid_ocr_missing_model_files(model_root: &Path, model_version: &str) -> Vec<
 }
 
 fn write_rapidocr_temp_image(image_bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("ysn-screenshot-translator").join("rapidocr");
+    let dir = std::env::temp_dir()
+        .join("ysn-screenshot-translator")
+        .join("rapidocr");
     fs::create_dir_all(&dir).map_err(|error| {
         format!(
             "failed to create RapidOCR temp directory {}: {error}",
@@ -3101,11 +3454,76 @@ fn write_rapidocr_temp_image(image_bytes: &[u8]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn push_rapid_ocr_runner_candidates_from_base(candidates: &mut Vec<PathBuf>, base: &Path) {
+    push_unique_path(candidates, base.join("rapidocr-runner.exe"));
+    push_unique_path(
+        candidates,
+        base.join("rapidocr").join("rapidocr-runner.exe"),
+    );
+    push_unique_path(
+        candidates,
+        base.join("rapidocr")
+            .join("rapidocr-runner")
+            .join("rapidocr-runner.exe"),
+    );
+    push_unique_path(
+        candidates,
+        base.join("resources")
+            .join("rapidocr")
+            .join("rapidocr-runner.exe"),
+    );
+    push_unique_path(
+        candidates,
+        base.join("resources")
+            .join("rapidocr")
+            .join("rapidocr-runner")
+            .join("rapidocr-runner.exe"),
+    );
+}
+
+fn rapid_ocr_runner_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            push_rapid_ocr_runner_candidates_from_base(&mut candidates, exe_dir);
+            push_rapid_ocr_runner_candidates_from_base(
+                &mut candidates,
+                &exe_dir.join("tauri-client").join("src-tauri"),
+            );
+            if let Some(parent) = exe_dir.parent() {
+                push_rapid_ocr_runner_candidates_from_base(&mut candidates, parent);
+            }
+        }
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_rapid_ocr_runner_candidates_from_base(&mut candidates, &resource_dir);
+    }
+
+    use tauri::path::BaseDirectory;
+    for resource_path in [
+        "resources/rapidocr/rapidocr-runner/rapidocr-runner.exe",
+        "resources/rapidocr/rapidocr-runner.exe",
+        "rapidocr/rapidocr-runner/rapidocr-runner.exe",
+        "rapidocr/rapidocr-runner.exe",
+    ] {
+        if let Ok(path) = app.path().resolve(resource_path, BaseDirectory::Resource) {
+            push_unique_path(&mut candidates, path);
+        }
+    }
+
+    push_rapid_ocr_runner_candidates_from_base(
+        &mut candidates,
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+    candidates
+}
+
 fn resolve_rapidocr_command(app: &tauri::AppHandle) -> Result<RapidOcrCommandSpec, String> {
     if let Some(path) = config_value_string("rapidOcrRunnerPath")
         .or_else(|| std::env::var("YSN_RAPIDOCR_RUNNER").ok())
         .map(PathBuf::from)
-        .filter(|path| path.exists())
+        .filter(|path| path.is_file())
     {
         return Ok(RapidOcrCommandSpec {
             program: path,
@@ -3114,41 +3532,15 @@ fn resolve_rapidocr_command(app: &tauri::AppHandle) -> Result<RapidOcrCommandSpe
         });
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            if let Some(path) = find_rapidocr_runner_exe(exe_dir) {
-                return Ok(RapidOcrCommandSpec {
-                    program: path,
-                    args_prefix: Vec::new(),
-                    kind: "bundled-runner".to_string(),
-                });
-            }
-        }
-    }
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        for relative in [
-            PathBuf::from("rapidocr")
-                .join("rapidocr-runner")
-                .join("rapidocr-runner.exe"),
-            PathBuf::from("rapidocr").join("rapidocr-runner.exe"),
-            PathBuf::from("resources")
-                .join("rapidocr")
-                .join("rapidocr-runner")
-                .join("rapidocr-runner.exe"),
-            PathBuf::from("resources")
-                .join("rapidocr")
-                .join("rapidocr-runner.exe"),
-        ] {
-            let path = resource_dir.join(relative);
-            if path.exists() {
-                return Ok(RapidOcrCommandSpec {
-                    program: path,
-                    args_prefix: Vec::new(),
-                    kind: "resource-runner".to_string(),
-                });
-            }
-        }
+    if let Some(path) = rapid_ocr_runner_candidates(app)
+        .into_iter()
+        .find(|path| path.is_file())
+    {
+        return Ok(RapidOcrCommandSpec {
+            program: path,
+            args_prefix: Vec::new(),
+            kind: "bundled-runner".to_string(),
+        });
     }
 
     let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3163,23 +3555,6 @@ fn resolve_rapidocr_command(app: &tauri::AppHandle) -> Result<RapidOcrCommandSpe
     }
 
     Err("RapidOCR runner was not found. Expected bundled rapidocr-runner.exe or src-tauri/rapidocr/rapidocr_runner.py.".to_string())
-}
-
-fn find_rapidocr_runner_exe(dir: &Path) -> Option<PathBuf> {
-    let exact = dir.join("rapidocr-runner.exe");
-    if exact.exists() {
-        return Some(exact);
-    }
-    fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .map(|name| name.starts_with("rapidocr-runner") && name.ends_with(".exe"))
-                .unwrap_or(false)
-        })
 }
 
 fn run_rapidocr_json(
@@ -3226,11 +3601,342 @@ fn run_rapidocr_json(
     Ok(parsed)
 }
 
+fn spawn_rapid_ocr_worker_process(app: &tauri::AppHandle) -> Result<RapidOcrWorkerProcess, String> {
+    let spec = resolve_rapidocr_command(app)?;
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args_prefix);
+    command.arg("--worker");
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "failed to start RapidOCR worker ({}): {error}",
+            spec.program.display()
+        )
+    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "RapidOCR worker stdin was not available.".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "RapidOCR worker stdout was not available.".to_string())?;
+
+    let mut worker = RapidOcrWorkerProcess {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        request_id: 0,
+        spec,
+        last_error: None,
+    };
+    let _ = rapid_ocr_worker_request_value(&mut worker, "ping", serde_json::json!({}))?;
+    Ok(worker)
+}
+
+fn rapid_ocr_worker_request_value(
+    worker: &mut RapidOcrWorkerProcess,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if let Some(status) = worker
+        .child
+        .try_wait()
+        .map_err(|error| format!("RapidOCR worker status check failed: {error}"))?
+    {
+        return Err(format!(
+            "RapidOCR worker already exited with status {status}."
+        ));
+    }
+
+    worker.request_id = worker.request_id.saturating_add(1);
+    let request_id = worker.request_id;
+    let payload = serde_json::json!({
+        "id": request_id,
+        "method": method,
+        "params": params,
+    });
+    writeln!(worker.stdin, "{payload}")
+        .and_then(|_| worker.stdin.flush())
+        .map_err(|error| format!("failed to send RapidOCR worker request: {error}"))?;
+
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = worker
+            .stdout
+            .read_line(&mut line)
+            .map_err(|error| format!("failed to read RapidOCR worker response: {error}"))?;
+        if read == 0 {
+            return Err("RapidOCR worker closed stdout before responding.".to_string());
+        }
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let envelope: RapidOcrWorkerEnvelope = serde_json::from_str(trimmed).map_err(|error| {
+            format!("failed to parse RapidOCR worker response: {error}; output: {trimmed}")
+        })?;
+        if envelope.id != request_id {
+            continue;
+        }
+        if envelope.ok {
+            return Ok(envelope.result.unwrap_or_else(|| serde_json::json!({})));
+        }
+        return Err(envelope
+            .error
+            .unwrap_or_else(|| "RapidOCR worker returned an error.".to_string()));
+    }
+}
+
+fn with_rapid_ocr_worker<T>(
+    app: &tauri::AppHandle,
+    action: impl FnOnce(&mut RapidOcrWorkerProcess) -> Result<T, String>,
+) -> Result<T, String> {
+    let state = rapid_ocr_worker_state();
+    let mut guard = state
+        .lock()
+        .map_err(|error| format!("RapidOCR worker lock failed: {error}"))?;
+
+    let exited_status = if let Some(worker) = guard.as_mut() {
+        worker
+            .child
+            .try_wait()
+            .map_err(|error| format!("RapidOCR worker status check failed: {error}"))?
+    } else {
+        None
+    };
+    if let Some(status) = exited_status {
+        *guard = None;
+        return Err(format!("RapidOCR worker exited with status {status}."));
+    }
+
+    if guard.is_none() {
+        *guard = Some(spawn_rapid_ocr_worker_process(app)?);
+    }
+
+    let worker = guard
+        .as_mut()
+        .ok_or_else(|| "RapidOCR worker was not started.".to_string())?;
+    match action(worker) {
+        Ok(value) => {
+            worker.last_error = None;
+            Ok(value)
+        }
+        Err(error) => {
+            worker.last_error = Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
+fn run_rapidocr_worker_ocr(
+    app: &tauri::AppHandle,
+    image_path: &Path,
+    model_version: &str,
+    mode: &str,
+    model_root: &Path,
+) -> Result<RapidOcrRunnerOutput, String> {
+    let result = with_rapid_ocr_worker(app, |worker| {
+        rapid_ocr_worker_request_value(
+            worker,
+            "ocr",
+            serde_json::json!({
+                "imagePath": image_path.to_string_lossy().to_string(),
+                "modelVersion": model_version,
+                "mode": mode,
+                "modelRoot": model_root.to_string_lossy().to_string(),
+                "smallTextRetry": true
+            }),
+        )
+    })?;
+    let mut parsed: RapidOcrRunnerOutput = serde_json::from_value(result)
+        .map_err(|error| format!("failed to parse RapidOCR worker OCR JSON: {error}"))?;
+    if parsed.engine.is_none() {
+        parsed.engine = Some("rapidocr-worker".to_string());
+    }
+    Ok(parsed)
+}
+
+fn start_rapid_ocr_worker_sync(
+    app: &tauri::AppHandle,
+    warm_basic_models: bool,
+) -> Result<serde_json::Value, String> {
+    let model_version = rapid_ocr_model_version();
+    let model_root = rapid_ocr_model_root(app);
+    let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
+    if !missing_models.is_empty() {
+        return Err(format!(
+            "RapidOCR model files are missing from {}: {}",
+            model_root.display(),
+            missing_models.join(", ")
+        ));
+    }
+
+    with_rapid_ocr_worker(app, |worker| {
+        let mut warm_result = serde_json::json!(null);
+        if warm_basic_models {
+            warm_result = rapid_ocr_worker_request_value(
+                worker,
+                "warm",
+                serde_json::json!({
+                    "modelRoot": model_root.to_string_lossy().to_string(),
+                    "modelVersion": model_version,
+                    "langs": ["ch", "latin"]
+                }),
+            )?;
+        }
+        let status = rapid_ocr_worker_request_value(worker, "status", serde_json::json!({}))?;
+        Ok(serde_json::json!({
+            "running": true,
+            "pid": worker.child.id(),
+            "runnerKind": worker.spec.kind.clone(),
+            "runnerPath": worker.spec.program.to_string_lossy().to_string(),
+            "modelVersion": model_version,
+            "modelRoot": model_root.to_string_lossy().to_string(),
+            "warmResult": warm_result,
+            "status": status
+        }))
+    })
+}
+
+fn stop_rapid_ocr_worker_internal(grace_ms: u64) -> Result<serde_json::Value, String> {
+    let state = rapid_ocr_worker_state();
+    let mut guard = state
+        .lock()
+        .map_err(|error| format!("RapidOCR worker lock failed: {error}"))?;
+    let Some(mut worker) = guard.take() else {
+        return Ok(serde_json::json!({
+            "running": false,
+            "stopped": false,
+            "message": "RapidOCR worker was not running."
+        }));
+    };
+
+    let _ = rapid_ocr_worker_request_value(&mut worker, "shutdown", serde_json::json!({}));
+    let started = Instant::now();
+    loop {
+        if let Some(status) = worker
+            .child
+            .try_wait()
+            .map_err(|error| format!("RapidOCR worker status check failed: {error}"))?
+        {
+            return Ok(serde_json::json!({
+                "running": false,
+                "stopped": true,
+                "exitStatus": status.to_string()
+            }));
+        }
+        if started.elapsed() >= Duration::from_millis(grace_ms) {
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            return Ok(serde_json::json!({
+                "running": false,
+                "stopped": true,
+                "forced": true
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+fn rapid_ocr_worker_status_value() -> serde_json::Value {
+    let state = rapid_ocr_worker_state();
+    let Ok(mut guard) = state.lock() else {
+        return serde_json::json!({
+            "enabled": rapid_ocr_worker_enabled(),
+            "running": false,
+            "lastError": "RapidOCR worker lock failed."
+        });
+    };
+    let Some(worker) = guard.as_mut() else {
+        return serde_json::json!({
+            "enabled": rapid_ocr_worker_enabled(),
+            "running": false,
+            "lastError": null
+        });
+    };
+
+    match worker.child.try_wait() {
+        Ok(Some(status)) => {
+            *guard = None;
+            serde_json::json!({
+                "enabled": rapid_ocr_worker_enabled(),
+                "running": false,
+                "lastError": format!("RapidOCR worker exited with status {status}.")
+            })
+        }
+        Ok(None) => {
+            let pid = worker.child.id();
+            match rapid_ocr_worker_request_value(worker, "status", serde_json::json!({})) {
+                Ok(status) => serde_json::json!({
+                    "enabled": rapid_ocr_worker_enabled(),
+                    "running": true,
+                    "pid": pid,
+                    "runnerKind": worker.spec.kind.clone(),
+                    "runnerPath": worker.spec.program.to_string_lossy().to_string(),
+                    "lastError": worker.last_error,
+                    "status": status,
+                    "cachedEngines": status.get("cachedEngines").cloned().unwrap_or_else(|| serde_json::json!([]))
+                }),
+                Err(error) => {
+                    worker.last_error = Some(error.clone());
+                    serde_json::json!({
+                        "enabled": rapid_ocr_worker_enabled(),
+                        "running": true,
+                        "pid": pid,
+                        "runnerKind": worker.spec.kind.clone(),
+                        "runnerPath": worker.spec.program.to_string_lossy().to_string(),
+                        "lastError": error
+                    })
+                }
+            }
+        }
+        Err(error) => serde_json::json!({
+            "enabled": rapid_ocr_worker_enabled(),
+            "running": false,
+            "lastError": format!("RapidOCR worker status check failed: {error}")
+        }),
+    }
+}
+
+#[tauri::command]
+async fn start_rapid_ocr_worker(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || start_rapid_ocr_worker_sync(&app, true))
+        .await
+        .map_err(|error| format!("RapidOCR worker start task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn restart_rapid_ocr_worker(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let _ = stop_rapid_ocr_worker_internal(1500);
+        start_rapid_ocr_worker_sync(&app, true)
+    })
+    .await
+    .map_err(|error| format!("RapidOCR worker restart task failed: {error}"))?
+}
+
+#[tauri::command]
+fn stop_rapid_ocr_worker() -> Result<serde_json::Value, String> {
+    stop_rapid_ocr_worker_internal(1500)
+}
+
+#[tauri::command]
+fn get_rapid_ocr_worker_status() -> Result<serde_json::Value, String> {
+    Ok(rapid_ocr_worker_status_value())
+}
+
 fn run_rapidocr_probe(
     app: &tauri::AppHandle,
     model_version: &str,
 ) -> Result<RapidOcrRunnerOutput, String> {
-    let model_root = rapid_ocr_model_root();
+    let model_root = rapid_ocr_model_root(app);
     run_rapidocr_json(
         app,
         vec![
@@ -3246,9 +3952,15 @@ fn run_rapidocr_probe(
 #[tauri::command]
 fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let model_version = rapid_ocr_model_version();
-    let model_root = rapid_ocr_model_root();
+    let model_root = rapid_ocr_model_root(&app);
     let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
     let runner = resolve_rapidocr_command(&app);
+    let worker_enabled = rapid_ocr_worker_enabled();
+    let worker_status = rapid_ocr_worker_status_value();
+    let worker_running = worker_status
+        .get("running")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let mut last_error: Option<String> = None;
     let mut probe_timings = serde_json::json!(null);
     let mut probe_ok = false;
@@ -3258,6 +3970,21 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
             model_root.display(),
             missing_models.join(", ")
         ));
+    } else if worker_enabled {
+        probe_ok = runner.is_ok() && missing_models.is_empty();
+        probe_timings = worker_status
+            .get("status")
+            .and_then(|status| status.get("timings"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null));
+        if let Some(error) = worker_status
+            .get("lastError")
+            .and_then(|value| value.as_str())
+        {
+            if !error.trim().is_empty() {
+                last_error = Some(error.to_string());
+            }
+        }
     } else if runner.is_ok() {
         match run_rapidocr_probe(&app, &model_version) {
             Ok(output) if output.status == "success" => {
@@ -3299,6 +4026,9 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
         "engine": "rapidocr",
         "runnerKind": runner_kind,
         "runnerPath": runner_path,
+        "workerEnabled": worker_enabled,
+        "workerRunning": worker_running,
+        "worker": worker_status,
         "runtimeVersion": "rapidocr-python-3.x",
         "modelSetVersion": format!("rapidocr-{}", model_version),
         "rapidOcrModelVersion": model_version,
@@ -3320,11 +4050,19 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
                 "nextAction": if runner.is_ok() { "run-ocr-self-test" } else { "install-rapidocr-runner" }
             },
             {
+                "id": "rapidocr-worker",
+                "ready": if worker_enabled { worker_running } else { true },
+                "severity": if !worker_enabled || worker_running { "success" } else { "warning" },
+                "label": "RapidOCR worker",
+                "description": if worker_enabled { "RapidOCR resident worker is enabled; it starts lazily or from the panel." } else { "RapidOCR resident worker is disabled; OCR uses the one-shot runner fallback." },
+                "nextAction": if worker_enabled && !worker_running { "start-rapidocr-worker" } else { "ready" }
+            },
+            {
                 "id": "rapidocr-probe",
                 "ready": probe_ok,
-                "severity": if probe_ok { "success" } else { "error" },
+                "severity": if probe_ok { "success" } else { "warning" },
                 "label": "RapidOCR probe",
-                "description": "RapidOCR can initialize the configured PP-OCR model version.",
+                "description": if worker_enabled { "RapidOCR dependencies are available; self-test warms the resident worker." } else { "RapidOCR can initialize the configured PP-OCR model version." },
                 "nextAction": if probe_ok { "ready" } else { "run-ocr-self-test" }
             },
             {
@@ -3343,7 +4081,7 @@ fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let tested_at = chrono::Local::now().to_rfc3339();
     let model_version = rapid_ocr_model_version();
-    let model_root = rapid_ocr_model_root();
+    let model_root = rapid_ocr_model_root(&app);
     let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
     if !missing_models.is_empty() {
         return Ok(serde_json::json!({
@@ -3356,6 +4094,35 @@ fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Value, S
             "samples": []
         }));
     }
+    if rapid_ocr_worker_enabled() {
+        return match start_rapid_ocr_worker_sync(&app, true) {
+            Ok(output) => Ok(serde_json::json!({
+                "ok": true,
+                "testedAt": tested_at,
+                "runtime": "rapidocr",
+                "modelVersion": model_version,
+                "modelRoot": model_root.to_string_lossy().to_string(),
+                "message": "RapidOCR worker started and warmed.",
+                "timings": output.get("warmResult").and_then(|value| value.get("timings")).cloned().unwrap_or_else(|| serde_json::json!(null)),
+                "samples": [
+                    { "id": "worker-warm", "ok": true, "confidence": 1.0, "modelId": format!("rapidocr-{}-worker", model_version) }
+                ],
+                "worker": output
+            })),
+            Err(error) => Ok(serde_json::json!({
+                "ok": false,
+                "testedAt": tested_at,
+                "runtime": "rapidocr",
+                "modelVersion": model_version,
+                "modelRoot": model_root.to_string_lossy().to_string(),
+                "message": error,
+                "samples": [
+                    { "id": "worker-warm", "ok": false, "confidence": 0.0, "modelId": format!("rapidocr-{}-worker", model_version) }
+                ]
+            })),
+        };
+    }
+
     match run_rapidocr_probe(&app, &model_version) {
         Ok(output) if output.status == "success" => Ok(serde_json::json!({
             "ok": true,
@@ -3586,7 +4353,9 @@ pub fn run() {
             cancel_screenshot,
             force_close_screenshots,
             get_window_rects,
+            get_text_source_snapshot,
             overlay_ready_to_show,
+            get_screenshot_pointer_state,
             run_local_ocr,
             prewarm_local_ocr_models,
             re_register_shortcut,
@@ -3595,7 +4364,11 @@ pub fn run() {
             get_startup_readiness_snapshot,
             run_startup_readiness_probe,
             get_rapid_ocr_status,
-            run_rapid_ocr_self_test
+            run_rapid_ocr_self_test,
+            start_rapid_ocr_worker,
+            stop_rapid_ocr_worker,
+            restart_rapid_ocr_worker,
+            get_rapid_ocr_worker_status
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -3616,8 +4389,10 @@ pub fn run() {
             let readiness_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let probe_app = readiness_app.clone();
-                match tokio::task::spawn_blocking(move || build_startup_readiness_snapshot(probe_app))
-                    .await
+                match tokio::task::spawn_blocking(move || {
+                    build_startup_readiness_snapshot(probe_app)
+                })
+                .await
                 {
                     Ok(snapshot) => cache_startup_readiness_snapshot(snapshot),
                     Err(error) => eprintln!("Failed to run startup readiness probe: {}", error),
@@ -3641,7 +4416,8 @@ pub fn run() {
                 .build()?;
             let _tray = tauri::tray::TrayIconBuilder::new()
                 .icon(
-                    tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).unwrap(),
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/taskbar-32x32.png"))
+                        .unwrap(),
                 )
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)

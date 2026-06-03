@@ -217,7 +217,7 @@
 - 诊断报告能帮助定位 OCR、录制、翻译、依赖、权限问题。
 - 真实 Windows 设备验收有记录，有失败项就继续修。
 
-## 6. 当前风险登记（2026-06-03，Chapter 134 后）
+## 6. 当前风险登记（2026-06-03，Chapter 146 后）
 
 > 本节用于无人连续开发时快速判断“哪些已经真实验证，哪些仍然不能对用户承诺”。如果实现或验证状态变化，必须同步更新本节，禁止用 UI 文案假装能力已完成。
 
@@ -226,7 +226,7 @@
 - 长期文档已收敛为两份：`docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md` 负责方向、验收和闭环，`docs/IMPLEMENTATION_CHAPTERS.md` 负责施工日志；Chapter 93 已明确不再保留五六份分散计划。
 - 根目录 `AGENTS.md` 已写入商业级产品标准、OCR 战略方向、UI/UX 标准、代码组织标准、无人执行标准和实现质量红线。
 - 商业级检查入口已统一为根目录 `check_commercial.ps1`。
-- `npm run check:i18n` 已作为 i18n 门禁，当前 `520 zh-CN keys match 520 en-US keys`。
+- `npm run check:i18n` 已作为 i18n 门禁，当前 `532 zh-CN keys match 532 en-US keys`。
 - `npm run check:ocr-processing` 已作为 OCR/翻译处理链路门禁。
 - `npm run build` 前端生产构建已通过。
 - `cargo check` Rust 检查已通过。
@@ -255,13 +255,38 @@
 - Chapter 132 已修复截图翻译覆盖渲染的字号和位置：渲染 block 不再合并相邻 OCR 行，译文按原 OCR 框位置逐 block 锁定，字号从原框高度估算且不再为塞入框内压缩到极小，保留显式换行；本地 canvas 视觉回归确认两行译文与原文位置/字号接近。
 - Chapter 133 RapidOCR fixture 已覆盖中文大字、英文 UI、小字技术文本、韩文、日文、阿拉伯文；开发版和打包版均通过。常见中英/日文走快速 `ch` 路径约 `1.3–2.1s`，韩文/阿拉伯文触发完整 fallback 约 `5.6–6.3s`，是下一轮性能优化重点。
 - Chapter 134 已修复用户真实使用暴露出的交互闭环问题：控制台/识字模型页不再进入即自动跑重诊断；录制保存后回到 ready、保留蓝框并支持第二次录制；视频目录按钮优先打开已保存视频目录；录制控制条黑色阴影已移除；大模型翻译配置支持手填模型、去掉 `(New API)` 叫法，并新增可保存到服务端的翻译 prompt/domain；大模型中转允许用户自托管 LAN/内网地址，N100 已部署。
+- Chapter 139–140 已修复换电脑后 RapidOCR runner 不便携和 `build.bat` 解析失败：便携产物统一输出到 `release\YSN-Screenshot-Translator`，迁移时复制整个目录而不是单独复制 exe。
+- Chapter 141 已把 RapidOCR 升级为默认开启、面板可控的长期 JSON-RPC worker；worker 预热 `ch`/`latin` 后，小字技术样例第二次 OCR 约 `1026ms`，且 `.exe` 技术标识会在 OCR 后处理中恢复。
+- Chapter 141 已完成真实 release UI smoke：主窗口前台 `Alt+A` 后立即拖拽可生成选区和工具条，`Ctrl+D` 可弹出 `OCR Result` 并把识别文本写入剪贴板。
+- Chapter 142 已优化截图启动热路径：全屏截图从 base64 event 改为本地文件 payload + Tauri asset protocol，release `Alt+A` 截图辅助窗口可见实测约 `223–271ms`。
+- Chapter 142 已优化翻译等待路径：前端优先从已加载全屏截图 canvas 裁剪选区，多 URL 翻译服务使用 700ms 延迟对冲，默认文本翻译超时收紧到 `9s`，二次补救请求最多 `5s`。
+- Chapter 142 已确认当前本机只配置公网 `https://ocr.yousn.me`：health 约 `1035ms`，冷翻译请求约 `1865ms`，缓存命中客户端仍约 `513–610ms`；若要继续降翻译等待，应启用 LAN 服务或本地/近端服务。
+- Chapter 143 已加入论坛列表 OCR 清洗 profile：过滤图标噪声，修复 `1 Codex`、`■Codex`、`ChatGPTApps SDKmcp`、`OpenAl/APls` 等常见误读，并合并短标题续行。
+- Chapter 143 已把根目录 `测试图片\1.png` 到 `测试图片\4.png` 纳入 `npm run check:ocr-fixtures` 的可选真实截图门禁；本机存在目录时四张图均已通过。
+- Chapter 143 已强化翻译实体保护和轻量坏译裁判：`Codex`、`OpenAI`、`ChatGPT`、`API`、`SDK`、`MCP`、`GPT-5`、`VLM` 等进入 protected terms，已知灾难译法会被修复或标记。
+- Chapter 144 已接入非阻塞 Windows UI Automation 文本源抢跑：`Alt+A` 时后台记录前台窗口和可见文本元素，前端翻译在 `80ms` 内命中文本源则跳过 OCR，否则自动回落 RapidOCR。
+- Chapter 144 已加入翻译服务连接预热和轻量诊断浮层：截图页加载、翻译热键和翻译动作会预热 `/api/health`，翻译后显示来源、OCR/翻译/服务端/模型/缓存/服务 URL 等真实耗时。
+- Chapter 144 已把翻译 prompt 升级为截图上下文感知：请求会携带整张截图文本上下文，并加入 `ticket`、`fixture`、`fallback`、`issue`、`bug` 等软件/支持场景术语提示，减少孤立词误译。
+- Chapter 144 已重写 `build.bat` 为 ASCII + CRLF 的稳定批处理，避免 Windows cmd 的 UTF-8/LF 解析问题；`cmd /c "build.bat --no-pause"` 已通过并生成新 release。
+- Chapter 144 已完成新 release smoke：`release\YSN-Screenshot-Translator\tauri-client.exe` 可启动；自动发送 `Alt+A` 后截图辅助窗口可见约 `106ms`；`pack_release.ps1` 已生成 `release\ScreenshotTranslator_Windows.zip`，约 `211.05 MB`。
+- Chapter 145 已接入根目录双图标：`程序图标.ico` 生成应用图标资源，`任务栏图标.ico` 生成专用托盘图标，Rust 托盘入口改用 `taskbar-32x32.png`；已执行 Windows 图标缓存刷新。
+- Chapter 145 已新增正文段落 OCR profile：`测试图片\测试2\原始文本.png` 从 `45` 个词级 raw blocks 合成 `1` 个正文段落；`测试图片\4.png` 仍保持论坛列表结构，未被误合并。
+- Chapter 145 已把 `测试图片\测试2` 三张图纳入 `npm run check:ocr-fixtures`；本机根目录 `测试图片` 与 `测试图片\测试2` 均已详细复跑通过。
+- Chapter 145 已重新跑通发布闭环：`cmd /c "build.bat --no-pause"`、`pack_release.ps1`、release smoke、`npm run smoke:translate-service` 和 `check_commercial.ps1` 均通过；当前 zip 约 `210.83 MB`。
+- Chapter 146 已修复段落翻译覆盖层大字问题：翻译请求继续使用段落 block，覆盖绘制改用段落形成前的行级 `renderBlocks`，并按原行权重拆分译文。
+- Chapter 146 已把任务栏/托盘图标也改成程序图标：`taskbar-*.png` 和 `taskbar.ico` 均从根目录 `程序图标.ico` 重新生成。
+- Chapter 146 已优化 RapidOCR 热路径：runner 默认 `use_cls=False`，检测边长从默认 `736` 调为 `640`，截图页加载配置/进入翻译模式/翻译动作会后台预热 OCR worker。
+- Chapter 146 热 worker 实测：`测试图片\测试2\原始文本.png` 平均约 `865ms`（关闭 small text retry）/ `1036ms`（开启），`测试图片\3.png` 可到约 `651ms`；one-shot fixture 仍包含进程启动和模型初始化成本。
+- Chapter 147 已修复 UIA 文本源快路径串台：文本源现在用物理像素选区匹配屏幕坐标，拒绝擦边相交、过大父容器和整列聚合文本；质量不足会回落 RapidOCR。
+- Chapter 147 已给翻译覆盖渲染增加换行、缩小字号和 clip 保险，避免异常长译文或误入父容器文本把单个词/小选区放大成整屏大字。
+- Chapter 147 已把根目录程序图标、应用图标、任务栏/托盘图标和 Windows Square/Store 图标全部重建为透明底，并刷新系统图标缓存。
 - `python -m pytest server\tests` 已通过，当前服务端翻译通道完全失败时返回空译文，前端负责拦截和提示恢复路径。
 - Snow Shot 风格录制控制条、自动保存、边框状态色、打开目录、复制视频和取消清理已有核心实现与测试基础。
 
 ### 6.1.1 当前用户使用路径
 
-- RapidOCR runner 和模型随 Tauri resource 打包，当前主资源目录是 `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner`。
-- 用户打开 `.exe` 后，进入“识字模型 / 视频录制”只需要看 RapidOCR 状态、PP-OCRv5/V4 版本选择和自测按钮；普通用户不再选择 OCR 运行时目录。
+- RapidOCR runner 和模型随便携目录打包，当前发布入口是 `release\YSN-Screenshot-Translator\tauri-client.exe`；迁移新电脑时复制整个 `release\YSN-Screenshot-Translator` 目录。
+- 用户打开 `.exe` 后，进入“识字模型 / 视频录制”只需要看 RapidOCR 状态、PP-OCRv5/V4 版本选择、自测按钮和“常驻 OCR 加速”开关；普通用户不再选择 OCR 运行时目录。
 - 截图 OCR / 翻译使用 `Ctrl+D` 框选文字区域；结果窗必须显示识别文本、截图预览或明确错误，不允许白屏。
 - 如果出现 RapidOCR runner 或模型缺失，错误信息必须带 runner/resource 绝对路径，并在配置中心给出刷新、自测和恢复提示。
 
@@ -269,29 +294,35 @@
 
 | 风险 | 当前真实状态 | 下一步处理 |
 |---|---|---|
-| RapidOCR 主线仍需真实端到端验收 | 生成式 fixture 和打包 runner fixture 已通过，Rust/前端构建已通过；但仍缺用户真实 `Ctrl+D` 结果窗、真实网页截图、混排长段落和复杂背景验收 | 固化真实截图 fixture，补覆盖层视觉回归，继续记录失败样例并修候选评分/后处理 |
-| RapidOCR 打包体积和冷启动 | 清理旧 onefile 遗留后资源约 `340.7 MB`；onedir runner 可用但仍包含 OpenCV/ONNXRuntime/Python 依赖，韩文/阿拉伯文完整 fallback 约 `5.6–6.3s` | 继续裁剪无用 PyInstaller 依赖，按脚本早停，缓存 detector 结果，必要时拆分多语言模型包 |
-| 真实 Windows 人工验收不足 | Chapter 110 已验证当前 release 可响应 `Alt+A` 并生成 PNG 全屏捕获；Chapter 126 已有生成式 OCR fixture；Computer Use 无法拖拽透明 overlay，真实 `Ctrl+D` 结果窗仍需要用户或人工验收确认 | 建立人工验收清单和真实截图样例，逐项记录通过/失败/截图证据 |
-| 翻译质量仍需样例验收 | Chapter 120 已修复法语/西语被按英文翻译的错误路由，并加入语义关键词 smoke；Chapter 125 已让通道配置和测试状态可见；Chapter 130 已减少重复文本 provider 调用并部署 N100；Chapter 131 已把技术文本保护下沉到服务端并修复日文误伤；但 Google 免费通道仍不是完整商业级多语言质量方案 | 接入更可靠付费/LLM 通道并做真实多语言截图样例验收，继续保留 Google 质量风险提示 |
+| RapidOCR 主线仍需真实端到端验收 | 生成式 fixture、打包 runner fixture、真实 release `Alt+A` 首击框选、`Ctrl+D` 结果窗、`Alt+A` 最终发布版秒表、四张用户真实截图 OCR fixture、`测试图片\测试2` 三张图 fixture、Chapter 144–147 release smoke 均已通过；Chapter 147 已补 UIA 父容器串台门禁；仍缺多屏/DPI 和真实覆盖层肉眼 smoke | 补覆盖层视觉回归，继续记录失败样例并修候选评分/后处理 |
+| RapidOCR 打包体积和冷启动 | 默认常驻 worker 已落地；Chapter 146 快路径后热 worker 小图可到约 `651ms`，正文段落约 `865–1036ms`；onedir runner 仍包含 OpenCV/ONNXRuntime/Python 依赖，韩文/阿拉伯文 one-shot fixture 仍可到 `~9s` | 继续裁剪无用 PyInstaller 依赖，按脚本早停，动态 small-text retry，缓存 detector 结果，必要时拆分多语言模型包 |
+| 真实 Windows 人工验收不足 | Chapter 141 已用真实 release 自动化验证主窗口前台首击框选和 `Ctrl+D` OCR 结果窗；不同 DPI、多屏、远程桌面和安全软件环境仍未覆盖 | 建立人工验收清单和真实截图样例，逐项记录通过/失败/截图证据 |
+| 翻译质量和等待仍需样例验收 | Chapter 120 已修复法语/西语路由；Chapter 130–131 已减少重复文本 provider 调用并保护技术文本；Chapter 142 已加多 URL 对冲和更短超时；Chapter 143 已补论坛列表清洗、技术实体保护和坏译裁判；Chapter 144 已补连接预热、耗时诊断和文本源抢跑；Chapter 145 已把长段正文 OCR 合并为段落以改善上下文翻译；Chapter 146 已修复段落翻译后按大框渲染的问题，但当前本机仍主要走公网，公网首包/握手仍可能接近 `1s` | 启用/验证 LAN 或近端服务，继续做真实翻译覆盖层样例验收，记录文本源命中率与失败应用 |
 | 发布商业闭环未完成 | 安装包和 smoke launch 曾通过，但签名、自动更新、模型托管、错误恢复、真实设备矩阵仍未完整 | 建立发布清单、模型源发布流程、真实设备验收和版本回滚流程 |
 
 ### 6.3 下一轮优先级
 
-1. Chapter 135：把真实用户截图样例固化进 RapidOCR fixture，重点覆盖清晰英文网页、搜索建议、混排中英、长句和复杂背景。
-2. 优化 RapidOCR fallback 性能：先跑 detector 一次，多语言 recognizer 复用检测框，避免韩文/阿拉伯文每个候选重复 detector。
-3. 将 RapidOCR candidate summary、selectedLang、耗时和低置信度原因暴露到诊断报告或 OCR 结果调试信息。
-4. 继续接入并验证更可靠的付费/LLM 翻译通道，替代 Google 免费通道作为正式质量路线。
-5. OCR ready 必须由 RapidOCR 打包 runner、自测、fixture、真实 `Ctrl+D` 结果窗和翻译覆盖层共同证明。
+1. Chapter 148：继续优化真实用户感知延迟，优先把 small-text retry 改成动态触发。
+2. 记录 UIA 文本源命中率、耗时、拒绝原因和前台进程名，并在诊断报告中暴露最近一次文本源状态。
+3. 继续拆 OCR 延迟构成，把 warm/cold、detector、recognizer、IPC、前端裁剪、normalization、翻译请求分别打点到诊断报告。
+4. 优化 RapidOCR fallback 性能：候选早停、脚本路由、检测框复用，避免韩文/阿拉伯文每个候选重复初始化和重复 detector。
+5. 将 RapidOCR candidate summary、selectedLang、耗时和低置信度原因暴露到诊断报告或 OCR 结果调试信息。
+6. 继续接入并验证更可靠的付费/LLM 翻译通道，替代 Google 免费通道作为正式质量路线。
 
 ### 6.4 下一执行目标（当前）
 
-目标：在 RapidOCR 主线基础上继续压低多语言 fallback 耗时，并把真实截图失败样例纳入可重复 fixture；录制二次复用和大模型 prompt 配置已补齐，后续继续做真实截图 OCR/翻译质量验收。
+目标：在 RapidOCR 常驻 worker、截图启动热路径优化、论坛列表 OCR 清洗、正文段落 OCR 合并、行级覆盖渲染分发、翻译预热诊断和 UIA 文本源抢跑基础上，继续补真实翻译覆盖层验收并把诊断细分暴露给用户；`Alt+A` Chapter 144 发布版 smoke 已观察到截图辅助窗口约 `106ms`，当前公网翻译仍受 RTT/TLS/服务端链路限制。
 
 必须完成：
 
 - 保持 RapidOCR 生成式 fixture 和打包版 fixture 可复跑。
-- 补充真实应用页面、搜索建议、英文长句、技术文本和混排截图样例。
-- 优先尝试低风险 detector 复用、脚本早停和候选评分优化，避免牺牲中文和小字召回。
+- 保持 `测试图片\1.png` 到 `测试图片\4.png` 的真实截图 fixture 可复跑。
+- 保持 `测试图片\测试2` 三张真实样例 fixture 可复跑，尤其是 `原始文本.png` 必须保持段落级 normalization。
+- 保持段落翻译只影响翻译请求，不再用整段大框直接覆盖绘制。
+- 保持翻译服务预热和浮层诊断可用，避免用户误以为走了内网但实际仍走公网。
+- 补充真实翻译覆盖层 smoke，确认论坛列表清洗后的 block 或 UIA 文本源 block 进入翻译与渲染。
+- 记录文本源抢跑的命中率、失败原因和前台应用差异，确保它只是加速路径，不会阻塞 OCR 主线。
+- 优先尝试低风险 detector 复用、脚本早停、worker 预热范围和候选评分优化，避免牺牲中文和小字召回。
 
 非目标：
 

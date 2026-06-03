@@ -12,10 +12,13 @@ const outPath = join(tempDir, "check-ocr-processing.mjs");
 const checkSource = String.raw`
 import {
   filterUsefulOcrBlocks,
+  applyForumListProfile,
+  applyParagraphProfile,
   buildVirtualOcrLines,
   buildOcrNormalizationReport,
   buildTranslationQualityPolicy,
   buildTranslationSystemInstruction,
+  normalizeForumListText,
   restoreCollapsedUiTextSpacing,
 } from "../src/ocr-processing/index.ts";
 import {
@@ -26,6 +29,7 @@ import {
   isLikelyProtectedTechnicalText,
   mergeRetryTranslations,
   normalizeTranslationResults,
+  repairKnownBadTranslationTerms,
   selectPreferredSourceLanguage,
   hasLikelyNonEnglishLatinText,
   shouldRequireTranslation,
@@ -33,6 +37,8 @@ import {
 } from "../src/utils/ocrTranslationRequest.ts";
 import { buildTranslationEraseRegion, shouldRenderTranslationBlock } from "../src/translation-render/renderGeometry.ts";
 import { buildRenderBlocks } from "../src/translation-render/renderBlockLayout.ts";
+import { distributeTranslationsForRender } from "../src/translation-render/renderTranslationDistribution.ts";
+import { buildTextSourceBlocksForPhysicalSelection } from "../src/utils/textSourceSelection.ts";
 import { createTranslationMemoryStats, lookupLocalTranslation, storeTranslationMemory } from "../src/utils/translationMemory.ts";
 import translationGlossary from "../src/utils/translationGlossary.json";
 import type { OcrBlock } from "../src/types/screenshot.ts";
@@ -50,18 +56,53 @@ const block = (text: string, confidence: number, x: number, y: number, width = 4
 const collapsed = "AddthemissingPATHfallbackbesideLocalModel.exepathsetting";
 const restored = restoreCollapsedUiTextSpacing(collapsed);
 assert(
-  restored === "Add the missing PATH fallback beside Local Model.exe path setting",
+  restored === "Add the missing PATH fallback beside LocalModel.exe path setting",
   "collapsed UI spacing was not restored: " + restored,
+);
+const restoredTechnicalSuffix = restoreCollapsedUiTextSpacing("PixPinDaemon.exe localsend-cli. exe");
+assert(
+  restoredTechnicalSuffix === "PixPinDaemon.exe localsend-cli.exe",
+  "split executable suffix was not restored: " + restoredTechnicalSuffix,
 );
 
 const usefulBlocks = filterUsefulOcrBlocks([
   block("O", 0.7, 0, 0, 10, 12),
   block("○", 0.99, 0, 20, 10, 12),
+  block("■", 0.99, 0, 40, 10, 12),
+  block("×", 0.99, 0, 60, 10, 12),
   block("Add", 0.97, 20, 0, 28, 12),
   block("PATH", 0.96, 52, 0, 36, 12),
 ]);
 assert(usefulBlocks.length === 2, "expected 2 useful OCR blocks, got " + usefulBlocks.length);
-assert(usefulBlocks.every((item) => item.text !== "O" && item.text !== "○"), "icon-only OCR blocks were not filtered");
+assert(usefulBlocks.every((item) => !["O", "○", "■", "×"].includes(item.text)), "icon-only OCR blocks were not filtered");
+
+const tinyDashboardSelection = buildTextSourceBlocksForPhysicalSelection(
+  [
+    { text: "CPAMC OPERATE Dashboard Operations overview GATEWAY AI Providers Upstream model routing OAuth Login OAuth authorization CONTROL Config Panel Gateway configuration", x: 0, y: 0, w: 255, h: 640 },
+    { text: "Dashboard", x: 60, y: 126, w: 88, h: 19 },
+    { text: "Operations overview", x: 60, y: 148, w: 125, h: 17 },
+  ],
+  { x: 0, y: 0, w: 255, h: 640 },
+  { x: 55, y: 120, w: 138, h: 50 },
+);
+assert(tinyDashboardSelection.blocks.length === 2, "text source should keep only contained child text blocks");
+assert(tinyDashboardSelection.blocks[0].text === "Dashboard", "text source should not let sidebar container pollute tiny selection");
+assert(tinyDashboardSelection.blocks.every((item) => !item.text.includes("AI Providers")), "text source container text must be rejected");
+assert(tinyDashboardSelection.rejectedRawCount >= 1, "text source should report rejected oversized/intersecting containers");
+
+const aggregateOnlySelection = buildTextSourceBlocksForPhysicalSelection(
+  [
+    { text: "Dashboard Operations overview AI Providers Upstream model routing Auth Files Auth files and credentials OAuth Login OAuth authorization Quota Management API keys and limits Config Panel Gateway configuration", x: 0, y: 0, w: 255, h: 640 },
+  ],
+  { x: 0, y: 0, w: 255, h: 640 },
+  { x: 0, y: 0, w: 255, h: 640 },
+);
+assert(aggregateOnlySelection.blocks.length === 0, "aggregate text-source containers should fall back to OCR instead of rendering giant text");
+
+assert(normalizeForumListText("1 Codex feature-request, codex, codex-app") === "Codex feature-request, codex, codex-app", "forum metadata marker should be removed");
+assert(normalizeForumListText("■Codex") === "Codex", "solid square marker should be removed");
+assert(normalizeForumListText("ChatGPTApps SDKmcp") === "ChatGPT Apps SDK mcp", "glued forum metadata should be split");
+assert(normalizeForumListText("OpenAl's APls") === "OpenAI's APIs", "common OCR confusions should be corrected");
 
 const virtualLines = buildVirtualOcrLines([
   block("AddthemissingPATH", 0.96, 10, 10, 132, 14),
@@ -72,7 +113,7 @@ const virtualLines = buildVirtualOcrLines([
 ]);
 assert(virtualLines.length === 2, "expected 2 virtual OCR lines, got " + virtualLines.length);
 assert(
-  virtualLines[0].text === "Add the missing PATH fallback beside Local Model.exe path setting",
+  virtualLines[0].text === "Add the missing PATH fallback beside LocalModel.exe path setting",
   "first virtual line text mismatch: " + virtualLines[0].text,
 );
 assert(virtualLines[1].text === "download runtime", "second virtual line text mismatch: " + virtualLines[1].text);
@@ -91,9 +132,43 @@ assert(normalization.usefulCount === 5, "normalization useful count mismatch");
 assert(normalization.droppedCount === 1, "normalization dropped count mismatch");
 assert(normalization.virtualLineCount === 2, "normalization virtual line count mismatch");
 assert(
-  normalization.text === "Add the missing PATH fallback beside Local Model.exe path setting\ndownload runtime",
+  normalization.text === "Add the missing PATH fallback beside LocalModel.exe path setting\ndownload runtime",
   "normalization text should be newline-joined virtual lines: " + normalization.text,
 );
+
+const forumProfile = applyForumListProfile([
+  block('Add "Read aloud"/ text-to-speech support to Codex Desktop and Codex', 0.97, 20, 3, 633, 30),
+  block("Mobile", 0.99, 21, 33, 67, 22),
+  block("1 Codex feature-request, codex, codex-app", 0.97, 35, 58, 277, 20),
+  block("ChatGPTApps SDKmcp", 0.98, 35, 92, 170, 20),
+]);
+assert(forumProfile.length === 3, "forum profile should merge wrapped title continuation");
+assert(forumProfile[0].text.endsWith("Codex Mobile"), "forum profile should merge wrapped title text: " + forumProfile[0].text);
+assert(forumProfile[1].text === "Codex feature-request, codex, codex-app", "forum profile should clean category marker: " + forumProfile[1].text);
+assert(forumProfile[2].text === "ChatGPT Apps SDK mcp", "forum profile should repair glued SDK metadata: " + forumProfile[2].text);
+
+const paragraphProfile = applyParagraphProfile([
+  block("Complete an end-to-end commercial-grade", 0.99, 10, 10, 278, 18),
+  block("OCR/translation optimization closure for the screenshot", 0.99, 10, 31, 348, 18),
+  block("app: diagnose current gaps, research relevant primary", 0.99, 10, 53, 334, 18),
+  block("sources, implement the strongest approved pipeline", 0.99, 10, 74, 326, 18),
+  block("pieces, validate with local fixtures/build/smoke where", 0.99, 10, 95, 331, 18),
+  block("possible, clean generated caches, and update the two", 0.99, 10, 116, 332, 18),
+  block("project planning documents with results and next risks.", 0.99, 10, 137, 341, 18),
+]);
+assert(paragraphProfile.length === 1, "dense paragraph profile should merge wrapped prose lines");
+assert(
+  paragraphProfile[0].text === "Complete an end-to-end commercial-grade OCR/translation optimization closure for the screenshot app: diagnose current gaps, research relevant primary sources, implement the strongest approved pipeline pieces, validate with local fixtures/build/smoke where possible, clean generated caches, and update the two project planning documents with results and next risks.",
+  "dense paragraph profile text mismatch: " + paragraphProfile[0].text,
+);
+
+const paragraphSafeList = applyParagraphProfile([
+  block("Perceived Drop in GPT-5 Quality Over the Last Few Weeks", 0.99, 12, 10, 430, 22),
+  block("Codex gpt-5-codex, gpt-5-5", 0.98, 34, 45, 230, 18),
+  block("In Chat Recommendation of MCP Apps", 0.99, 12, 84, 300, 22),
+  block("ChatGPT Apps SDK mcp", 0.98, 34, 119, 170, 18),
+]);
+assert(paragraphSafeList.length === 4, "paragraph profile must not merge spaced forum list rows");
 
 const zhPolicy = buildTranslationQualityPolicy("zh-CN");
 assert(zhPolicy.sourceLanguageMode === "auto", "translation source language must stay automatic");
@@ -101,12 +176,14 @@ assert(zhPolicy.targetLanguage === "zh-CN", "translation target language mismatc
 assert(zhPolicy.preserveLineCount, "translation policy must preserve line count");
 assert(zhPolicy.preserveOrder, "translation policy must preserve order");
 assert(zhPolicy.translateShortUiText, "translation policy must translate short UI text");
-for (const term of ["PATH", "Windows", "LocalModel.exe", "LocalModel", "ONNX", "Ctrl+D"]) {
+assert(zhPolicy.domainTermHints.ticket.includes("工单"), "translation policy should provide domain term hints for ticket");
+assert(zhPolicy.domainTermHints.fallback.includes("兜底"), "translation policy should provide domain term hints for fallback");
+for (const term of ["Codex", "OpenAI", "ChatGPT", "API", "SDK", "MCP", "PATH", "Windows", "LocalModel.exe", "LocalModel", "ONNX", "Ctrl+D"]) {
   assert(zhPolicy.protectedTerms.includes(term), "translation policy missing protected term: " + term);
 }
 
-const systemInstruction = buildTranslationSystemInstruction("zh-CN");
-for (const expected of ["Detect the source language automatically", "Return exactly one translation for each input block", "Translate short UI labels", "Protected terms: PATH"]) {
+const systemInstruction = buildTranslationSystemInstruction("zh-CN", ["Any OpenAI staff around? Our ticket has been silent since May 9th", "VLM fallback fixture"]);
+for (const expected of ["Detect the source language automatically", "Return exactly one translation for each input block", "Translate short UI labels", "Protected terms: Codex", "PATH", "Screenshot context", "ticket", "fixture", "fallback"]) {
   assert(systemInstruction.includes(expected), "translation system instruction missing: " + expected);
 }
 
@@ -126,6 +203,7 @@ assert(payload.target_lang === "zh-CN", "translation payload target_lang mismatc
 assert(payload.blocks.length === 2 && payload.blocks[0].text === "Add the missing PATH", "translation payload blocks mismatch");
 assert(payload.quality_policy.preserveLineCount, "translation payload must include quality policy");
 assert(payload.system_instruction.includes("Target language: zh-CN"), "translation payload must include target instruction");
+assert(payload.system_instruction.includes("Screenshot context"), "translation payload must include screenshot context for disambiguation");
 
 const retryBlocks = collectUntranslatedLatinRetryBlocks(sourceBlocks, ["Add the missing PATH", "保存"], "zh-CN", "auto");
 assert(retryBlocks.length === 1 && retryBlocks[0].index === 0, "retry collection should target only untranslated Latin blocks");
@@ -163,6 +241,17 @@ assert(pairs.length === sourceBlocks.length, "translate pairs must match OCR blo
 assert(pairs[0].o === "Add the missing PATH" && pairs[0].t === "添加缺失的 PATH", "first translate pair mismatch");
 assert(pairs[1].o === "保存" && pairs[1].t === "保存", "missing pair translation should fall back to original text");
 assert(pairs[0].status === "translated" && pairs[1].status === "preserved", "translate pairs should expose translated/preserved status");
+assert(repairKnownBadTranslationTerms("Codex credits vs Business subscription rate card", "法典积分与企业订阅价目表") === "Codex积分与企业订阅价目表", "Codex bad translation should be repaired");
+assert(repairKnownBadTranslationTerms("Our ticket has been silent", "我们的票一直沉默") === "我们的工单一直沉默", "ticket forum context should be repaired");
+assert(repairKnownBadTranslationTerms("fixture smoke test", "夹具冒烟测试") === "固定测试样例冒烟测试", "fixture test context should be repaired");
+assert(repairKnownBadTranslationTerms("VLM fallback", "VLM 后备") === "VLM 兜底识别", "VLM fallback should use product wording");
+const badProtectedQuality = evaluateTranslationQuality(
+  [block("Codex credits vs Business subscription rate card", 0.98, 0, 0, 240, 14)],
+  ["代码积分与企业订阅价目表"],
+  ["代码积分与企业订阅价目表"],
+  "zh-CN",
+);
+assert(badProtectedQuality.badTranslationCount === 1, "quality judge should flag missing protected Codex token");
 
 const memoryStats = createTranslationMemoryStats();
 assert(memoryStats.preservedHits === 0 && memoryStats.requestedBlocks === 0, "translation memory stats should start empty");
@@ -204,6 +293,33 @@ assert(ltrRegion.eraseRight > translatedRenderBlock.maxX, "LTR translation erase
 const rtlRegion = buildTranslationEraseRegion({ ...translatedRenderBlock, direction: "rtl" }, 640, 160, 260, 5, 3);
 assert(rtlRegion.eraseRight === translatedRenderBlock.maxX + 5, "RTL translation erase should stay anchored to the original right edge");
 assert(rtlRegion.eraseX < translatedRenderBlock.minX, "RTL translation erase should expand to the left");
+
+const paragraphTranslationBlock = block(
+  "Complete an end-to-end commercial-grade OCR/translation optimization closure for the screenshot app: diagnose current gaps, research relevant primary sources, implement the strongest approved pipeline pieces, validate with local fixtures/build/smoke where possible, clean generated caches, and update the two project planning documents with results and next risks.",
+  0.99,
+  10,
+  10,
+  348,
+  146,
+);
+const paragraphRenderLines = [
+  block("Complete an end-to-end commercial-grade", 0.99, 10, 10, 278, 18),
+  block("OCR/translation optimization closure for the screenshot", 0.99, 10, 31, 348, 18),
+  block("app: diagnose current gaps, research relevant primary", 0.99, 10, 53, 334, 18),
+  block("sources, implement the strongest approved pipeline", 0.99, 10, 74, 326, 18),
+  block("pieces, validate with local fixtures/build/smoke where", 0.99, 10, 95, 331, 18),
+  block("possible, clean generated caches, and update the two", 0.99, 10, 116, 332, 18),
+  block("project planning documents with results and next risks.", 0.99, 10, 137, 341, 18),
+];
+const distributedRender = distributeTranslationsForRender(
+  [paragraphTranslationBlock],
+  ["为截图应用完成端到端商业级 OCR/翻译优化闭环：诊断当前差距，研究相关原始资料，实施最强的已批准流程组件，尽可能用本地 fixture、构建和 smoke 测试验证，清理生成缓存，并更新两份项目规划文档。"],
+  paragraphRenderLines,
+);
+assert(distributedRender.blocks.length === paragraphRenderLines.length, "paragraph translations should render on original line anchors");
+assert(distributedRender.translations.length === paragraphRenderLines.length, "paragraph render translations should match line anchors");
+assert(distributedRender.blocks.every((item) => item.box_coords[2][1] - item.box_coords[0][1] <= 22), "paragraph render must not use the tall merged paragraph box");
+assert(distributedRender.translations.join("").includes("OCR/翻译优化闭环"), "distributed paragraph translation should preserve full translated text");
 
 console.log("OCR processing checks passed.");
 `;

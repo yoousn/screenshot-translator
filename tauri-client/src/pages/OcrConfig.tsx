@@ -31,6 +31,17 @@ export default function OcrConfig() {
     await rapidOcr.refreshStatus();
   };
 
+  const saveRapidOcrWorkerEnabled = async (rapidOcrWorkerEnabled: boolean) => {
+    setConfig({ ...config, rapidOcrWorkerEnabled });
+    await saveConfig({ rapidOcrWorkerEnabled }, false);
+    if (rapidOcrWorkerEnabled) {
+      await rapidOcr.startWorker();
+    } else {
+      await rapidOcr.stopWorker();
+    }
+    await rapidOcr.refreshStatus();
+  };
+
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <ConfigPageHeader />
@@ -46,11 +57,17 @@ export default function OcrConfig() {
             status={rapidOcr.status}
             loadingStatus={rapidOcr.loadingStatus}
             selfTesting={rapidOcr.selfTesting}
+            workerBusy={rapidOcr.workerBusy}
             modelVersion={(config.rapidOcrModelVersion || "v5") as RapidOcrModelVersion}
+            workerEnabled={config.rapidOcrWorkerEnabled !== false}
             lastSelfTest={rapidOcr.lastSelfTest}
             onModelVersionChange={saveRapidOcrModelVersion}
+            onWorkerEnabledChange={saveRapidOcrWorkerEnabled}
             onRefreshStatus={rapidOcr.refreshStatus}
             onRunSelfTest={rapidOcr.runSelfTest}
+            onStartWorker={rapidOcr.startWorker}
+            onStopWorker={rapidOcr.stopWorker}
+            onRestartWorker={rapidOcr.restartWorker}
           />
         </Col>
       </Row>

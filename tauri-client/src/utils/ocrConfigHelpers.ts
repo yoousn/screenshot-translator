@@ -12,6 +12,7 @@ export interface LocalConfig {
   rapidOcrModelVersion?: "v5" | "v4";
   rapidOcrMode?: "auto" | "full" | "latin";
   rapidOcrRunnerPath?: string;
+  rapidOcrWorkerEnabled?: boolean;
   appLanguage?: string;
   recordingFfmpegPath?: string;
 }

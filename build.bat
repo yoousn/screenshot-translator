@@ -1,64 +1,146 @@
-﻿@echo off
-chcp 65001 >nul
-setlocal
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
 
-echo === YSN 截图翻译 - 构建脚本 ===
-echo.
+set "ROOT=%~dp0"
+set "CLIENT_DIR=%ROOT%tauri-client"
+set "TAURI_DIR=%CLIENT_DIR%\src-tauri"
+set "PORTABLE_DIR=%ROOT%release\YSN-Screenshot-Translator"
+set "TARGET_EXE=%TAURI_DIR%\target\release\tauri-client.exe"
+set "LEGACY_ROOT_EXE=%ROOT%tauri-client.exe"
+set "NO_PAUSE="
 
-cd /d "%~dp0"
+if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
+if /I "%~1"=="/no-pause" set "NO_PAUSE=1"
 
-echo [准备] 强制关闭正在运行的程序 ...
+echo(=== YSN Screenshot Translator - portable build ===
+echo(
+
+call :kill_running || goto :fail
+call :check_inputs || goto :fail
+call :prepare_output || goto :fail
+call :build_tauri || goto :fail
+call :copy_portable || goto :fail
+
+echo(
+echo(=== Build succeeded ===
+echo(Portable directory: %PORTABLE_DIR%
+echo(Executable: %PORTABLE_DIR%\tauri-client.exe
+echo(Copy the whole portable directory to another computer, not only the exe.
+echo(
+goto :done
+
+:fail
+set "EXIT_CODE=%errorlevel%"
+echo(
+echo([FAIL] Build did not complete. Exit code: %EXIT_CODE%
+if not defined NO_PAUSE pause
+exit /b %EXIT_CODE%
+
+:kill_running
+echo([prepare] Closing running app processes ...
 taskkill /F /T /IM tauri-client.exe >nul 2>nul
 if %errorlevel% equ 0 (
-    echo [准备] 已关闭 tauri-client.exe
+  echo([prepare] Closed tauri-client.exe
 ) else (
-    echo [准备] 未发现正在运行的 tauri-client.exe
+  echo([prepare] No running tauri-client.exe found
 )
-echo.
+echo(
+exit /b 0
 
-echo [准备] 删除旧产物 ...
-if exist "%~dp0tauri-client.exe" (
-    for /L %%i in (1,1,10) do (
-        del /F /Q "%~dp0tauri-client.exe" >nul 2>nul
-        if not exist "%~dp0tauri-client.exe" goto old_output_removed
-        timeout /t 1 /nobreak >nul
+:check_inputs
+echo([prepare] Checking runtime resources ...
+if not exist "%CLIENT_DIR%\package.json" (
+  echo([error] Missing frontend project: %CLIENT_DIR%\package.json
+  exit /b 1
+)
+if not exist "%TAURI_DIR%\tauri.conf.json" (
+  echo([error] Missing Tauri config: %TAURI_DIR%\tauri.conf.json
+  exit /b 1
+)
+if not exist "%TAURI_DIR%\resources\rapidocr\rapidocr-runner\rapidocr-runner.exe" (
+  echo([error] Missing RapidOCR runner:
+  echo(        %TAURI_DIR%\resources\rapidocr\rapidocr-runner\rapidocr-runner.exe
+  echo([hint] Run: cd /d "%CLIENT_DIR%" ^&^& npm run build:rapidocr-runner
+  exit /b 1
+)
+if not exist "%ROOT%models\rapidocr\ch_PP-OCRv5_det_mobile.onnx" (
+  echo([error] Missing RapidOCR models: %ROOT%models\rapidocr
+  exit /b 1
+)
+echo([prepare] Resource check passed
+echo(
+exit /b 0
+
+:prepare_output
+echo([prepare] Cleaning old portable output ...
+if exist "%PORTABLE_DIR%" (
+  rmdir /S /Q "%PORTABLE_DIR%" >nul 2>nul
+  if exist "%PORTABLE_DIR%" (
+    echo([hint] Old portable directory could not be fully removed. Reusing it and syncing with robocopy /MIR.
+    if exist "%PORTABLE_DIR%\tauri-client.exe" (
+      del /F /Q "%PORTABLE_DIR%\tauri-client.exe" >nul 2>nul
+      if exist "%PORTABLE_DIR%\tauri-client.exe" (
+        echo([error] Old portable exe is still locked: %PORTABLE_DIR%\tauri-client.exe
+        exit /b 1
+      )
     )
-    echo [错误] 无法删除旧产物：%~dp0tauri-client.exe
-    echo [提示] 请确认没有杀毒软件、资源管理器或其他程序正在占用该 exe。
-    pause
-    exit /b 1
-) else (
-    echo [准备] 未发现旧产物
-    goto old_output_done
+  )
 )
-:old_output_removed
-echo [准备] 已删除旧产物
-:old_output_done
-echo.
+if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%" >nul 2>nul
+if not exist "%PORTABLE_DIR%" (
+  echo([error] Failed to create portable directory: %PORTABLE_DIR%
+  exit /b 1
+)
+if exist "%LEGACY_ROOT_EXE%" (
+  del /F /Q "%LEGACY_ROOT_EXE%" >nul 2>nul
+  if exist "%LEGACY_ROOT_EXE%" (
+    echo([hint] Legacy root tauri-client.exe is locked; skipped it. New output still goes to release.
+  ) else (
+    echo([prepare] Removed legacy root tauri-client.exe
+  )
+)
+echo(
+exit /b 0
 
-cd /d "%~dp0tauri-client"
-
-echo [1/2] 执行全量编译 (Vite 前端 + Rust 后端) ...
+:build_tauri
+echo([1/2] Building Vite frontend and Rust backend ...
+pushd "%CLIENT_DIR%" >nul
 call npx tauri build --no-bundle
-if %errorlevel% neq 0 (
-    echo [错误] Tauri 构建失败！
-    pause
-    exit /b 1
+set "BUILD_CODE=%errorlevel%"
+popd >nul
+if not "%BUILD_CODE%"=="0" (
+  echo([error] Tauri build failed. Exit code: %BUILD_CODE%
+  exit /b %BUILD_CODE%
 )
-echo [1/2] 编译成功！
-echo.
-
-echo [2/2] 复制产物 ...
-copy /Y "%~dp0tauri-client\src-tauri\target\release\tauri-client.exe" "%~dp0tauri-client.exe" >nul
-if %errorlevel% neq 0 (
-    echo [错误] 复制产物失败！
-    pause
-    exit /b 1
+if not exist "%TARGET_EXE%" (
+  echo([error] Build finished but exe was not found: %TARGET_EXE%
+  exit /b 1
 )
-echo [2/2] 完成！
-echo.
+echo([1/2] Build completed
+echo(
+exit /b 0
 
-echo === 构建成功 ===
-echo 产物位置: %~dp0tauri-client.exe
-echo.
-pause
+:copy_portable
+echo([2/2] Copying portable runtime files ...
+copy /Y "%TARGET_EXE%" "%PORTABLE_DIR%\tauri-client.exe" >nul
+if errorlevel 1 (
+  echo([error] Failed to copy exe
+  exit /b 1
+)
+robocopy "%TAURI_DIR%\resources" "%PORTABLE_DIR%\resources" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 (
+  echo([error] Failed to copy resources
+  exit /b 1
+)
+robocopy "%ROOT%models\rapidocr" "%PORTABLE_DIR%\models\rapidocr" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 (
+  echo([error] Failed to copy RapidOCR models
+  exit /b 1
+)
+echo([2/2] Portable directory is ready
+echo(
+exit /b 0
+
+:done
+if not defined NO_PAUSE pause
+exit /b 0

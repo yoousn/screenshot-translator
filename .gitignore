@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+!tauri-client/src-tauri/resources/rapidocr/**/*.pyd
 
 # C++ build directories
 # Tauri build directories
@@ -53,6 +54,8 @@ server/*.png
 /tauri-client/src-tauri/resources/ocr/*
 !/tauri-client/src-tauri/resources/ocr/.gitkeep
 # Release artifacts
+/release/
+/ScreenshotTranslator_Windows*.zip
 /YSN-Screenshot-Translator-*.zip
 /YSN截图翻译-*.zip
 /YSN截图翻译-v*/

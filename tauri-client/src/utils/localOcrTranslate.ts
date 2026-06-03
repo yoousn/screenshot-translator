@@ -17,8 +17,9 @@ import {
   storeTranslationMemory,
 } from "./translationMemory";
 import { renderTranslatedBlocks } from "./translatedBlocks";
+import { distributeTranslationsForRender } from "../translation-render";
 
-type LocalTranslateConfig = {
+export type LocalTranslateConfig = {
   serverUrl?: string;
   lanServerUrl?: string;
   preferLanServer?: boolean;
@@ -53,6 +54,23 @@ const normalizeLocalTranslateError = (error: unknown) => {
     .trim() || "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u6846\u9009\u6587\u5b57\u533a\u57df\u540e\u518d\u8bd5\u3002";
 };
 
+export type TranslationServicePrewarmCandidate = {
+  serverUrl: string;
+  ok: boolean;
+  latencyMs: number;
+  checkedAt: string;
+  statusCode?: number;
+  activeChannel?: string;
+  error?: string;
+};
+
+export type TranslationServicePrewarmSummary = {
+  reason: string;
+  checkedAt: string;
+  preferredServerUrl: string;
+  candidates: TranslationServicePrewarmCandidate[];
+};
+
 const normalizeTranslationServerUrl = (serverUrl: string) => {
   const trimmed = serverUrl.trim();
   const urlWithProtocol = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
@@ -84,7 +102,13 @@ type TranslationServiceResponse = {
   timings?: TranslationServiceTimings;
 };
 
-const buildTranslationServerCandidates = (config: LocalTranslateConfig) => {
+const DEFAULT_TRANSLATION_TIMEOUT_MS = 9000;
+const RETRY_TRANSLATION_TIMEOUT_MS = 5000;
+const TRANSLATION_HEDGE_DELAY_MS = 700;
+const TRANSLATION_PREWARM_TIMEOUT_MS = 2500;
+const TRANSLATION_PREWARM_CACHE_MS = 60_000;
+
+export const buildTranslationServerCandidates = (config: LocalTranslateConfig) => {
   const remoteUrl = config.serverUrl || DEFAULT_TRANSLATION_SERVICE_URL;
   const candidates = [
     ...(config.preferLanServer && config.lanServerUrl ? [config.lanServerUrl] : []),
@@ -92,6 +116,100 @@ const buildTranslationServerCandidates = (config: LocalTranslateConfig) => {
   ];
   return Array.from(new Set(candidates.map((item) => item.trim()).filter(Boolean)));
 };
+
+let lastPrewarmSummary: TranslationServicePrewarmSummary | null = null;
+let lastPrewarmSignature = "";
+let lastPrewarmAt = 0;
+let prewarmInFlight: Promise<TranslationServicePrewarmSummary> | null = null;
+
+const fetchTranslationServiceHealth = async (
+  serverUrl: string,
+  timeoutMs: number,
+): Promise<TranslationServicePrewarmCandidate> => {
+  const normalizedServerUrl = normalizeTranslationServerUrl(serverUrl);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const started = performance.now();
+  try {
+    const response = await fetch(`${normalizedServerUrl}/api/health`, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const latencyMs = Math.round(performance.now() - started);
+    let payload: any = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    return {
+      serverUrl: normalizedServerUrl,
+      ok: response.ok,
+      latencyMs,
+      checkedAt: new Date().toISOString(),
+      statusCode: response.status,
+      activeChannel: payload?.translation?.active_channel || payload?.channel,
+      error: response.ok ? undefined : `HTTP ${response.status}`,
+    };
+  } catch (error: any) {
+    return {
+      serverUrl: normalizedServerUrl,
+      ok: false,
+      latencyMs: Math.round(performance.now() - started),
+      checkedAt: new Date().toISOString(),
+      error: error?.name === "AbortError" ? `timeout ${timeoutMs}ms` : (error?.message || String(error)),
+    };
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+export const prewarmTranslationServices = async (
+  config: LocalTranslateConfig,
+  options: { force?: boolean; reason?: string; timeoutMs?: number } = {},
+) => {
+  const serverUrls = buildTranslationServerCandidates(config);
+  const normalizedUrls = serverUrls.map((url) => normalizeTranslationServerUrl(url));
+  const signature = normalizedUrls.join("|");
+  const now = Date.now();
+  if (
+    !options.force
+    && lastPrewarmSummary
+    && signature === lastPrewarmSignature
+    && now - lastPrewarmAt < TRANSLATION_PREWARM_CACHE_MS
+  ) {
+    return lastPrewarmSummary;
+  }
+  if (!options.force && prewarmInFlight) {
+    return prewarmInFlight;
+  }
+
+  prewarmInFlight = (async () => {
+    const reason = options.reason || "manual";
+    const candidates = await Promise.all(
+      normalizedUrls.map((serverUrl) => fetchTranslationServiceHealth(serverUrl, options.timeoutMs || TRANSLATION_PREWARM_TIMEOUT_MS)),
+    );
+    const preferredServerUrl = candidates.find((candidate) => candidate.ok)?.serverUrl || candidates[0]?.serverUrl || "";
+    const summary: TranslationServicePrewarmSummary = {
+      reason,
+      checkedAt: new Date().toISOString(),
+      preferredServerUrl,
+      candidates,
+    };
+    lastPrewarmSummary = summary;
+    lastPrewarmSignature = signature;
+    lastPrewarmAt = Date.now();
+    console.info("[Translation Service Prewarm]", summary);
+    return summary;
+  })().finally(() => {
+    prewarmInFlight = null;
+  });
+
+  return prewarmInFlight;
+};
+
+export const getLastTranslationServicePrewarm = () => lastPrewarmSummary;
 
 const requestTextTranslations = async (serverUrl: string, token: string, blocks: OcrBlock[], sourceLang: TranslationSourceLanguage, targetLang: string, timeoutMs: number) => {
   const normalizedServerUrl = normalizeTranslationServerUrl(serverUrl);
@@ -155,22 +273,23 @@ const dedupeTranslationRequestItems = (items: { block: OcrBlock; index: number }
   return Array.from(groups.values());
 };
 
-export const translateWithLocalOcr = async (base64: string, config: LocalTranslateConfig) => {
+type TranslateOcrBlocksOptions = {
+  flowStarted?: number;
+  ocrMs?: number;
+  source?: string;
+};
+
+export const translateOcrBlocks = async (
+  base64: string,
+  rawBlocks: OcrBlock[],
+  config: LocalTranslateConfig,
+  options: TranslateOcrBlocksOptions = {},
+) => {
+  const flowStarted = options.flowStarted ?? performance.now();
   const serverUrls = buildTranslationServerCandidates(config);
   const token = config.clientToken || "";
   const targetLang = config.targetLang || "zh";
-  const translationTimeoutMs = config.translationTimeoutMs || 20000;
-
-  let rawBlocks: OcrBlock[];
-  try {
-    rawBlocks = await invoke("run_local_ocr", {
-      imageBase64: base64,
-      executablePath: null,
-      timeoutMs: config.localOcrTimeoutMs || 15000,
-    });
-  } catch (error) {
-    throw new Error(normalizeLocalTranslateError(error));
-  }
+  const translationTimeoutMs = config.translationTimeoutMs || DEFAULT_TRANSLATION_TIMEOUT_MS;
   const normalization = await buildOcrNormalizationReport(rawBlocks || []);
   const ocrBlocks = normalization.blocks;
   const routePlan = normalization.routePlan;
@@ -197,8 +316,10 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
   translationMemoryStats.deduplicatedBlocks = Math.max(0, requestItems.length - requestGroups.length);
 
   let transData: TranslationServiceResponse = { channel: config.channel };
+  let translationMs = 0;
   if (requestGroups.length > 0) {
     try {
+      const translationStarted = performance.now();
       transData = await requestTextTranslationsWithFallback(
         serverUrls,
         token,
@@ -207,6 +328,7 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
         targetLang,
         translationTimeoutMs,
       );
+      translationMs = Math.round(performance.now() - translationStarted);
       (transData.translations || []).forEach((translated, requestIndex) => {
         const group = requestGroups[requestIndex];
         if (!group) return;
@@ -219,6 +341,7 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
     }
   }
 
+  const retryStarted = performance.now();
   try {
     const retriedTranslations = await retryUntranslatedLatinBlocks(
       serverUrls,
@@ -227,18 +350,39 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
       translations,
       targetLang,
       preferredSourceLang,
-      translationTimeoutMs,
+      Math.min(translationTimeoutMs, RETRY_TRANSLATION_TIMEOUT_MS),
     );
     translations.splice(0, translations.length, ...retriedTranslations);
   } catch (error) {
     throw new Error(normalizeLocalTranslateError(error));
   }
+  const retryMs = Math.round(performance.now() - retryStarted);
   const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(ocrBlocks, translations, targetLang);
   translationMemoryStats.stored = storeTranslationMemory(ocrBlocks, normalizedTranslations, preferredSourceLang, targetLang, transData.channel || config.channel);
 
-  const resultBase64 = await renderTranslatedBlocks(base64, ocrBlocks, normalizedTranslations);
+  const renderStarted = performance.now();
+  const distributedRender = distributeTranslationsForRender(ocrBlocks, normalizedTranslations, normalization.renderBlocks || ocrBlocks);
+  const resultBase64 = await renderTranslatedBlocks(base64, distributedRender.blocks, distributedRender.translations);
+  const renderMs = Math.round(performance.now() - renderStarted);
   const pairs: TranslatePair[] = buildTranslatePairs(ocrBlocks, normalizedTranslations, targetLang);
-  return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", usedServerUrl: transData.serverUrl || (requestGroups.length > 0 ? serverUrls[0] : "local-cache"), blocksCount: ocrBlocks.length, routePlan, normalization, translationQuality, translationMemoryStats, translationTimings: transData.timings };
+  return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", usedServerUrl: transData.serverUrl || (requestGroups.length > 0 ? serverUrls[0] : "local-cache"), blocksCount: ocrBlocks.length, routePlan, normalization, translationQuality, translationMemoryStats, translationTimings: transData.timings, servicePrewarm: getLastTranslationServicePrewarm(), localTimings: { source: options.source || "rapidocr", ocrMs: options.ocrMs ?? 0, translationMs, retryMs, renderMs, totalMs: Math.round(performance.now() - flowStarted) } };
+};
+
+export const translateWithLocalOcr = async (base64: string, config: LocalTranslateConfig) => {
+  const flowStarted = performance.now();
+  let rawBlocks: OcrBlock[];
+  const ocrStarted = performance.now();
+  try {
+    rawBlocks = await invoke("run_local_ocr", {
+      imageBase64: base64,
+      executablePath: null,
+      timeoutMs: config.localOcrTimeoutMs || 15000,
+    });
+  } catch (error) {
+    throw new Error(normalizeLocalTranslateError(error));
+  }
+  const ocrMs = Math.round(performance.now() - ocrStarted);
+  return translateOcrBlocks(base64, rawBlocks, config, { flowStarted, ocrMs, source: "rapidocr" });
 };
 
 const requestTextTranslationsWithFallback = async (
@@ -249,13 +393,39 @@ const requestTextTranslationsWithFallback = async (
   targetLang: string,
   timeoutMs: number,
 ) => {
-  const errors: string[] = [];
-  for (const serverUrl of serverUrls) {
-    try {
-      return await requestTextTranslations(serverUrl, token, blocks, sourceLang, targetLang, timeoutMs);
-    } catch (error: any) {
-      errors.push(`${serverUrl}: ${error?.message || error}`);
-    }
+  if (serverUrls.length <= 1) {
+    return await requestTextTranslations(serverUrls[0], token, blocks, sourceLang, targetLang, timeoutMs);
   }
-  throw new Error(errors.join("; "));
+
+  const errors: string[] = [];
+  let started = 0;
+  let finished = 0;
+  let settled = false;
+
+  return await new Promise<TranslationServiceResponse>((resolve, reject) => {
+    const startCandidate = (serverUrl: string) => {
+      if (settled) return;
+      started += 1;
+      requestTextTranslations(serverUrl, token, blocks, sourceLang, targetLang, timeoutMs)
+        .then((result) => {
+          if (settled) return;
+          settled = true;
+          resolve(result);
+        })
+        .catch((error: any) => {
+          errors.push(`${serverUrl}: ${error?.message || error}`);
+        })
+        .finally(() => {
+          finished += 1;
+          if (!settled && started >= serverUrls.length && finished >= started) {
+            settled = true;
+            reject(new Error(errors.join("; ")));
+          }
+        });
+    };
+
+    serverUrls.forEach((serverUrl, index) => {
+      window.setTimeout(() => startCandidate(serverUrl), index * TRANSLATION_HEDGE_DELAY_MS);
+    });
+  });
 };

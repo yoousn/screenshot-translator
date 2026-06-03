@@ -47,7 +47,11 @@ export default function ConfigReadinessOverview({ runtimeStatus, recordingInfo, 
   const items: ReadinessItem[] = [
     {
       title: labels.overviewOcrRuntime,
-      desc: runtimeStatus?.runtimeInferenceReady ? "RapidOCR runner 和模型 probe 已通过。" : "RapidOCR runner 尚未完成自测。",
+      desc: runtimeStatus?.runtimeInferenceReady
+        ? runtimeStatus.workerEnabled
+          ? "RapidOCR runner、模型目录与常驻服务配置已就绪。"
+          : "RapidOCR runner 与模型 probe 已通过。"
+        : "RapidOCR runner 尚未完成自测。",
       ready: Boolean(runtimeStatus?.runtimeInferenceReady),
       accent: "#2563eb",
       icon: <CheckCircleOutlined />,
@@ -56,7 +60,9 @@ export default function ConfigReadinessOverview({ runtimeStatus, recordingInfo, 
     },
     {
       title: labels.overviewModelPacks,
-      desc: runtimeStatus?.modelPacksReady ? `当前模型：Rapid OCR ${(runtimeStatus.rapidOcrModelVersion || "v5").toUpperCase()}` : "请运行 RapidOCR 自测或修复 runner。",
+      desc: runtimeStatus?.modelPacksReady
+        ? `当前模型：Rapid OCR ${(runtimeStatus.rapidOcrModelVersion || "v5").toUpperCase()}`
+        : "请运行 RapidOCR 自测或修复 runner。",
       ready: Boolean(runtimeStatus?.modelPacksReady),
       accent: "#7c3aed",
       icon: <CheckCircleOutlined />,

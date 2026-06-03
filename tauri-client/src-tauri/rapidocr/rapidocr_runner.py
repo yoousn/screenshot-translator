@@ -1,13 +1,20 @@
 import argparse
+import contextlib
 import json
+import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 
+_ENGINE_CACHE: dict[tuple[str, str, str], object] = {}
+
+
 def _configure_stdout() -> None:
     try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
@@ -41,16 +48,39 @@ def _rec_lang_enum(LangRec, lang: str):
     return mapping.get(lang, LangRec.CH)
 
 
-def _build_engine(lang: str, version: str, model_root: Path | None = None):
+def _engine_cache_key(lang: str, version: str, model_root: Path | None = None) -> tuple[str, str, str]:
+    root_key = ""
+    if model_root:
+        try:
+            root_key = str(model_root.resolve())
+        except Exception:
+            root_key = str(model_root)
+    return (lang, version, root_key)
+
+
+def _det_limit_side_len() -> int:
+    raw_value = os.environ.get("YSN_RAPIDOCR_DET_LIMIT_SIDE_LEN", "640")
+    try:
+        value = int(raw_value)
+    except Exception:
+        value = 640
+    return max(480, min(736, value))
+
+
+def _build_engine_uncached(lang: str, version: str, model_root: Path | None = None):
     EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidOCR = _import_rapidocr()
     ocr_version = _version_enum(OCRVersion, version)
     rec_lang = _rec_lang_enum(LangRec, lang)
     params = {
         "Global.model_root_dir": str(model_root) if model_root else None,
+        "Global.use_cls": False,
+        "Global.log_level": "warning",
         "Det.engine_type": EngineType.ONNXRUNTIME,
         "Det.lang_type": LangDet.CH,
         "Det.model_type": ModelType.MOBILE,
         "Det.ocr_version": ocr_version,
+        "Det.limit_side_len": _det_limit_side_len(),
+        "Det.limit_type": "min",
         "Rec.engine_type": EngineType.ONNXRUNTIME,
         "Rec.lang_type": rec_lang,
         "Rec.model_type": ModelType.MOBILE,
@@ -63,6 +93,22 @@ def _build_engine(lang: str, version: str, model_root: Path | None = None):
     if not model_root:
         params.pop("Global.model_root_dir", None)
     return RapidOCR(params=params)
+
+
+def _get_engine(lang: str, version: str, model_root: Path | None = None):
+    key = _engine_cache_key(lang, version, model_root)
+    if key in _ENGINE_CACHE:
+        return _ENGINE_CACHE[key], 0, True
+    started = time.perf_counter()
+    engine = _build_engine_uncached(lang, version, model_root)
+    init_ms = int(round((time.perf_counter() - started) * 1000))
+    _ENGINE_CACHE[key] = engine
+    return engine, init_ms, False
+
+
+def _build_engine(lang: str, version: str, model_root: Path | None = None):
+    engine, _, _ = _get_engine(lang, version, model_root)
+    return engine
 
 
 def _box_to_ints(box) -> list[list[int]]:
@@ -233,12 +279,6 @@ def _joined_text(blocks: list[dict]) -> str:
     return "\n".join(str(block.get("text") or "") for block in blocks)
 
 
-def _is_latin_heavy(blocks: list[dict]) -> bool:
-    counts = _script_counts(_joined_text(blocks))
-    non_latin = counts["cjk"] + counts["kana"] + counts["hangul"] + counts["arabic"] + counts["cyrillic"] + counts["thai"]
-    return counts["latin"] >= 8 and non_latin == 0
-
-
 def _candidate_quality(blocks: list[dict], lang: str = "ch") -> float:
     if not blocks:
         return -1000.0
@@ -310,22 +350,113 @@ def _should_try_fallback(blocks: list[dict]) -> bool:
     return avg_conf < 0.72 or question_ratio > 0.18 or replacement_ratio > 0.05
 
 
-def _run_candidate(image_path: Path, lang: str, version: str, model_root: Path | None = None) -> dict:
-    started = time.perf_counter()
-    engine = _build_engine(lang, version, model_root)
-    init_ms = int(round((time.perf_counter() - started) * 1000))
+def _scale_block_coords(blocks: list[dict], scale: float, pad_x: int, pad_y: int) -> list[dict]:
+    if scale <= 0:
+        return blocks
+    scaled_blocks = []
+    for block in blocks:
+        next_block = dict(block)
+        next_coords = []
+        for point in block.get("box_coords") or []:
+            if len(point) < 2:
+                next_coords.append(point)
+                continue
+            x = int(round(float(point[0]) / scale - pad_x))
+            y = int(round(float(point[1]) / scale - pad_y))
+            next_coords.append([max(0, x), max(0, y)])
+        next_block["box_coords"] = next_coords
+        scaled_blocks.append(next_block)
+    return scaled_blocks
+
+
+def _enhanced_image_variants(image_path: Path) -> list[dict]:
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+    except Exception:
+        return []
+
+    try:
+        source = Image.open(image_path).convert("RGB")
+    except Exception:
+        return []
+
+    width, height = source.size
+    if width <= 0 or height <= 0:
+        return []
+
+    scale = 3.0 if max(width, height) < 700 else 2.0
+    pad = 10 if max(width, height) < 700 else 6
+    variants = []
+    try:
+        padded = ImageOps.expand(source, border=pad, fill="white")
+        target_size = (
+            max(1, int(round(padded.width * scale))),
+            max(1, int(round(padded.height * scale))),
+        )
+        resampling_container = getattr(Image, "Resampling", Image)
+        resampling = getattr(resampling_container, "LANCZOS", Image.BICUBIC)
+        enlarged = padded.resize(target_size, resampling)
+        enhanced = ImageOps.autocontrast(enlarged.convert("L"))
+        enhanced = ImageEnhance.Contrast(enhanced).enhance(1.35)
+        enhanced = enhanced.filter(ImageFilter.SHARPEN)
+        enhanced = enhanced.convert("RGB")
+        temp_dir = Path(tempfile.gettempdir()) / "ysn-screenshot-translator" / "rapidocr"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        variant_path = temp_dir / f"ocr-smalltext-{os.getpid()}-{time.time_ns()}.png"
+        enhanced.save(variant_path)
+        variants.append(
+            {
+                "label": "small-text-boost",
+                "path": variant_path,
+                "scale": scale,
+                "pad_x": pad,
+                "pad_y": pad,
+            }
+        )
+    except Exception:
+        return variants
+    return variants
+
+
+def _should_try_small_text_retry(blocks: list[dict], quality: float) -> bool:
+    if not blocks:
+        return True
+    if quality < 62.0 and len(blocks) <= 3:
+        return True
+    tiny_blocks = 0
+    for block in blocks:
+        min_x, min_y, max_x, max_y = _bounds(block)
+        if max(max_x - min_x, max_y - min_y) < 30:
+            tiny_blocks += 1
+    return tiny_blocks >= max(1, len(blocks) - 1) and quality < 72.0
+
+
+def _run_candidate(
+    image_path: Path,
+    lang: str,
+    version: str,
+    model_root: Path | None = None,
+    *,
+    variant: str = "original",
+    scale: float = 1.0,
+    pad_x: int = 0,
+    pad_y: int = 0,
+) -> dict:
+    engine, init_ms, cache_hit = _get_engine(lang, version, model_root)
     infer_started = time.perf_counter()
-    result = engine(str(image_path))
+    result = engine(str(image_path), use_cls=False)
     infer_ms = int(round((time.perf_counter() - infer_started) * 1000))
-    blocks = _blocks_from_result(result)
+    blocks = _scale_block_coords(_blocks_from_result(result), scale, pad_x, pad_y)
     return {
         "lang": lang,
+        "variant": variant,
         "blocks": blocks,
         "quality": _candidate_quality(blocks, lang),
         "timings": {
             "init_ms": init_ms,
             "engine_ms": infer_ms,
             "rapidocr_ms": int(round(float(getattr(result, "elapse", 0.0)) * 1000)),
+            "cache_hit": cache_hit,
         },
     }
 
@@ -338,31 +469,101 @@ def _select_candidates(mode: str) -> list[str]:
     return ["ch"]
 
 
-def run_ocr(image_path: Path, version: str, mode: str, model_root: Path | None = None) -> dict:
+def _append_candidate(
+    candidates: list[dict],
+    image_path: Path,
+    lang: str,
+    version: str,
+    model_root: Path | None,
+    *,
+    variant: str = "original",
+    scale: float = 1.0,
+    pad_x: int = 0,
+    pad_y: int = 0,
+) -> None:
+    try:
+        candidates.append(
+            _run_candidate(
+                image_path,
+                lang,
+                version,
+                model_root,
+                variant=variant,
+                scale=scale,
+                pad_x=pad_x,
+                pad_y=pad_y,
+            )
+        )
+    except Exception as exc:
+        candidates.append({"lang": lang, "variant": variant, "error": str(exc), "blocks": [], "quality": -1000.0})
+
+
+def _best_candidate(candidates: list[dict]) -> dict:
+    return max(candidates, key=lambda item: float(item.get("quality", -1000.0)))
+
+
+def run_ocr(
+    image_path: Path,
+    version: str,
+    mode: str,
+    model_root: Path | None = None,
+    *,
+    small_text_retry: bool = True,
+) -> dict:
     total_started = time.perf_counter()
-    primary = _run_candidate(image_path, "ch", version, model_root)
-    candidates = [primary]
+    candidates: list[dict] = []
+
+    for lang in _select_candidates(mode):
+        _append_candidate(candidates, image_path, lang, version, model_root)
+
+    if mode == "auto" and _should_try_fallback(_best_candidate(candidates)["blocks"]):
+        _append_candidate(candidates, image_path, "latin", version, model_root)
+
+    best = _best_candidate(candidates)
+    if small_text_retry and _should_try_small_text_retry(best.get("blocks", []), float(best.get("quality", -1000.0))):
+        enhanced_variants = _enhanced_image_variants(image_path)
+        try:
+            for variant in enhanced_variants:
+                retry_langs = ["latin", "ch"] if mode in {"auto", "latin"} else ["ch", "latin"]
+                for lang in retry_langs:
+                    _append_candidate(
+                        candidates,
+                        Path(variant["path"]),
+                        lang,
+                        version,
+                        model_root,
+                        variant=variant["label"],
+                        scale=float(variant["scale"]),
+                        pad_x=int(variant["pad_x"]),
+                        pad_y=int(variant["pad_y"]),
+                    )
+        finally:
+            for variant in enhanced_variants:
+                try:
+                    Path(variant["path"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    best = _best_candidate(candidates)
     fallback_langs: list[str] = []
     if mode == "full":
         fallback_langs = ["latin", "korean", "arabic", "cyrillic", "th"]
-    elif mode == "auto" and _should_try_fallback(primary["blocks"]):
-        fallback_langs = ["latin", "korean", "arabic", "cyrillic", "th"]
-    elif mode == "latin":
-        fallback_langs = ["latin"]
+    elif mode == "auto" and _should_try_fallback(best.get("blocks", [])):
+        fallback_langs = ["korean", "arabic", "cyrillic", "th"]
 
     if fallback_langs:
+        already_run = {(item.get("lang"), item.get("variant", "original")) for item in candidates}
         for lang in fallback_langs:
-            try:
-                candidates.append(_run_candidate(image_path, lang, version, model_root))
-            except Exception as exc:
-                candidates.append({"lang": lang, "error": str(exc), "blocks": [], "quality": -1000.0})
+            if (lang, "original") not in already_run:
+                _append_candidate(candidates, image_path, lang, version, model_root)
 
-    best = max(candidates, key=lambda item: float(item.get("quality", -1000.0)))
+    best = _best_candidate(candidates)
     return {
         "status": "success",
         "engine": "rapidocr",
         "modelVersion": version,
         "selectedLang": best["lang"],
+        "selectedVariant": best.get("variant", "original"),
         "blocks": best.get("blocks", []),
         "timings": {
             "total_ms": int(round((time.perf_counter() - total_started) * 1000)),
@@ -373,6 +574,7 @@ def run_ocr(image_path: Path, version: str, mode: str, model_root: Path | None =
         "candidates": [
             {
                 "lang": item.get("lang"),
+                "variant": item.get("variant", "original"),
                 "quality": item.get("quality"),
                 "blocks": len(item.get("blocks", [])),
                 "error": item.get("error"),
@@ -395,7 +597,12 @@ def run_probe(version: str, model_root: Path | None = None) -> dict:
     }
 
 
-def run_warm_models(model_root: Path | None = None) -> dict:
+def run_warm_models(
+    model_root: Path | None = None,
+    *,
+    versions: list[str] | None = None,
+    langs: list[str] | None = None,
+) -> dict:
     started = time.perf_counter()
     warmed = []
     errors = []
@@ -403,8 +610,10 @@ def run_warm_models(model_root: Path | None = None) -> dict:
         "v5": ["ch", "latin", "korean", "arabic", "cyrillic", "th"],
         "v4": ["ch", "latin", "korean", "arabic", "cyrillic"],
     }
-    for version, langs in warm_plan.items():
-        for lang in langs:
+    selected_versions = versions or list(warm_plan.keys())
+    for version in selected_versions:
+        selected_langs = langs or warm_plan.get(version, ["ch", "latin"])
+        for lang in selected_langs:
             try:
                 _build_engine(lang, version, model_root)
                 warmed.append({"version": version, "lang": lang})
@@ -419,6 +628,68 @@ def run_warm_models(model_root: Path | None = None) -> dict:
     }
 
 
+def _worker_status() -> dict:
+    return {
+        "status": "success",
+        "engine": "rapidocr-worker",
+        "pid": os.getpid(),
+        "cachedEngines": [
+            {"lang": lang, "version": version, "modelRoot": model_root}
+            for lang, version, model_root in _ENGINE_CACHE.keys()
+        ],
+    }
+
+
+def _serve_worker() -> int:
+    _configure_stdout()
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip().lstrip("\ufeff")
+        if not raw_line:
+            continue
+        request_id = None
+        try:
+            request = json.loads(raw_line)
+            request_id = request.get("id")
+            method = request.get("method")
+            params = request.get("params") or {}
+            should_shutdown = False
+            with contextlib.redirect_stdout(sys.stderr):
+                if method == "ping":
+                    result = {"status": "success", "engine": "rapidocr-worker", "message": "pong"}
+                elif method == "status":
+                    result = _worker_status()
+                elif method == "warm":
+                    model_root = Path(params["modelRoot"]) if params.get("modelRoot") else None
+                    versions = params.get("versions")
+                    if not versions and params.get("modelVersion"):
+                        versions = [params["modelVersion"]]
+                    langs = params.get("langs")
+                    result = run_warm_models(model_root, versions=versions, langs=langs)
+                elif method == "ocr":
+                    image_path = Path(params["imagePath"])
+                    if not image_path.exists():
+                        raise RuntimeError(f"image not found: {image_path}")
+                    model_root = Path(params["modelRoot"]) if params.get("modelRoot") else None
+                    result = run_ocr(
+                        image_path,
+                        params.get("modelVersion", "v5"),
+                        params.get("mode", "auto"),
+                        model_root,
+                        small_text_retry=bool(params.get("smallTextRetry", True)),
+                    )
+                elif method == "shutdown":
+                    result = {"status": "success"}
+                    should_shutdown = True
+                else:
+                    raise RuntimeError(f"unknown worker method: {method}")
+            print(json.dumps({"id": request_id, "ok": True, "result": result}, ensure_ascii=False), flush=True)
+            if should_shutdown:
+                return 0
+        except Exception as exc:
+            print(json.dumps({"id": request_id, "ok": False, "error": str(exc)}, ensure_ascii=False), flush=True)
+    return 0
+
+
 def main() -> int:
     _configure_stdout()
     parser = argparse.ArgumentParser(description="RapidOCR JSON runner for YSN Screenshot Translator")
@@ -428,8 +699,13 @@ def main() -> int:
     parser.add_argument("--model-root")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--warm-models", action="store_true")
+    parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--no-small-text-retry", action="store_true")
     args = parser.parse_args()
     model_root = Path(args.model_root) if args.model_root else None
+
+    if args.worker:
+        return _serve_worker()
 
     if args.warm_models:
         try:
@@ -458,7 +734,7 @@ def main() -> int:
         return 2
 
     try:
-        payload = run_ocr(image_path, args.model_version, args.mode, model_root)
+        payload = run_ocr(image_path, args.model_version, args.mode, model_root, small_text_retry=not args.no_small_text_retry)
         print(json.dumps(payload, ensure_ascii=False))
         return 0
     except Exception as exc:

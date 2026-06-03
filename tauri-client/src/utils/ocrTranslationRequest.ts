@@ -29,8 +29,11 @@ export type TranslationQualitySummary = {
   preservedCount: number;
   missingCount: number;
   untranslatedCount: number;
+  badTranslationCount: number;
   untranslatedIndexes: number[];
   preservedIndexes: number[];
+  badTranslationIndexes: number[];
+  badTranslationReasons: Record<number, string[]>;
 };
 
 export const isChineseTargetLanguage = (targetLang: string) => targetLang === "zh" || targetLang.startsWith("zh");
@@ -56,6 +59,16 @@ export const selectPreferredSourceLanguage = (blocks: OcrBlock[], targetLang: st
 );
 
 const protectedExactTerms = new Set([
+  "codex",
+  "openai",
+  "chatgpt",
+  "api",
+  "apis",
+  "sdk",
+  "mcp",
+  "gpt",
+  "gpt-5",
+  "vlm",
   "path",
   "windows",
   "ocr",
@@ -75,6 +88,7 @@ const commandLineMarkerPattern = /(?:&&|\|\||\s-{1,2}[\w-]+)/;
 const packageLikePattern = /^(?:@[\w.-]+\/)?[\w.-]+(?:\/[\w.-]+)+$/;
 const uppercaseIdentifierPattern = /^[A-Z0-9][A-Z0-9_.-]*[_./-][A-Z0-9_.-]*$/;
 const translatableScriptPattern = /[A-Za-z]{2,}|[\u0400-\u052f]{2,}|[\u0600-\u06ff]{2,}|[\u0e00-\u0e7f]{2,}|[\u3040-\u30ff]{2,}|[\uac00-\ud7af]{2,}/;
+const protectedTranslationTokenPattern = /\b(?:Codex|OpenAI|ChatGPT|API|APIs|SDK|MCP|GPT(?:-\d+(?:\.\d+)?(?:-Codex)?)?|VLM|ONNX|ONNXRuntime|RapidOCR|Windows|PATH)\b/g;
 
 const hasChineseText = (text: string) => /[\u3400-\u9fff]/.test(text);
 
@@ -127,7 +141,7 @@ export const buildTranslationRequestPayload = (
   blocks: blocks.map((block) => ({ text: block.text, confidence: block.confidence, box: block.box_coords })),
   source_lang: sourceLang,
   target_lang: targetLang,
-  system_instruction: buildTranslationSystemInstruction(targetLang),
+  system_instruction: buildTranslationSystemInstruction(targetLang, blocks.map((block) => block.text)),
   quality_policy: buildTranslationQualityPolicy(targetLang),
 });
 
@@ -157,9 +171,56 @@ export const mergeRetryTranslations = (
   return retryIndex >= 0 ? (retryTranslations[retryIndex] || item) : item;
 });
 
+export const repairKnownBadTranslationTerms = (sourceText: string, translatedText: string) => {
+  const source = sourceText.replace(/\s+/g, " ").trim();
+  let next = translatedText.replace(/\s+/g, " ").trim();
+  if (!next) return next;
+
+  if (/\bCodex\b/i.test(source)) {
+    next = next.replace(/法典|科德克斯/g, "Codex");
+  }
+  if (/\bOpenAI\b/i.test(source)) {
+    next = next.replace(/开放人工智能|开放AI/g, "OpenAI");
+  }
+  if (/\bChatGPT\b/i.test(source)) {
+    next = next.replace(/聊天GPT|聊天机器人GPT/g, "ChatGPT");
+  }
+  if (/\bticket\b/i.test(source)) {
+    next = next.replace(/(?:支持)?票据|门票|票/g, "工单");
+  }
+  if (/\bfixture(?:s)?\b/i.test(source)) {
+    next = next.replace(/固定装置|夹具/g, "固定测试样例");
+  }
+  if (/\bVLM\s+fallback\b/i.test(source)) {
+    next = next.replace(/VLM\s*后备|视觉语言模型后备|VLM\s*fallback/gi, "VLM 兜底识别");
+  }
+
+  return next;
+};
+
+const collectProtectedTranslationTokens = (text: string) => (
+  Array.from(new Set(text.match(protectedTranslationTokenPattern) || []))
+);
+
+const getBadTranslationReasons = (sourceText: string, translatedText: string) => {
+  const reasons: string[] = [];
+  const source = sourceText.replace(/\s+/g, " ").trim();
+  const translated = translatedText.replace(/\s+/g, " ").trim();
+  if (!source || !translated) return reasons;
+
+  for (const token of collectProtectedTranslationTokens(source)) {
+    if (!translated.includes(token)) reasons.push(`missing-protected-token:${token}`);
+  }
+  if (/\bCodex\b/i.test(source) && /法典|科德克斯/.test(translated)) reasons.push("bad-term:codex");
+  if (/\bticket\b/i.test(source) && /(?:支持)?票据|门票|票/.test(translated)) reasons.push("bad-term:ticket");
+  if (/\bfixture(?:s)?\b/i.test(source) && /固定装置|夹具/.test(translated)) reasons.push("bad-term:fixture");
+  if (/\bVLM\s+fallback\b/i.test(source) && /VLM\s*后备|视觉语言模型后备/i.test(translated)) reasons.push("bad-term:vlm-fallback");
+  return reasons;
+};
+
 export const normalizeTranslationResults = (blocks: OcrBlock[], translations: string[]) => (
   blocks.map((block, index) => {
-    const translated = translations[index]?.trim();
+    const translated = repairKnownBadTranslationTerms(block.text, translations[index]?.trim() || "");
     return translated || block.text;
   })
 );
@@ -177,8 +238,11 @@ export const evaluateTranslationQuality = (
     preservedCount: 0,
     missingCount: 0,
     untranslatedCount: 0,
+    badTranslationCount: 0,
     untranslatedIndexes: [],
     preservedIndexes: [],
+    badTranslationIndexes: [],
+    badTranslationReasons: {},
   };
 
   blocks.forEach((block, index) => {
@@ -188,6 +252,12 @@ export const evaluateTranslationQuality = (
     const unchanged = normalizeForCompare(normalizedTranslated) === normalizeForCompare(block.text);
 
     if (!rawTranslated) summary.missingCount += 1;
+    const badReasons = rawTranslated ? getBadTranslationReasons(block.text, normalizedTranslated) : [];
+    if (badReasons.length > 0) {
+      summary.badTranslationCount += 1;
+      summary.badTranslationIndexes.push(index);
+      summary.badTranslationReasons[index] = badReasons;
+    }
     if (requiresTranslation) {
       summary.translatableCount += 1;
       if (unchanged || !rawTranslated) {

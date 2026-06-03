@@ -4,6 +4,8 @@ export * from "./technicalTerms";
 export * from "./textSpacing";
 export * from "./blockFilters";
 export * from "./lineGrouping";
+export * from "./forumListProfile";
+export * from "./paragraphProfile";
 export * from "./translationPolicy";
 export * from "./ocrRoutePlan";
 export * from "./normalizationReport";

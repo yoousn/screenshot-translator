@@ -2,8 +2,10 @@ param(
   [string]$RunnerPath,
   [string]$FixtureDir,
   [string]$RealScreenshotPath,
+  [string]$UserScreenshotDir,
   [string[]]$RealExpectContains = @(),
   [int]$RealMinBlocks = 8,
+  [switch]$SkipUserScreenshots,
   [switch]$KeepFixtures
 )
 
@@ -13,7 +15,9 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $clientRoot = Split-Path -Parent $scriptRoot
 $repoRoot = Split-Path -Parent $clientRoot
 $tauriRoot = Join-Path $clientRoot "src-tauri"
-$defaultRunner = Join-Path $tauriRoot "rapidocr\rapidocr_runner.py"
+$bundledRunner = Join-Path $tauriRoot "resources\rapidocr\rapidocr-runner\rapidocr-runner.exe"
+$pythonRunner = Join-Path $tauriRoot "rapidocr\rapidocr_runner.py"
+$defaultRunner = if (Test-Path -LiteralPath $bundledRunner) { $bundledRunner } else { $pythonRunner }
 $modelRoot = Join-Path $repoRoot "models\rapidocr"
 
 if (-not $RunnerPath) {
@@ -21,6 +25,9 @@ if (-not $RunnerPath) {
 }
 if (-not $FixtureDir) {
   $FixtureDir = Join-Path $env:TEMP "rapidocr-fixtures"
+}
+if (-not $UserScreenshotDir) {
+  $UserScreenshotDir = Join-Path $repoRoot (-join (0x6D4B, 0x8BD5, 0x56FE, 0x7247 | ForEach-Object { [char]$_ }))
 }
 if (-not (Test-Path -LiteralPath $RunnerPath)) {
   throw "RapidOCR runner is not ready: $RunnerPath"
@@ -159,6 +166,76 @@ if ($RealScreenshotPath) {
     image_path = $resolvedRealScreenshotPath
     expect_contains = @($RealExpectContains)
     min_blocks = $RealMinBlocks
+  }
+}
+
+if (-not $SkipUserScreenshots -and (Test-Path -LiteralPath $UserScreenshotDir)) {
+  $userFixtureExpectations = @{
+    "1.png" = [ordered]@{
+      expect_contains = @("Developer Community", "Read this before posting", "GPT 5.5")
+      min_blocks = 50
+    }
+    "2.png" = [ordered]@{
+      expect_contains = @("best OpenAl model", "human-sounding", "experimenting")
+      min_blocks = 15
+    }
+    "3.png" = [ordered]@{
+      expect_contains = @("Intelligent", "Community", "graph-search")
+      min_blocks = 6
+    }
+    "4.png" = [ordered]@{
+      expect_contains = @("Read aloud", "Perceived Drop", "MCP tool calls", "Codex credits")
+      min_blocks = 14
+    }
+  }
+
+  Get-ChildItem -LiteralPath $UserScreenshotDir -Filter "*.png" | Sort-Object Name | ForEach-Object {
+    $expectation = $userFixtureExpectations[$_.Name]
+    if ($expectation) {
+      $fixtures += [ordered]@{
+        name = "user-$($_.BaseName)"
+        image_path = $_.FullName
+        expect_contains = @($expectation.expect_contains)
+        min_blocks = [int]$expectation.min_blocks
+      }
+    }
+  }
+
+  $userScreenshotTest2Dir = Join-Path $UserScreenshotDir (New-UnicodeString -CodePoints @(0x6D4B, 0x8BD5, 0x0032))
+  if (Test-Path -LiteralPath $userScreenshotTest2Dir) {
+    $originalTextName = (New-UnicodeString -CodePoints @(0x539F, 0x59CB, 0x6587, 0x672C)) + ".png"
+    $wechatTranslationName = (New-UnicodeString -CodePoints @(0x5FAE, 0x4FE1, 0x7FFB, 0x8BD1, 0x7ED3, 0x679C)) + ".png"
+    $ourTranslationName = (New-UnicodeString -CodePoints @(0x6211, 0x4EEC, 0x7684, 0x622A, 0x56FE, 0x7FFB, 0x8BD1, 0x7ED3, 0x679C)) + ".png"
+    $commercialGrade = New-UnicodeString -CodePoints @(0x5546, 0x4E1A, 0x7EA7)
+    $projectPlanFile = New-UnicodeString -CodePoints @(0x9879, 0x76EE, 0x89C4, 0x5212, 0x6587, 0x4EF6)
+    $endToEndCommercial = New-UnicodeString -CodePoints @(0x5B8C, 0x6210, 0x7AEF, 0x5230, 0x7AEF, 0x5546, 0x4E1A, 0x7EA7)
+
+    $userTest2FixtureExpectations = @{
+      $originalTextName = [ordered]@{
+        expect_contains = @("Complete", "OCR/translation", "fixtures/build/smoke", "project planning")
+        min_blocks = 35
+      }
+      $wechatTranslationName = [ordered]@{
+        expect_contains = @($commercialGrade, "OCR", $projectPlanFile)
+        min_blocks = 5
+      }
+      $ourTranslationName = [ordered]@{
+        expect_contains = @($endToEndCommercial, $projectPlanFile)
+        min_blocks = 7
+      }
+    }
+
+    Get-ChildItem -LiteralPath $userScreenshotTest2Dir -Filter "*.png" | Sort-Object Name | ForEach-Object {
+      $expectation = $userTest2FixtureExpectations[$_.Name]
+      if ($expectation) {
+        $fixtures += [ordered]@{
+          name = "user-test2-$($_.BaseName)"
+          image_path = $_.FullName
+          expect_contains = @($expectation.expect_contains)
+          min_blocks = [int]$expectation.min_blocks
+        }
+      }
+    }
   }
 }
 

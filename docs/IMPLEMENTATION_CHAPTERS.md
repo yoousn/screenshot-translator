@@ -7,26 +7,30 @@
 ### 当前阶段
 
 - 当前主线：产品内置 `RapidOCR / ONNXRuntime` OCR 主路径。
-- 当前最新完整验证章节：Chapter 134。
-- 当前正在推进章节：Chapter 135：真实截图 RapidOCR fixture 与多语言 fallback 性能优化。
-- Chapter 134 当前状态：已完成，控制台/识字模型页轻量化、录制保存后二次录制、大模型提示词配置、前端构建和服务端测试均通过。
+- 当前最新完整验证章节：Chapter 147。
+- 当前正在推进章节：Chapter 148：真实用户感知延迟诊断、动态 small-text retry 与 OCR worker 细分打点。
+- Chapter 147 当前状态：已完成，UIA 文本源父容器串台防护、翻译渲染字号/换行/clip 保险、透明程序图标重建、便携打包和 release smoke 均通过验证。
 - 关键原则：旧自研 `YSN OCR Runtime` 已废弃为非主路径；普通主流程只走 RapidOCR runner。OCR ready 必须由打包 runner、自测、fixture、真实 `Ctrl+D` 结果窗和翻译覆盖层共同证明。
 
 ### 当前已验证命令
 
-- Chapter 134 定向验证已通过：
-  - `npm run check:i18n`
+- Chapter 147 验证已通过：
   - `npm run check:ocr-processing`
   - `npm run build`
-  - `python -m pytest server\tests\test_translator.py server\tests\test_server.py`：`16 passed, 2 skipped`
-  - `python -m pytest server\tests`：`26 passed, 3 skipped`
+  - `npm run check:ocr-fixtures`
+  - `cargo check`
+  - `cmd /c "build.bat --no-pause"`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`
+  - release smoke：新版 `release\YSN-Screenshot-Translator\tauri-client.exe` 启动后保持存活。
+  - 侧栏 UIA 串台门禁：小选区只保留真实子文本，整列聚合文本回落 RapidOCR。
+  - 透明图标像素检查：`app.ico` / `icon.png` / `taskbar-32x32.png` 不再有不透明白底像素。
 
 ### 当前未完成事项
 
-- Chapter 135 还未开始：下一步把用户真实截图/网页截图固化成 RapidOCR fixture，并优化韩文/阿拉伯文完整 fallback 的耗时。
-- 打包版 RapidOCR 资源目录当前约 `340.7 MB`；旧 onefile 遗留 `rapidocr-runner.exe` 已清理，构建脚本已防止复发。
-- 仍未做完整 Windows 人工验收：Alt+A、OCR、翻译、录制、复制、保存、取消、打开目录。
-- 仍需验证真实复杂背景下的覆盖层擦除、长译文换行和边界截断。
+- Chapter 148 下一步：继续优化真实用户感知延迟，优先做动态 small-text retry，并把 OCR worker warm/cold、detector、recognizer、文本源拒绝原因和翻译服务耗时写入可复制诊断报告。
+- 打包版 RapidOCR runner 已改为 Python 3.12 onedir 便携产物；迁移电脑时复制整个 `release\YSN-Screenshot-Translator` 目录，不要只复制 exe。
+- Windows 主窗口前台 `Alt+A` 首击框选已做自动 smoke，但仍建议用户回来后在自己的多屏/DPI/杀毒环境下再做人工复测。
+- 仍需用户用侧边栏样例做一次肉眼复测，确认 UIA 保守过滤后不再出现单词被整列父容器污染。
 
 ### 当前工作树提醒
 
@@ -3011,3 +3015,922 @@ Chapter 138：如果复测仍存在“Alt+A 后第一下鼠标不被截图 canva
 ### 下一章建议
 
 Chapter 139：如果真实 exe 仍吃第一下鼠标，下一步不要继续堆焦点调用，而是改成 screenshot overlay 的 native wrapper 先捕获第一下鼠标，再把坐标派发给 React canvas。
+
+## Chapter 139：RapidOCR 便携 runner 与截图首击再闭环
+
+### 目标
+
+用户换电脑后反馈：
+
+- OCR 报错：`RapidOCR runner failed with status exit code: 1`，stdout 显示 `RapidOCR is not installed. Install rapidocr and onnxruntime, or bundle rapidocr-runner.exe.`
+- 主窗口前台时截图仍要先点击一下，第二下才真正开始框选。
+
+### 本章实际处理
+
+- RapidOCR runner 便携性：
+  - `resolve_rapidocr_command` 不再只查 exe 同级和 Tauri resource 目录；新增候选表，覆盖 root portable、`resources/rapidocr`、Tauri resource、源码 `src-tauri/resources`、以及根目录 `tauri-client/src-tauri/resources`。
+  - runner 查找顺序调整为：显式配置/环境变量、产品内置 runner、最后才回退开发 Python 脚本，避免新电脑没装 Python 包时优先跑裸 `rapidocr_runner.py`。
+  - `rapid_ocr_model_root` 改为基于 `AppHandle` 查找模型，覆盖 exe 同级 `models/rapidocr`、Tauri resource `models/rapidocr`、旧 `_up_/_up_/models/rapidocr`、源码根目录模型。
+  - `tauri.conf.json` 的 bundle resources 从隐式数组改为显式映射，把 `../../models/rapidocr/` 打包到稳定的 `models/rapidocr/`。
+- RapidOCR runner 产物修复：
+  - 重新构建 `rapidocr-runner.exe`，修复旧产物缺少 `_socket.pyd`、`select.pyd` 等 Python 标准扩展导致换机启动失败的问题。
+  - `build-rapidocr-runner.ps1` 新增隐藏导入和产物校验，构建后必须检查 `_socket*.pyd`、`select*.pyd`，防止再次生成“有 exe 但不能跑”的假 runner。
+  - `.gitignore` 放开 `tauri-client/src-tauri/resources/rapidocr/**/*.pyd`，确保 runner 必需 `.pyd` 能纳入仓库/LFS。
+  - `check-ocr-fixtures.ps1` 默认优先使用内置 `rapidocr-runner.exe`，不存在时才回退开发 Python 脚本。
+- 便携构建脚本：
+  - `build.bat` 从 2 步改为 3 步，构建后复制 `tauri-client/src-tauri/resources` 到根目录 `resources`。
+  - 构建脚本会检查 runner 和 `models/rapidocr` 是否存在，并提示便携运行必须一并复制 `tauri-client.exe`、`resources`、`models`。
+- 截图首击修复：
+  - Windows 激活增强：`activate_webview_window` 新增 `GetForegroundWindow`、`GetCurrentThreadId`、`AttachThreadInput`、`ShowWindow(SW_SHOW)`、`SetWindowPos(HWND_TOPMOST)`，再执行 `BringWindowToTop`、`SetForegroundWindow`、`SetActiveWindow`、`SetFocus` 和 Tauri `set_focus()`。
+  - 前端 canvas 新增 `tabIndex={-1}`、主动 `focus()`、`onPointerDown/onPointerMove/onPointerUp` 和 pointer capture，减少第一下拖拽被窗口激活过程吞掉的概率。
+  - 保持 Chapter 137 产品规则：截图不特殊隐藏或排除主窗口；主窗口仍作为普通屏幕内容处理。
+
+### 新增文件
+
+- RapidOCR runner 新增 Python 3.12 打包运行时文件，包括 `_socket.pyd`、`select.pyd`、`python312.dll`、PIL/numpy/onnxruntime/shapely 等必需扩展文件。
+
+### 修改文件
+
+- `.gitignore`
+- `build.bat`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `tauri-client/scripts/build-rapidocr-runner.ps1`
+- `tauri-client/scripts/check-ocr-fixtures.ps1`
+- `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/**`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/tauri.conf.json`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+
+### 删除文件
+
+- `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/_internal/python311.dll`，由新构建的 `python312.dll` 替代。
+
+### 本章不做
+
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不要求用户安装 Python、RapidOCR 或 onnxruntime 才能使用 OCR。
+- 不改变主窗口截图语义；主窗口可见就可被截到，被其他窗口遮挡就不会被截到。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build:rapidocr-runner`：通过。
+  - warm models：通过，约 `6821ms`。
+  - V5 probe：通过，约 `892ms`。
+  - V4 probe：通过，约 `1020ms`。
+  - 构建后确认 runner 内部包含 `_socket.pyd` 和 `select.pyd`。
+- 直接运行 `src-tauri/resources/rapidocr/rapidocr-runner/rapidocr-runner.exe --probe --model-version v5 --model-root ../../models/rapidocr`：通过，约 `980ms`。
+- `npm run check:ocr-fixtures`：通过。
+  - 中文大字：`2` blocks，约 `2973ms`。
+  - 英文 UI：`6` blocks，约 `2487ms`。
+  - 小字技术文本：`3` blocks，约 `2673ms`。
+  - 韩文：`3` blocks，约 `8962ms`。
+  - 日文：`4` blocks，约 `2418ms`。
+  - 阿拉伯文：`6` blocks，约 `9568ms`。
+- `npm run check:ocr-processing`：通过。
+- `npm run check:i18n`：通过，`532 zh-CN keys match 532 en-US keys`。
+- `npm run build`：通过；仅 Vite chunk 大于 `1200 kB` 的体积警告。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+
+### 当前风险
+
+- 截图首击问题已做 Windows 激活和 pointer capture 双层修复，但仍需要用户在真实 exe 中验证：主窗口前台、其他窗口前台、托盘唤起、不同显示器/DPI。
+- RapidOCR runner 已改为 Python 3.12 打包产物；后续发布前仍应在干净 Windows 机器上做离线 smoke，确认无需 Python 环境。
+- 韩文和阿拉伯文 fixture 仍约 `9s`，属于旧风险，后续继续优化复杂脚本候选数量和 detector 复用。
+- `build.bat` 现在会生成根目录 `resources`；便携迁移时必须和 `models` 一起复制，单独复制 exe 仍不是完整发布包。
+
+### 下一章建议
+
+Chapter 140：做干净机器/干净目录真实 smoke。用 `build.bat` 生成根目录 exe 和 `resources` 后，把 `tauri-client.exe`、`resources`、`models` 复制到一个不含源码的新目录，验证 OCR 自测、真实截图 OCR、主窗口前台 `Alt+A` 首击框选、多屏/DPI 场景。如果首击仍失败，下一章实现 native first-click relay：由原生窗口先捕获首个鼠标按下坐标并派发给 React canvas。
+
+## Chapter 140：便携打包脚本与构建缓存清理
+
+### 目标
+
+用户反馈：
+
+- `build.bat` 当前构建不了，CMD 输出出现 `/3] 复制产物 ...`、`[错误]` 被当成命令等批处理解析错误。
+- 希望调整打包逻辑。
+- 希望清空当前文件夹中无用的构建缓存、临时文件和旧产物。
+
+### 本章实际处理
+
+- `build.bat` 重写为稳定便携构建脚本：
+  - 输出目录改为 `release\YSN-Screenshot-Translator`，不再把 exe、resources 散落到项目根目录。
+  - 不再因为根目录旧 `tauri-client.exe` 被占用而阻塞构建；旧根目录 exe 删除失败只提示，新产物仍输出到 `release`。
+  - 构建前检查 `package.json`、`tauri.conf.json`、内置 RapidOCR runner 和 `models/rapidocr`。
+  - 构建后复制 `tauri-client.exe`、`resources`、`models/rapidocr` 到同一个便携目录。
+  - 支持 `--no-pause`，方便自动化验证。
+  - 使用无 BOM UTF-8 + CRLF 重写，修复 CMD 因 LF 行尾导致的批处理碎片解析问题。
+- `pack_release.ps1` 重写为安全 zip 脚本：
+  - 默认打包 `release\YSN-Screenshot-Translator`。
+  - 可选 `-Build` 先调用 `build.bat --no-pause`。
+  - 生成 `release\ScreenshotTranslator_Windows.zip`，若传 `-Version` 则带版本后缀。
+  - 不再 commit、tag、push 或发布 GitHub Release，避免打包脚本误动 Git 历史。
+- `.gitignore` 更新：
+  - 忽略 `/release/` 和 `/ScreenshotTranslator_Windows*.zip`，防止把便携成品和 200MB zip 误提交。
+- 当前文件夹清理：
+  - 删除 `tauri-client\dist`、`tauri-client\src-tauri\target`、`tauri-client\src-tauri\gen`。
+  - 删除 `server\.pytest_cache` 和项目内 `__pycache__`。
+  - 删除旧 `release` 后重新生成干净成品。
+  - 保留 `models\rapidocr`、`ffmpeg`、`tauri-client\src-tauri\resources\rapidocr`、`tauri-client\node_modules`。
+
+### 新增文件
+
+- 无代码新增文件。
+- 生成但被忽略的成品：
+  - `release\YSN-Screenshot-Translator\**`
+  - `release\ScreenshotTranslator_Windows.zip`
+
+### 修改文件
+
+- `.gitignore`
+- `build.bat`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `pack_release.ps1`
+
+### 删除文件
+
+- 构建缓存/临时目录：
+  - `tauri-client\dist`
+  - `tauri-client\src-tauri\target`
+  - `tauri-client\src-tauri\gen`
+  - `server\.pytest_cache`
+  - 项目内 `__pycache__`
+- 旧未跟踪输出：
+  - 旧 `release` 目录先删除后重新生成。
+
+### 本章不做
+
+- 不删除 `models\rapidocr`、内置 RapidOCR runner、`ffmpeg` 或 `node_modules`。
+- 不提交、不推送、不打 tag。
+- 不把 zip 发布到 GitHub Release。
+
+### 验证
+
+- `cmd /c "build.bat --no-pause"`：通过。
+  - 成功生成 `release\YSN-Screenshot-Translator\tauri-client.exe`。
+  - 复制 `resources` 与 `models\rapidocr` 到便携目录。
+  - Vite 仍只有 chunk 大于 `1200 kB` 的体积警告。
+- 便携目录 runner 自测：通过。
+  - 命令：`release\YSN-Screenshot-Translator\resources\rapidocr\rapidocr-runner\rapidocr-runner.exe --probe --model-version v5 --model-root release\YSN-Screenshot-Translator\models\rapidocr`
+  - 结果：`status=success`，约 `789ms`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过。
+  - 生成 `release\ScreenshotTranslator_Windows.zip`。
+  - zip 大小约 `210.93 MB`。
+- 打包后再次删除构建缓存：
+  - `tauri-client\dist`：不存在。
+  - `tauri-client\src-tauri\target`：不存在。
+  - `tauri-client\src-tauri\gen`：不存在。
+  - `server\.pytest_cache`：不存在。
+
+### 当前风险
+
+- `release` 是被忽略的本地成品目录；如果清理整个 ignored 输出，需要先备份 zip 或重新运行 `build.bat`。
+- 因为打包后清理了 `target` 和 `dist`，下一次构建会重新编译 Rust，耗时会更长，但当前项目目录更干净。
+- 仍需要用户在真实 UI 中复测主窗口前台 `Alt+A` 是否首击即可框选。
+
+### 下一章建议
+
+Chapter 141：做真实便携目录 smoke。直接运行 `release\YSN-Screenshot-Translator\tauri-client.exe`，验证配置中心 OCR 自测、真实截图 OCR、主窗口前台 `Alt+A` 首击框选、复制/保存、以及把整个 `release\YSN-Screenshot-Translator` 目录复制到干净位置后仍可离线运行。
+
+## Chapter 141：RapidOCR 常驻 worker、小字增强与真实首击 smoke
+
+### 目标
+
+用户决定采用 D 方案，并授权无人连续执行到可用为止。本章目标是一次性闭合：
+
+- RapidOCR 从一次性进程升级为可控的长期 JSON-RPC worker，降低重复 OCR 冷启动延迟。
+- 小字技术文本识别增强，减少 `PixPinDaemon.exe`、`localsend-cli.exe` 这类短小标识被漏识别或拆坏。
+- 配置面板可以控制常驻 OCR 加速开关，并显示 worker 状态。
+- 修复主窗口前台时 `Alt+A` 后仍要先点击一下才能框选的问题。
+- 刷新便携打包产物、生成 zip，并清理当前目录构建缓存。
+
+### 本章实际处理
+
+- Python RapidOCR runner：
+  - `rapidocr_runner.py` 保留原 CLI / probe / one-shot OCR，同时新增 `--worker` JSONL 模式。
+  - worker 支持 `ping`、`status`、`warm`、`ocr`、`shutdown`。
+  - worker 内部按 `(lang, version, modelRoot)` 缓存 RapidOCR engine；预热后重复识别不再重新初始化模型。
+  - stdout 只输出 JSONL 响应，RapidOCR 日志重定向到 stderr，避免污染协议。
+  - stdin/stdout/stderr 固定 UTF-8，并兼容 PowerShell pipeline 可能带入的 UTF-8 BOM。
+  - OCR 候选增加小字增强图：padding、2x/3x Lanczos upscale、autocontrast、contrast、sharpen，并把增强图坐标缩回原图。
+  - 自动路由优先中文/英文快速候选，低质量时才进入小字增强和复杂脚本 fallback。
+- Rust 后端：
+  - 新增 RapidOCR worker 进程管理、请求/响应、启动、停止、重启、状态查询和预热逻辑。
+  - `run_rapidocr_sync` 默认优先走 worker，worker 失败自动回退 one-shot runner。
+  - `prewarm_local_ocr_models` 在配置允许时启动并预热 worker。
+  - `get_rapid_ocr_status` 不再因为普通状态刷新就冷启动 OCR probe；worker 状态单独暴露。
+  - 应用退出清理时停止 worker，避免残留子进程。
+  - 新增 `get_screenshot_pointer_state`，通过 Win32 获取当前鼠标左键和截图窗口相对坐标，为首击恢复提供 native relay。
+- 前端配置中心：
+  - 新增 `rapidOcrWorkerEnabled` 配置，默认开启。
+  - RapidOCR 面板新增“常驻 OCR 加速”开关，以及启动/停止/重启按钮。
+  - 面板显示 worker 是否启用、是否运行、PID、已缓存模型和最近错误。
+  - 修复 RapidOCR 面板和 readiness overview 中的乱码文案。
+- 截图首击修复：
+  - `ScreenshotPage` 在 overlay ready 后短时间轮询 native pointer state；如果用户已经按住左键，则直接从 native 坐标开始框选。
+  - `mousemove` 也加入兜底：当检测到左键按住但 React 未收到 `mousedown` 时，立即创建普通框选。
+  - 复用 `startPlainSelectionAt`，避免把首击恢复逻辑复制到多个事件分支。
+- OCR 文本后处理：
+  - `restoreCollapsedUiTextSpacing` 增加技术文件名保护，避免把 `PixPinDaemon.exe` 拆成 `Pix Pin Daemon.exe`。
+  - 合并 OCR 常见拆词：`localsend-cli. exe` 会恢复为 `localsend-cli.exe`。
+  - 更新 `check-ocr-processing` 断言，确保 `.exe` 技术标识后续不回归。
+- 构建与清理：
+  - 重新跑 `build.bat --no-pause` 刷新 `release\YSN-Screenshot-Translator`。
+  - 重新生成 `release\ScreenshotTranslator_Windows.zip`。
+  - 清理 `tauri-client\dist`、`tauri-client\src-tauri\target`、`tauri-client\src-tauri\gen`、`server\.pytest_cache`、项目内 `__pycache__`、烟测临时图片和临时脚本。
+  - 保留 `release`、`models\rapidocr`、内置 RapidOCR runner、`ffmpeg` 和 `node_modules`。
+
+### 新增文件
+
+- RapidOCR runner onedir 产物中新增/更新 Python 3.12 运行时依赖文件，包括 `python312.dll`、PIL、numpy、onnxruntime、OpenCV、shapely、yaml、bidi 和多个 `.pyd` 扩展。
+
+### 修改文件
+
+- `.gitignore`
+- `build.bat`
+- `pack_release.ps1`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `tauri-client/scripts/build-rapidocr-runner.ps1`
+- `tauri-client/scripts/check-ocr-fixtures.ps1`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `tauri-client/src-tauri/rapidocr/rapidocr_runner.py`
+- `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/**`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/tauri.conf.json`
+- `tauri-client/src/components/config/ConfigReadinessOverview.tsx`
+- `tauri-client/src/components/config/RapidOcrPanel.tsx`
+- `tauri-client/src/hooks/useOcrConfigController.tsx`
+- `tauri-client/src/hooks/useRapidOcrController.ts`
+- `tauri-client/src/ocr-models/types.ts`
+- `tauri-client/src/ocr-processing/textSpacing.ts`
+- `tauri-client/src/pages/OcrConfig.tsx`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/utils/ocrConfigHelpers.ts`
+
+### 删除文件
+
+- 构建缓存/临时目录：
+  - `tauri-client\dist`
+  - `tauri-client\src-tauri\target`
+  - `tauri-client\src-tauri\gen`
+  - `server\.pytest_cache`
+  - 项目内 `__pycache__`
+- 临时 smoke 文件：
+  - `C:\ysn-ocr-smoke` junction
+  - `%TEMP%\ysn-worker-smoke`
+  - `%TEMP%\ysn-first-click-smoke.png`
+  - `%TEMP%\ysn-*-smoke.ps1`
+- RapidOCR runner 旧 Python 3.11 动态库已由 Python 3.12 runner 替换。
+
+### 本章不做
+
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不把 PaddleOCR-json 重新作为普通主路径。
+- 不实现用户明确说暂不需要的 watchdog 自动重启策略。
+- 不提交、不推送、不打 tag。
+- 不发布 GitHub Release。
+
+### 验证
+
+- `python -m py_compile tauri-client/src-tauri/rapidocr/rapidocr_runner.py`：通过。
+- `npm run build:rapidocr-runner`：通过，已重建内置 `rapidocr-runner.exe`。
+- release runner probe：通过。
+  - 命令：`release\YSN-Screenshot-Translator\resources\rapidocr\rapidocr-runner\rapidocr-runner.exe --probe --model-version v5 --model-root release\YSN-Screenshot-Translator\models\rapidocr`
+  - 结果：`status=success`，约 `1349ms`。
+- release worker JSONL：通过。
+  - PowerShell ASCII ping/shutdown：`ping` 和 `shutdown` 均返回 `ok=true`。
+  - Python UTF-8 stdin + 中文路径：`warm` 预热 `ch`/`latin` 成功，约 `1451ms`。
+  - 预热后小字技术样例：第一次 OCR 约 `1692ms`，第二次约 `1026ms`，`selected_init_ms=0`，识别到 `PATH=C:\Windows\System32`、`PixPinDaemon.exe`、`localsend-cli.exe`。
+- `npm run check:ocr-fixtures`：通过。
+  - 中文大字、英文 UI、小字技术文本、韩文、日文、阿拉伯文均通过。
+  - 本次 one-shot fixture 中韩文约 `17849ms`、阿拉伯文约 `14699ms`，复杂脚本仍是后续性能重点。
+- `npm run check:ocr-processing`：通过，新增 `.exe` 技术标识合并断言。
+- `npm run check:i18n`：通过，`532 zh-CN keys match 532 en-US keys`。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+- `cmd /c "build.bat --no-pause"`：通过。
+  - 成功生成 `release\YSN-Screenshot-Translator\tauri-client.exe`。
+  - 成功复制 `resources` 和 `models\rapidocr` 到便携目录。
+  - Vite 仍只有 chunk 大于 `1200 kB` 的体积警告。
+- 真实 release UI smoke：通过。
+  - 启动 `release\YSN-Screenshot-Translator\tauri-client.exe` 成功，进程约 `27.3 MB` working set 初始占用。
+  - 主窗口前台时，自动发送 `Alt+A` 后约 `120ms` 立即按住拖拽，截图 overlay 成功生成 `220 x 120` 选区和工具条。
+  - 在同一真实选区按 `Ctrl+D`，弹出 `OCR Result` 窗口，剪贴板获得 OCR 文本：`图 / 咖手 / 入颜色，选择标准颜色可增加`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`：通过。
+  - i18n、OCR processing、前端 build、Rust check、Rust tests 均通过。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过。
+  - 生成 `release\ScreenshotTranslator_Windows.zip`。
+  - zip 大小约 `211.98 MB`。
+- 清理后确认：
+  - `tauri-client\dist`：不存在。
+  - `tauri-client\src-tauri\target`：不存在。
+  - `tauri-client\src-tauri\gen`：不存在。
+  - `server\.pytest_cache`：不存在。
+
+### 当前风险
+
+- 常驻 worker 能显著降低重复识别冷启动，但仍会常驻一份 Python / ONNXRuntime / RapidOCR 内存；用户可在 RapidOCR 面板关闭“常驻 OCR 加速”以换取更低常驻占用。
+- 韩文、阿拉伯文等复杂脚本 one-shot fixture 仍慢，主要因为 fallback 会初始化并尝试多个识别模型；下一章应优先做候选早停、检测框复用或更明确的脚本路由。
+- 自动化已复现并通过主窗口前台首击拖拽，但不同 DPI、多屏、杀毒软件、远程桌面环境仍建议用户回来后手工复测。
+- `release` 和 zip 是本地忽略成品；如果后续清理 ignored 文件，需要先备份或重新运行打包脚本。
+
+### 下一章建议
+
+Chapter 142：继续做复杂脚本和真实截图样例闭环。优先把用户“小字翻译不了”的真实截图场景固化为 fixture，再优化韩文/阿拉伯文 fallback 的候选早停和检测框复用；同时补一个发布前人工验收清单，覆盖多屏/DPI、真实网页、OCR 结果窗、翻译覆盖层、复制/保存和录制主流程。
+
+## Chapter 142 - 截图启动热路径与翻译等待优化（2026-06-03）
+
+### 目标
+
+- 继续检查用户反馈的“翻译还要等很久”和 `Alt+A` 明显延迟。
+- 在不改变 RapidOCR 主线和用户配置的前提下，先优化截图启动热路径、选区裁剪和翻译请求等待策略。
+- 重新验证最终便携包，确保这次优化进入 `release\YSN-Screenshot-Translator` 和 zip。
+
+### 实际完成
+
+- 截图启动热路径：
+  - `start_screenshot_impl` 不再常规通过 Tauri event 传输整张全屏 PNG 的 base64 字符串。
+  - 后端捕获全屏后把 PNG 写入本地应用数据目录，并向前端发送 `{ kind: "file", path, bytes }` payload。
+  - 前端通过 Tauri asset protocol 加载本地截图文件；文件写入失败时仍保留旧 base64 fallback。
+  - 启用 `tauri.conf.json` 的 `assetProtocol`，scope 限制在 `$LOCALDATA/ScreenshotTranslator/**`。
+- Overlay 首屏显示：
+  - 前端兼容 file/base64 两种 `screenshot-updated` payload。
+  - 移除截图图片加载后等待多帧稳定 viewport 的阻塞等待。
+  - `overlay_ready_to_show` 改为非阻塞通知，避免额外等待后端短 sleep。
+- 翻译裁剪热路径：
+  - `captureRegionBase64` 优先用前端已加载的全屏截图 `imageRef` 在 canvas 内直接裁剪当前选区。
+  - 如果浏览器安全限制或 canvas 裁剪失败，再 fallback 到 Rust `capture_region`。
+  - 这样翻译/OCR 不再每次都要求 Rust 解码整张全屏 PNG 后再裁剪。
+- 翻译服务等待：
+  - 多候选服务 URL 时改为 700ms 延迟对冲，请求先到先用，避免内网地址慢失败时长时间挡住公网回落。
+  - 默认文本翻译超时从 20 秒收紧到 9 秒。
+  - 未翻译 Latin 行的二次补救请求最多等待 5 秒，避免极端慢网把用户卡住太久。
+  - 翻译链路新增 console timing，包括选区裁剪、OCR、翻译、重试、渲染、服务端 timings、命中 server/channel 和 block 数。
+- 当前配置诊断：
+  - 本机当前只配置公网 `https://ocr.yousn.me`，未启用 `lanServerUrl`，因此多 URL 对冲代码不会在当前配置下触发。
+  - 公网 `/api/health` 实测约 `1035ms`。
+  - 公网 `/api/translate_text` 实测冷请求约 `1865ms`，服务端 provider 约 `389ms`；服务端缓存命中后客户端总耗时仍约 `513–610ms`，这是当前网络往返/连接成本的主要地板。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/tauri.conf.json`
+- `tauri-client/src-tauri/Cargo.lock`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/utils/localOcrTranslate.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无代码文件删除。
+- 构建缓存/临时目录：
+  - `tauri-client\dist`
+  - `tauri-client\src-tauri\target`
+  - `tauri-client\src-tauri\gen`
+- 临时 smoke/timing 脚本：
+  - `%TEMP%\ysn-alt-a-debug.ps1`
+  - `%TEMP%\ysn-alt-a-timing.ps1`
+  - `%TEMP%\ysn-first-click-after-file-simple.ps1`
+  - `%TEMP%\ysn-first-click-after-file.ps1`
+  - `%TEMP%\ysn-final-alt-a-timing.ps1`
+
+### 本章不做
+
+- 不覆盖用户本机 `config.json`，不擅自写入 LAN 服务地址或 token。
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不恢复 PaddleOCR-json 作为普通主路径。
+- 不做 watchdog 自动重启。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run check:ocr-processing`：通过。
+- `npm run check:i18n`：通过。
+- `npm run build`：通过，Vite 仍只有 chunk 大于 `1200 kB` 的体积警告。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+- `npm run check:ocr-fixtures`：通过。
+  - 中文、英文 UI、小字技术文本、韩文、日文、阿拉伯文 fixture 均通过。
+  - 本轮韩文约 `13964ms`、阿拉伯文约 `14507ms`，复杂脚本仍是后续性能重点。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`：通过。
+  - i18n、OCR processing、前端 build、Rust check、Rust tests 均通过。
+- `cmd /c "build.bat --no-pause"`：通过。
+  - 成功生成 `release\YSN-Screenshot-Translator\tauri-client.exe`。
+  - 成功复制 `resources` 和 `models\rapidocr` 到便携目录。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过。
+  - 生成 `release\ScreenshotTranslator_Windows.zip`，大小约 `211.36 MB`。
+- 真实 release `Alt+A` 秒表：通过。
+  - 启动最终发布 exe 后连续 3 次发送 `Alt+A`。
+  - 截图辅助窗口可见耗时分别约 `271ms`、`223ms`、`244ms`。
+- 当前公网翻译服务 timing：通过。
+  - health 约 `1035ms`。
+  - 冷请求客户端总耗时约 `1865ms`，服务端 `provider_ms=389`。
+  - 缓存命中客户端总耗时约 `513–610ms`，服务端 `total_ms=0`。
+- 清理后确认：
+  - `tauri-client\dist`：不存在。
+  - `tauri-client\src-tauri\target`：不存在。
+  - `tauri-client\src-tauri\gen`：不存在。
+  - `server\.pytest_cache`：不存在。
+
+### 当前风险
+
+- `Alt+A` 已从明显等待压到约 `0.22–0.27s`，但仍包含屏幕捕获和 PNG 编码成本；要继续低于 150ms 需要更深的 raw buffer / 更快图像传输方案，改动风险更高。
+- 当前翻译慢的主要瓶颈是公网 RTT/握手和远端服务链路；代码已支持 LAN 优先和对冲，但用户当前配置只有公网，所以实际仍会受公网网络波动影响。
+- 韩文、阿拉伯文等复杂脚本 fixture 仍慢，原因仍是多模型 fallback 初始化和候选尝试，下一章需要做脚本路由早停、检测框复用或更细的候选评分。
+- Tauri asset protocol 现在只允许加载 `$LOCALDATA/ScreenshotTranslator/**`，后续如果截图缓存目录变化，需要同步更新 scope。
+
+### 下一章建议
+
+Chapter 143：继续做翻译“等待感”体验优化。优先在设置页/状态栏暴露当前实际使用的翻译 URL、LAN 优先状态和最近耗时；为真实翻译覆盖层做自动 smoke；如果用户愿意配置 LAN 服务，启用 `lanServerUrl` 后复测对冲效果。同时继续推进复杂脚本 fallback 的早停和 detector 复用。
+
+## Chapter 143 - 论坛列表 OCR 清洗与翻译质量守门（2026-06-03）
+
+### 目标
+
+- 按用户确认的“轻、快、准、段落整齐”路线，先修复真实论坛列表截图里的明显 OCR 噪声和坏译入口。
+- 把根目录 `测试图片\1.png` 到 `测试图片\4.png` 纳入可复跑 OCR fixture，避免只凭截图目测。
+- 在不引入默认 VLM、不恢复旧 OCR 主路径的前提下，补上低风险的版面 profile、技术实体保护和坏译裁判。
+
+### 实际完成
+
+- 新增论坛/技术列表 OCR profile：
+  - 过滤 `■`、`□`、`×`、箭头、星标、序号圆点等纯图标 OCR block。
+  - 清理 `1 Codex`、`■Codex`、`■ API`、`1 Feedback` 这类由图标污染出来的前缀。
+  - 修复 `ChatGPTApps SDK`、`ChatGPTApps SDKmcp`、`OpenAl`、`APls`、`Al-generated`、`Cant` 等高频 OCR 误读。
+  - 合并短换行标题续行，例如 `Codex Desktop and Codex` + `Mobile`、`May` + `9th`，避免翻译时被拆成孤立词。
+- 强化翻译质量保护：
+  - 翻译 prompt 的 protected terms 增加 `Codex`、`OpenAI`、`ChatGPT`、`API`、`APIs`、`SDK`、`MCP`、`GPT-5`、`VLM`。
+  - 客户端翻译结果 normalize 增加轻量坏译修复：`Codex` 不允许变成“法典/科德克斯”，论坛语境 `ticket` 修为“工单”，测试语境 `fixture` 修为“固定测试样例”，`VLM fallback` 修为“VLM 兜底识别”。
+  - 翻译质量摘要新增 `badTranslationCount`、`badTranslationIndexes`、`badTranslationReasons`，可标记译文丢失受保护实体的情况。
+- 扩展 OCR fixture：
+  - `check-ocr-fixtures.ps1` 默认检测根目录 `测试图片` 是否存在；存在时自动追加 `1.png` 到 `4.png` 的真实截图门禁，不存在则不阻断其他环境。
+  - 使用 Unicode code point 生成默认中文目录名，避免 Windows PowerShell 5.1 读取 `.ps1` 时中文路径乱码。
+  - 四张用户图分别断言 OpenAI 社区页面、详情页、标签小图和论坛列表图的核心文本。
+
+### 新增文件
+
+- `tauri-client/src/ocr-processing/forumListProfile.ts`
+
+### 修改文件
+
+- `tauri-client/src/ocr-processing/blockFilters.ts`
+- `tauri-client/src/ocr-processing/index.ts`
+- `tauri-client/src/ocr-processing/normalizationReport.ts`
+- `tauri-client/src/ocr-processing/translationPolicy.ts`
+- `tauri-client/src/utils/ocrTranslationRequest.ts`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `tauri-client/scripts/check-ocr-fixtures.ps1`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不默认启用 VLM。
+- 不接入浏览器 DOM/UIA 文本源抢跑。
+- 不改用户翻译服务地址、token 或本机配置。
+- 不重建发布包、不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run check:ocr-processing`：通过。
+  - 覆盖论坛图标前缀清洗、`ChatGPT Apps SDK mcp` 修复、标题续行合并、受保护技术实体、坏译修复和坏译质量标记。
+- `npm run check:ocr-fixtures`：通过。
+  - 生成式中文、英文 UI、小字技术文本、韩文、日文、阿拉伯文 fixture 均通过。
+  - 新增本地用户图 fixture 均通过：
+    - `user-1`：92 blocks，约 `5181ms`。
+    - `user-2`：21 blocks，约 `3571ms`。
+    - `user-3`：8 blocks，约 `2135ms`。
+    - `user-4`：18 blocks，约 `2599ms`。
+- `npm run build`：通过，Vite 仍只有 chunk 大于 `1200 kB` 的体积警告。
+- `npm run check:i18n`：通过，`532 zh-CN keys match 532 en-US keys`。
+
+### 当前风险
+
+- 论坛列表 profile 是低风险规则层，只处理当前已见到的图标污染、常见 OCR 误读和短续行合并；更复杂网页/文档仍需要后续 layout composer。
+- 坏译修复不是千万词典路线，只是守住高价值技术实体和已知灾难译法；长尾术语仍应靠动态术语注入、上下文翻译和质量裁判继续扩展。
+- `check-ocr-fixtures.ps1` 会在本机存在 `测试图片` 时额外跑四张真实图，耗时增加但能换取真实样例回归；无该目录的环境不会阻断。
+- 真实翻译覆盖层的视觉效果仍需下一章做自动/人工 smoke，尤其是合并后的多行标题区域。
+
+### 下一章建议
+
+Chapter 144：把当前实际翻译服务 URL、LAN 优先状态、最近耗时和本轮 OCR normalization 摘要暴露到 UI/诊断；同时为 `测试图片\4.png` 做一条真实翻译覆盖层 smoke，确认清洗后的 block 进入翻译与渲染，而不是只在文本门禁中通过。
+
+## Chapter 144 - UIA 文本源抢跑、翻译预热诊断与构建脚本闭环（2026-06-03）
+
+### 目标
+
+- 在论坛列表清洗基础上继续降低翻译等待感：真实页面能走文本源时不要再等 OCR。
+- 把翻译服务当前 URL、耗时、缓存和模型信息暴露出来，避免用户只看到“在线 700ms+”但不知道慢在哪里。
+- 修复 `build.bat` 在 Windows cmd 下的解析失败，并重新验证便携 release。
+
+### 实际完成
+
+- 非阻塞 Windows UI Automation 文本源抢跑：
+  - `Alt+A` 进入截图时记录前台窗口元信息，并在后台用 UIA 收集可见文本元素。
+  - 前端翻译动作等待文本源最多 `80ms`；命中足够文本则直接翻译文本源 block，跳过 RapidOCR；未命中自动回落 RapidOCR。
+  - 该路径只做加速，不阻塞 OCR 主线。
+- 翻译服务预热与诊断：
+  - 截图页加载、进入翻译模式和执行翻译时预热 `/api/health`。
+  - 翻译后浮层显示来源、OCR 耗时、翻译耗时、服务端耗时、provider/model、缓存命中和实际服务 URL。
+  - 预热结果只缓存短时间，避免 UI 显示陈旧服务状态。
+- 截图上下文感知翻译 prompt：
+  - 翻译请求携带本轮 OCR/text-source 全局上下文。
+  - 对软件/支持场景注入 `ticket`、`fixture`、`fallback`、`issue`、`bug` 等动态术语提示。
+- `build.bat` 修复：
+  - 批处理改为 ASCII 文案并保持 CRLF，避免中文编码和 LF 导致 cmd 标签/括号块错乱。
+  - 构建产物统一输出到 `release\YSN-Screenshot-Translator`，再次强调迁移时复制整个便携目录。
+
+### 新增文件
+
+- `tauri-client/src-tauri/src/text_source.rs`
+
+### 修改文件
+
+- `build.bat`
+- `pack_release.ps1`
+- `tauri-client/src-tauri/Cargo.lock`
+- `tauri-client/src-tauri/Cargo.toml`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/tauri.conf.json`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/utils/localOcrTranslate.ts`
+- `tauri-client/src/utils/ocrTranslationRequest.ts`
+- `tauri-client/src/ocr-processing/translationPolicy.ts`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无源码文件删除。
+- 构建后清理了生成缓存：
+  - `tauri-client\dist`
+  - `tauri-client\src-tauri\target`
+  - `tauri-client\.tmp-ocr-processing-check`
+
+### 本章不做
+
+- 不实现 OCR worker watchdog。
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不恢复 PaddleOCR-json 作为普通主路径。
+- 不修改用户本机翻译服务 token、密钥或私有配置。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run check:ocr-processing`：通过。
+- `npm run build`：通过，Vite 仍只有 chunk 大于 `1200 kB` 的既有体积警告。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+- `npm run check:ocr-fixtures`：通过，包含根目录 `测试图片\1.png` 到 `测试图片\4.png`。
+- `npm run smoke:translate-service`：通过，公网 `https://ocr.yousn.me` 总计 15 blocks / 5 batches 约 `3623ms`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`：通过。
+- `cmd /c "build.bat --no-pause"`：通过，生成 `release\YSN-Screenshot-Translator\tauri-client.exe`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过，生成 `release\ScreenshotTranslator_Windows.zip`，约 `211.05 MB`。
+- release smoke：`release\YSN-Screenshot-Translator\tauri-client.exe` 可启动。
+- release `Alt+A` smoke：自动发送 `Alt+A` 后截图辅助窗口可见约 `106ms`。
+
+### 当前风险
+
+- UIA 文本源对浏览器、Electron、原生 Win32、远程桌面和不同权限窗口的命中率不同，仍必须保留 RapidOCR 回落。
+- 当前公网翻译仍可能被 TLS/TTFB/服务端链路拉到 `700ms+`，即使模型推理本身只有数百毫秒。
+- OCR 长段英文已经能被行合并为 7 行，但仍缺段落级合并，长段翻译会被拆得不自然。
+
+### 下一章建议
+
+Chapter 145：修复用户 `测试图片\测试2\原始文本.png` 的长段英文翻译效果，加入正文段落 profile；同时把根目录的“程序图标/任务栏图标”接入 Tauri 图标资源，刷新图标缓存并重新打包。
+
+## Chapter 145 - 双图标接入、正文段落 OCR 合并与测试图片闭环（2026-06-03）
+
+### 目标
+
+- 按用户给出的根目录 `程序图标.ico` 和 `任务栏图标.ico` 替换应用图标与托盘/任务栏小图标，并刷新 Windows 图标缓存。
+- 解决 `测试图片\测试2\原始文本.png` 这类长段英文截图被拆成碎词/碎行，导致译文比微信差很多的问题。
+- 详细跑根目录 `测试图片` 和 `测试图片\测试2`，把样例纳入可复跑门禁。
+
+### 实际完成
+
+- 双图标资源：
+  - 用根目录 `程序图标.ico` 生成 Tauri 应用图标资源：`32x32.png`、`128x128.png`、`128x128@2x.png`、`icon.png`、`icon.ico` 和 Windows `Square*Logo.png` / `StoreLogo.png`。
+  - 用根目录 `任务栏图标.ico` 生成专用托盘图标：`taskbar-16x16.png`、`taskbar-32x32.png`、`taskbar-64x64.png`、`taskbar.png`、`taskbar.ico`。
+  - Rust 托盘图标从通用 `32x32.png` 改为专用 `taskbar-32x32.png`。
+  - 将新 `程序图标.ico` 同步为根目录 `app.ico`，保留旧文档/脚本兼容入口。
+- 正文段落 OCR 合并：
+  - 新增 `paragraphProfile`，在多行、同左边界、行距紧密、总文本像正文时，把 OCR 虚拟行合成一个段落 block。
+  - 英文正文按空格合并并恢复技术/文件名间距；中日韩正文按连续文本合并，避免中文段落中间插入空格。
+  - 论坛/列表图仍由 `forumListProfile` 处理；段落规则只在连续正文条件满足时触发，避免把帖子列表误合并。
+- 测试图片闭环：
+  - `check-ocr-fixtures.ps1` 默认继续检测 `测试图片\1.png` 到 `测试图片\4.png`。
+  - 新增 `测试图片\测试2` 三张图的真实 OCR fixture：`原始文本.png`、`微信翻译结果.png`、`我们的截图翻译结果.png`。
+  - 实测 `原始文本.png` 原始 OCR 为 `45` 个词级 block；前端 normalization 后变为 `1` 个正文段落。
+  - 实测 `测试图片\4.png` 原始 OCR 为 `18` 个 block；normalization 后为 `16` 个论坛列表 block，没有被正文段落规则误合并。
+
+### 新增文件
+
+- `tauri-client/src/ocr-processing/paragraphProfile.ts`
+- `tauri-client/src-tauri/icons/taskbar-16x16.png`
+- `tauri-client/src-tauri/icons/taskbar-32x32.png`
+- `tauri-client/src-tauri/icons/taskbar-64x64.png`
+- `tauri-client/src-tauri/icons/taskbar.png`
+- `tauri-client/src-tauri/icons/taskbar.ico`
+
+### 修改文件
+
+- `app.ico`
+- `tauri-client/src-tauri/icons/32x32.png`
+- `tauri-client/src-tauri/icons/128x128.png`
+- `tauri-client/src-tauri/icons/128x128@2x.png`
+- `tauri-client/src-tauri/icons/icon.ico`
+- `tauri-client/src-tauri/icons/icon.png`
+- `tauri-client/src-tauri/icons/Square30x30Logo.png`
+- `tauri-client/src-tauri/icons/Square44x44Logo.png`
+- `tauri-client/src-tauri/icons/Square71x71Logo.png`
+- `tauri-client/src-tauri/icons/Square89x89Logo.png`
+- `tauri-client/src-tauri/icons/Square107x107Logo.png`
+- `tauri-client/src-tauri/icons/Square142x142Logo.png`
+- `tauri-client/src-tauri/icons/Square150x150Logo.png`
+- `tauri-client/src-tauri/icons/Square284x284Logo.png`
+- `tauri-client/src-tauri/icons/Square310x310Logo.png`
+- `tauri-client/src-tauri/icons/StoreLogo.png`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src/ocr-processing/index.ts`
+- `tauri-client/src/ocr-processing/normalizationReport.ts`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `tauri-client/scripts/check-ocr-fixtures.ps1`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无源码文件删除。
+- 本章验证后清理了生成缓存：
+  - `tauri-client\dist`
+  - `tauri-client\src-tauri\target`
+  - `tauri-client\.tmp-ocr-processing-check`
+  - `tauri-client\.tmp-normalization-debug`
+
+### 本章不做
+
+- 不引入默认 VLM。
+- 不把千万术语做成硬编码词典。
+- 不修改用户翻译服务私有配置。
+- 不做发布签名、自动更新、CDN 或版本回滚。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run check:ocr-processing`：通过。
+  - 新增覆盖长段英文正文合并。
+  - 新增覆盖论坛列表不被正文段落规则误合并。
+- `npm run check:ocr-fixtures`：通过。
+  - 生成式中文、英文 UI、小字技术文本、韩文、日文、阿拉伯文 fixture 均通过。
+  - `测试图片\1.png` 到 `测试图片\4.png` 均通过。
+  - `测试图片\测试2\原始文本.png`：`45` blocks，约 `2435ms`。
+  - `测试图片\测试2\微信翻译结果.png`：`6` blocks，约 `2017ms`。
+  - `测试图片\测试2\我们的截图翻译结果.png`：`12` blocks，约 `2594ms`。
+- 真实 normalization 抽查：
+  - `测试图片\测试2\原始文本.png`：`45` raw blocks → `1` final paragraph。
+  - `测试图片\测试2\微信翻译结果.png`：`6` raw blocks → `1` final paragraph。
+  - `测试图片\4.png`：`18` raw blocks → `16` final forum/list blocks。
+- `npm run build`：通过，Vite 仍只有 chunk 大于 `1200 kB` 的既有体积警告。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+- `cmd /c "build.bat --no-pause"`：通过，生成 `release\YSN-Screenshot-Translator\tauri-client.exe`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过，生成 `release\ScreenshotTranslator_Windows.zip`，约 `210.83 MB`。
+- release smoke：`release\YSN-Screenshot-Translator\tauri-client.exe` 启动后保持存活。
+- `npm run smoke:translate-service`：通过，公网 `https://ocr.yousn.me` 总计 15 blocks / 5 batches 约 `3890ms`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`：通过。
+- Windows 图标缓存刷新：已执行 `ie4uinit.exe -show` 和 `ie4uinit.exe -ClearIconCache`。
+
+### 当前风险
+
+- 段落 profile 是布局后处理优化，不会减少 OCR 引擎本身耗时；它解决的是长段翻译质量和 block 粒度，不是 detector/recognizer 的计算成本。
+- `原始文本.png` 的 one-shot OCR 仍约 `2.4–3.0s`；常驻 worker 能省掉初始化，但字多时 detector/recognizer 仍是主要耗时。
+- 任务栏图标在 Windows 上可能受资源管理器图标缓存影响；本章已刷新缓存，但极端情况下用户仍可能需要重启 Explorer 或换 exe 路径观察。
+- Vite 主 chunk 仍约 `1.2MB`，目前只是警告；后续若继续加 UI/诊断模块，应该做按页 code split。
+
+### 下一章建议
+
+Chapter 146：继续拆 OCR 延迟构成。优先把常驻 worker 的 warm/cold、detector、recognizer、IPC、前端裁剪、normalization、翻译请求分别打点到诊断报告；再决定是否做 detector 复用、英文长段专用 resize 策略或更细的脚本早停。
+
+## Chapter 146 - 段落翻译行级渲染、OCR 快路径与程序图标托盘统一（2026-06-03）
+
+### 目标
+
+- 修复 `测试图片\测试2\原始文本.png` 段落翻译后覆盖层出现超大字体的问题。
+- 继续优化 RapidOCR `1200–2000ms` 热路径延迟，先做低风险的 worker 预热和截图快路径参数。
+- 按用户要求把任务栏/托盘图标也换成程序图标。
+
+### 实际完成
+
+- 修复大字渲染根因：
+  - 保留 Chapter 145 的段落级翻译块，继续让翻译模型拿到完整上下文。
+  - 新增行级渲染分发：翻译请求用段落 block，覆盖绘制改回使用 paragraph 形成前的行级 `renderBlocks`。
+  - 段落译文按原始行长度权重拆回原行锚点，避免用整段大框估算字体。
+  - 新增门禁断言：段落翻译不能使用高达整段的 merged paragraph box 绘制。
+- 优化 OCR 热路径：
+  - RapidOCR runner 默认关闭截图横排文本不需要的方向分类：`use_cls=False`。
+  - 检测放大边长从默认 `736` 调整为 `640`，保留环境变量 `YSN_RAPIDOCR_DET_LIMIT_SIDE_LEN` 可回退到 `736`。
+  - 重新打包 `rapidocr-runner.exe`，并用真实 fixture 验证。
+  - 截图页加载配置、进入翻译模式、执行翻译动作时后台预热 `prewarm_local_ocr_models`，避免第一次翻译才启动 worker。
+  - `restoreCollapsedUiTextSpacing` 增加 `fort the` → `for the`、`P've` → `I've` 修复，弥补快路径下更容易出现的少量英文误拼。
+- 图标统一：
+  - `taskbar-16x16.png`、`taskbar-32x32.png`、`taskbar-64x64.png`、`taskbar.png`、`taskbar.ico` 已全部用 `程序图标.ico` 重新生成。
+  - 保持 Rust 托盘入口使用 `taskbar-32x32.png`，但该文件现在与程序图标同源。
+
+### 新增文件
+
+- `tauri-client/src/translation-render/renderTranslationDistribution.ts`
+
+### 修改文件
+
+- `tauri-client/src-tauri/rapidocr/rapidocr_runner.py`
+- `tauri-client/src-tauri/resources/rapidocr/rapidocr-runner/rapidocr-runner.exe`
+- `tauri-client/src-tauri/icons/taskbar-16x16.png`
+- `tauri-client/src-tauri/icons/taskbar-32x32.png`
+- `tauri-client/src-tauri/icons/taskbar-64x64.png`
+- `tauri-client/src-tauri/icons/taskbar.png`
+- `tauri-client/src-tauri/icons/taskbar.ico`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/ocr-processing/normalizationReport.ts`
+- `tauri-client/src/ocr-processing/textSpacing.ts`
+- `tauri-client/src/translation-render/index.ts`
+- `tauri-client/src/utils/localOcrTranslate.ts`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `tauri-client/scripts/check-ocr-fixtures.ps1`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无源码删除。
+- 验证后建议继续清理生成缓存：
+  - `tauri-client\dist`
+  - `tauri-client\src-tauri\target`
+  - `tauri-client\.tmp-ocr-processing-check`
+  - `tauri-client\.tmp-normalization-debug`
+
+### 本章不做
+
+- 不默认启用 VLM。
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不恢复 PaddleOCR-json 作为普通主路径。
+- 不做发布签名、自动更新、CDN 或版本回滚。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- 段落 normalization 抽查：`测试图片\测试2\原始文本.png` 为 `41 raw blocks → 7 render blocks → 1 translation paragraph`。
+- RapidOCR worker 热路径测速：
+  - `测试图片\测试2\原始文本.png`：热 worker `smallTextRetry=false` 平均约 `865ms`，`smallTextRetry=true` 平均约 `1036ms`。
+  - `测试图片\4.png`：热 worker `smallTextRetry=false` 平均约 `929ms`，`smallTextRetry=true` 平均约 `1140ms`。
+  - `测试图片\3.png`：热 worker `smallTextRetry=false` 平均约 `651ms`，`smallTextRetry=true` 平均约 `828ms`。
+  - 优化前同类热 worker 多在 `~900–1300ms`，本章低风险参数后小图和正文图已有可见下降；真实应用还会受截图裁剪、base64、IPC 和翻译链路影响。
+- `npm run check:ocr-processing`：通过。
+- `npm run check:ocr-fixtures`：通过。
+  - `测试图片\测试2\原始文本.png`：`41` blocks，约 `2110ms` one-shot。
+  - `测试图片\测试2\微信翻译结果.png`：`6` blocks，约 `1823ms` one-shot。
+  - `测试图片\测试2\我们的截图翻译结果.png`：`7` blocks，约 `1960ms` one-shot。
+- `npm run build`：通过，Vite 仍只有 chunk 大于 `1200 kB` 的既有体积警告。
+- `cargo check`：通过。
+- `cargo test`：通过，`17 passed; 0 failed`。
+- `npm run build:rapidocr-runner`：通过，重新生成内置 runner。
+- `cmd /c "build.bat --no-pause"`：通过。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过，zip 约 `210.83 MB`。
+- release smoke：`release\YSN-Screenshot-Translator\tauri-client.exe` 启动后保持存活。
+- `npm run smoke:translate-service`：通过，公网 `https://ocr.yousn.me` 总计 15 blocks / 5 batches 约 `2995ms`。
+- Windows 图标缓存刷新：已执行 `ie4uinit.exe -show` 和 `ie4uinit.exe -ClearIconCache`。
+
+### 当前风险
+
+- RapidOCR 快路径把检测边长降到 `640`，真实小字/低清图如果回归，可用 `YSN_RAPIDOCR_DET_LIMIT_SIDE_LEN=736` 回退验证。
+- `smallTextRetry=true` 仍会增加部分场景耗时；当前默认保留，因为它保护小字和技术文本召回，后续应根据图像特征动态关闭。
+- 本章自动验证了行级渲染分发的几何逻辑，但仍需要真实覆盖层视觉 smoke 截图确认背景擦除、长译文换行和边界截断。
+- 真实用户感知延迟仍包含截图裁剪、UIA 文本源命中、OCR、翻译网络、canvas 渲染；下一章应把这些细分写进诊断报告。
+
+### 下一章建议
+
+Chapter 147：做真实覆盖层视觉 smoke，重点复测用户刚才的大字截图；同时把 UIA 文本源命中率、OCR worker warm/cold、候选数、engine_ms、render 分发块数和翻译耗时一起写入复制诊断报告。
+
+## Chapter 147 - 文本源选区防串台、译文渲染保险与透明图标闭环（2026-06-03）
+
+### 目标
+
+- 修复用户侧边栏样例里“只截单个单词/小区域，却翻出整列菜单并被放大很多倍”的问题。
+- 防止 UIA 文本源抢跑把大容器、父节点、整页文本误当作当前选区 OCR block。
+- 给翻译覆盖渲染增加字号、换行和裁剪保险，避免异常长译文撑爆小框。
+- 将程序图标重新处理为透明底，替换应用图标、任务栏/托盘图标，并刷新 Windows 图标缓存。
+
+### 根因
+
+- Chapter 144 的 UIA 文本源快路径只判断元素矩形与选区是否“相交”，没有要求元素主体落在选区内。
+- UIA 经常返回侧边栏、窗口、Group、Pane 等父容器文本；这些父容器只要碰到小选区，就会被旧逻辑裁成当前 crop 大小，导致整列菜单文本进入翻译。
+- 截图页旧逻辑还把 canvas/CSS 选区坐标直接加到屏幕坐标上，没有统一使用已加载截图的物理像素选区；在缩放/DPI 场景下更容易错配。
+- 渲染层旧逻辑最低字号为 `10px`，且没有对异常长译文做局部 clip，父容器文本误入后就表现为“单词也突然放大很多倍”。
+
+### 实际完成
+
+- 文本源防串台：
+  - 新增纯函数模块 `textSourceSelection`，用物理像素选区与 UIA 屏幕坐标匹配。
+  - 元素必须有足够 element coverage，过大的父容器、仅擦边相交元素、长聚合文本会被拒绝。
+  - 对包含多个子元素的聚合容器做二次剔除，优先保留真实落在选区内的叶子文本。
+  - 截图页 `getTextSourceBlocksForCurrentSelection` 改为返回命中数、拒绝数、聚合拒绝数和 coverage 诊断。
+  - 如果文本源只剩聚合容器或命中质量不足，自动回落 RapidOCR，不再把错误 UIA 文本送去翻译。
+- 翻译渲染保险：
+  - 覆盖渲染最低字号从 `10px` 降到 `7px`，更适合小 UI 文本。
+  - 渲染前按可绘制区域自动换行、逐步缩小字号。
+  - 绘制时对擦除区域加 canvas clip，异常译文不会越界污染整张图。
+- 透明图标：
+  - 根目录 `程序图标.ico` 和 `app.ico` 已移除烘焙白底，保留透明 alpha。
+  - Tauri 应用图标、Windows Square/Store 图标、任务栏/托盘图标全部由透明源重新生成。
+  - `icon.icns` 也同步更新，避免跨平台资源仍带旧白底。
+  - 已执行 Windows 图标缓存刷新。
+
+### 新增文件
+
+- `tauri-client/src/utils/textSourceSelection.ts`
+
+### 修改文件
+
+- `程序图标.ico`
+- `app.ico`
+- `tauri-client/src-tauri/icons/32x32.png`
+- `tauri-client/src-tauri/icons/128x128.png`
+- `tauri-client/src-tauri/icons/128x128@2x.png`
+- `tauri-client/src-tauri/icons/icon.png`
+- `tauri-client/src-tauri/icons/icon.ico`
+- `tauri-client/src-tauri/icons/icon.icns`
+- `tauri-client/src-tauri/icons/Square30x30Logo.png`
+- `tauri-client/src-tauri/icons/Square44x44Logo.png`
+- `tauri-client/src-tauri/icons/Square71x71Logo.png`
+- `tauri-client/src-tauri/icons/Square89x89Logo.png`
+- `tauri-client/src-tauri/icons/Square107x107Logo.png`
+- `tauri-client/src-tauri/icons/Square142x142Logo.png`
+- `tauri-client/src-tauri/icons/Square150x150Logo.png`
+- `tauri-client/src-tauri/icons/Square284x284Logo.png`
+- `tauri-client/src-tauri/icons/Square310x310Logo.png`
+- `tauri-client/src-tauri/icons/StoreLogo.png`
+- `tauri-client/src-tauri/icons/taskbar-16x16.png`
+- `tauri-client/src-tauri/icons/taskbar-32x32.png`
+- `tauri-client/src-tauri/icons/taskbar-64x64.png`
+- `tauri-client/src-tauri/icons/taskbar.png`
+- `tauri-client/src-tauri/icons/taskbar.ico`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/translation-render/renderTranslatedBlocks.ts`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无源码删除。
+- 本章结束前继续清理临时预览图、前端 dist、Rust target 和临时检测目录。
+
+### 本章不做
+
+- 不默认启用 VLM。
+- 不把 UIA 文本源当作强制主路径；它仍是快路径，质量不足必须回落 RapidOCR。
+- 不继续扩大 OCR 模型路线，本章只修选区串台和渲染异常。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run check:ocr-processing`：通过。
+  - 新增覆盖：小选区中存在侧边栏父容器文本时，只保留 `Dashboard` / `Operations overview` 子文本。
+  - 新增覆盖：只有整列聚合文本时直接返回空 blocks，触发 RapidOCR 回落。
+- `npm run build`：通过，Vite 仍只有 chunk 大于 `1200 kB` 的既有体积警告。
+- `cargo check`：通过。
+- `npm run check:ocr-fixtures`：通过。
+  - `测试图片\4.png`：`18` blocks，约 `2748ms`。
+  - `测试图片\测试2\原始文本.png`：`41` blocks，约 `2460ms` one-shot。
+  - 韩文/阿拉伯文完整 fallback 仍较慢，分别约 `7753ms` / `9192ms`。
+- `cmd /c "build.bat --no-pause"`：通过，生成 `release\YSN-Screenshot-Translator\tauri-client.exe`。
+- release smoke：新版 `release\YSN-Screenshot-Translator\tauri-client.exe` 启动后保持存活。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`：通过，生成 `release\ScreenshotTranslator_Windows.zip`，约 `210.82 MB`。
+- 透明图标像素检查：
+  - `app.ico` 透明像素 `62702 / 65536`，不再有不透明白底像素。
+  - `tauri-client/src-tauri/icons/icon.png` 透明像素 `62702 / 65536`，不再有不透明白底像素。
+  - `taskbar-32x32.png` 与 `32x32.png` 均不再有不透明白底像素。
+- Windows 图标缓存刷新：已执行 `ie4uinit.exe -show`、`ie4uinit.exe -ClearIconCache` 并尝试清理 Explorer icon cache 文件。
+
+### 当前风险
+
+- UIA 文本源快路径现在更保守：部分复杂应用可能少命中文本源，但会自动回落 RapidOCR；这是为了优先保证翻译正确性。
+- 本章用纯函数和 fixture 验证了串台根因，但真实覆盖层还需要用户用侧边栏样例再肉眼确认一次视觉效果。
+- 韩文/阿拉伯文等非中英路径仍慢，这是多语言模型 fallback 成本，不属于本章修复范围。
+- Windows 图标缓存有时被 Explorer 锁住；若用户仍看到旧白底图标，重启资源管理器或换 exe 路径可强制刷新。
+
+### 下一章建议
+
+Chapter 148：继续优化真实用户感知延迟。优先把 small-text retry 改成动态触发，并把 OCR worker warm/cold、detector、recognizer、文本源拒绝原因、翻译服务耗时合并到可复制诊断报告。
