@@ -31,16 +31,16 @@ def test_translate_text_empty_blocks():
     assert data["timings"]["blocks"] == 0
     assert data["timings"]["provider_misses"] == 0
 
-def test_translate_text_success():
+def test_translate_text_batch_failure_returns_aligned_blank_translations():
     cfg = load_server_config()
     token = cfg["client_token"]
 
     class FakeTranslator:
         def translate_batch(self, *args, **kwargs):
-            raise RuntimeError("force single fallback")
+            raise RuntimeError("force batch failure")
 
         def translate(self, text, *args, **kwargs):
-            return f"Translat: {text}"
+            raise AssertionError("endpoint must not perform slow per-item fallback")
 
     with patch("app.get_active_translator", return_value=FakeTranslator()):
         
@@ -61,10 +61,10 @@ def test_translate_text_success():
         data = response.json()
         assert data["status"] == "success"
         assert len(data["translations"]) == 2
-        assert data["translations"][0] == "Translat: Hello"
-        assert data["translations"][1] == "Translat: World"
+        assert data["translations"] == ["", ""]
         assert data["timings"]["blocks"] == 2
         assert data["timings"]["provider_misses"] == 2
+        assert data["timings"]["provider_failures"] == 2
         assert data["timings"]["total_ms"] >= 0
 
 def test_translate_text_fallback_failure_returns_blank_translation():
@@ -97,6 +97,7 @@ def test_translate_text_fallback_failure_returns_blank_translation():
     assert data["translations"] == [""]
     assert data["timings"]["blocks"] == 1
     assert data["timings"]["provider_misses"] == 1
+    assert data["timings"]["provider_failures"] == 1
 
 def test_google_translator_uses_script_source_hint_for_korean():
     class FakeResponse:

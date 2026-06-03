@@ -15,7 +15,7 @@ import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { renderTranslatedBlocks } from "../utils/translatedBlocks";
 import { openPinWindow } from "../utils/pinWindows";
 import { getDetectionCandidatesAt, rectSignature } from "../utils/detectionCandidates";
-import { prewarmTranslationServices, translateOcrBlocks, translateWithLocalOcr, type TranslationServicePrewarmSummary } from "../utils/localOcrTranslate";
+import { prewarmTranslationServices, translateOcrBlocks, translateWithLocalOcr } from "../utils/localOcrTranslate";
 import { renderScreenshotCanvas } from "../utils/renderScreenshotCanvas";
 import { openRecordingWindows } from "../utils/recordingWindows";
 import { buildTextSourceBlocksForPhysicalSelection } from "../utils/textSourceSelection";
@@ -52,6 +52,9 @@ const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circ
 const RECORDING_BORDER_COLOR = "#ef4444";
 const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
 const RECORDING_TOOLBAR_FALLBACK_SIZE = { width: 980, height: 96 };
+const MIN_NATIVE_RECOVERY_DRAG_PX = 4;
+const MIN_AUTO_ACTION_DRAG_PX = 8;
+const MIN_SELECTION_CONFIRM_AGE_MS = 120;
 
 type RecordingStatus = "idle" | "ready" | "recording";
 type RecordingMode = "region" | "window" | "display";
@@ -92,29 +95,7 @@ type ScreenshotUpdatedPayload = string | {
   path?: string;
   base64?: string;
   bytes?: number;
-};
-
-type TranslateRuntimeInfo = {
-  source?: string;
-  serviceUrl: string;
-  channel: string;
-  blocks: number;
-  captureMs: number;
-  totalMs: number;
-  ocrMs?: number;
-  translationMs?: number;
-  retryMs?: number;
-  renderMs?: number;
-  serverTotalMs?: number;
-  providerMs?: number;
-  cacheHits?: number;
-  requestedBlocks?: number;
-  memoryHits?: number;
-  glossaryHits?: number;
-  preservedHits?: number;
-  badTranslationCount?: number;
-  untranslatedCount?: number;
-  prewarm?: TranslationServicePrewarmSummary | null;
+  mode?: string;
 };
 
 type TextSourceElement = {
@@ -138,15 +119,6 @@ const formatRecordingTime = (ms: number) => {
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
   const seconds = (totalSeconds % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
-};
-
-const formatServiceHost = (serverUrl: string) => {
-  if (!serverUrl || serverUrl === "local-cache") return "local-cache";
-  try {
-    return new URL(serverUrl).host;
-  } catch {
-    return serverUrl.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") || serverUrl;
-  }
 };
 
 const getImageDataFromImage = (image: HTMLImageElement) => {
@@ -283,8 +255,6 @@ export default function ScreenshotPage() {
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
   const [translateResultPreviewBase64, setTranslateResultPreviewBase64] = useState("");
-  const [translationPrewarm, setTranslationPrewarm] = useState<TranslationServicePrewarmSummary | null>(null);
-  const [translateRuntimeInfo, setTranslateRuntimeInfo] = useState<TranslateRuntimeInfo | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [annotationTool, setAnnotationToolState] = useState<AnnotationTool | null>(null);
   const [annotationColor, setAnnotationColor] = useState(DEFAULT_ANNOTATION_COLOR);
@@ -309,6 +279,10 @@ export default function ScreenshotPage() {
   const nativePointerRecoveryTimerRef = useRef<number | null>(null);
   const nativePointerRecoveryPendingRef = useRef(false);
   const nativePointerRecoveryStartedRef = useRef(false);
+  const nativePointerRecoveryInitialRef = useRef<Point | null>(null);
+  const selectionStartedAtRef = useRef(0);
+  const selectionCompletedAtRef = useRef(0);
+  const selectionDragDistanceRef = useRef(0);
   const textSourceSnapshotPromiseRef = useRef<Promise<TextSourceSnapshot | null> | null>(null);
   const ocrPrewarmPromiseRef = useRef<Promise<unknown> | null>(null);
   const isScrollFramePendingRef = useRef(false);
@@ -353,7 +327,7 @@ export default function ScreenshotPage() {
     return JSON.parse(new TextDecoder().decode(bytes));
   };
 
-  const startNewCaptureSession = () => {
+  const startNewCaptureSession = (mode = "normal") => {
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
     // Clear any residual notifications from previous session
@@ -363,6 +337,7 @@ export default function ScreenshotPage() {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
+    stopNativePointerRecovery();
 
     imageRef.current = null;
     translatedImgRef.current = null;
@@ -371,7 +346,6 @@ export default function ScreenshotPage() {
     setTranslatedResult(null);
     setTranslatePairs(null);
     setTranslateResultPreviewBase64("");
-    setTranslateRuntimeInfo(null);
     setIsEditing(false);
     annotationSizesRef.current = { ...DEFAULT_ANNOTATION_SIZES };
     setAnnotationToolState(null);
@@ -408,14 +382,19 @@ export default function ScreenshotPage() {
     setWindowRects([]);
     setHoverCandidate(null);
     setHoverCandidates([]);
+    nativePointerRecoveryInitialRef.current = null;
+    nativePointerRecoveryStartedRef.current = false;
+    selectionStartedAtRef.current = 0;
+    selectionCompletedAtRef.current = 0;
+    selectionDragDistanceRef.current = 0;
     hoverCandidatesRef.current = [];
     hoverCandidateIndexRef.current = 0;
     hoverCandidatesSignatureRef.current = "";
     pendingDetectionRef.current = null;
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
-    setScreenshotMode("normal");
-    screenshotModeRef.current = "normal";
+    setScreenshotMode(mode);
+    screenshotModeRef.current = mode;
     setScreenshotState("initializing");
     overlayVisibleRef.current = false;
     setOverlayVisible(false);
@@ -477,6 +456,13 @@ export default function ScreenshotPage() {
   };
 
   const setSelection = (selected: boolean) => {
+    if (selected && !hasSelectedRef.current) {
+      selectionCompletedAtRef.current = performance.now();
+    }
+    if (!selected) {
+      selectionCompletedAtRef.current = 0;
+      selectionDragDistanceRef.current = 0;
+    }
     hasSelectedRef.current = selected;
     setHasSelected(selected);
   };
@@ -728,6 +714,8 @@ export default function ScreenshotPage() {
     pendingDetectionRef.current = null;
     mouseDownRef.current = { x: cx, y: cy };
     startPosRef.current = { x: cx, y: cy };
+    selectionStartedAtRef.current = performance.now();
+    selectionDragDistanceRef.current = 0;
     isSelectingRef.current = true;
     setIsSelecting(true);
     setHoverCandidate(null);
@@ -744,6 +732,7 @@ export default function ScreenshotPage() {
       nativePointerRecoveryTimerRef.current = null;
     }
     nativePointerRecoveryPendingRef.current = false;
+    nativePointerRecoveryInitialRef.current = null;
   };
 
   const tryRecoverNativePointerDown = async () => {
@@ -755,8 +744,21 @@ export default function ScreenshotPage() {
       const x = Math.round(Number(state?.x ?? -1));
       const y = Math.round(Number(state?.y ?? -1));
       const inBounds = x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight;
-      if (state?.leftDown && inBounds && startPlainSelectionAt(x, y)) {
-        stopNativePointerRecovery();
+      if (state?.leftDown && inBounds) {
+        const initial = nativePointerRecoveryInitialRef.current;
+        if (!initial) {
+          nativePointerRecoveryInitialRef.current = { x, y };
+          return;
+        }
+        const moved = Math.hypot(x - initial.x, y - initial.y);
+        if (moved >= MIN_NATIVE_RECOVERY_DRAG_PX && startPlainSelectionAt(initial.x, initial.y)) {
+          selectionDragDistanceRef.current = moved;
+          setCurrentRect({ x: Math.min(initial.x, x), y: Math.min(initial.y, y), w: Math.abs(initial.x - x), h: Math.abs(initial.y - y) }, true);
+          renderNeededRef.current = true;
+          stopNativePointerRecovery();
+        }
+      } else {
+        nativePointerRecoveryInitialRef.current = null;
       }
     } catch {
     } finally {
@@ -767,6 +769,7 @@ export default function ScreenshotPage() {
   const startNativePointerRecovery = () => {
     stopNativePointerRecovery();
     nativePointerRecoveryStartedRef.current = false;
+    nativePointerRecoveryInitialRef.current = null;
     const deadline = performance.now() + 900;
     nativePointerRecoveryTimerRef.current = window.setInterval(() => {
       if (!overlayVisibleRef.current || performance.now() > deadline || nativePointerRecoveryStartedRef.current) {
@@ -805,7 +808,6 @@ export default function ScreenshotPage() {
       if (nextMode === "translate") {
         prewarmLocalOcrWorker("translate-hotkey");
         prewarmTranslationServices(configRef.current, { reason: "translate-hotkey" })
-          .then(setTranslationPrewarm)
           .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
       }
       if (nextMode === "record") {
@@ -834,16 +836,16 @@ export default function ScreenshotPage() {
       primeTextSourceSnapshot("screenshot-updated", 160);
       const payload = event.payload;
       if (typeof payload === "string") {
-        if (payload) loadFullscreenFromBase64(payload);
+        if (payload) loadFullscreenFromBase64(payload, screenshotModeRef.current || "normal");
         else loadFullscreen();
         return;
       }
       if (payload?.kind === "file" && payload.path) {
-        loadFullscreenFromFile(payload.path, payload.bytes);
+        loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal");
         return;
       }
       if (payload?.base64) {
-        loadFullscreenFromBase64(payload.base64);
+        loadFullscreenFromBase64(payload.base64, payload.mode || screenshotModeRef.current || "normal");
         return;
       }
       loadFullscreen();
@@ -930,6 +932,7 @@ export default function ScreenshotPage() {
         return;
       }
       if (e.key === "Enter") {
+        e.preventDefault();
         confirmScreenshot("copy");
         return;
       }
@@ -1010,7 +1013,6 @@ export default function ScreenshotPage() {
       setConfig(parsedConfig);
       prewarmLocalOcrWorker("screenshot-page-load");
       prewarmTranslationServices(parsedConfig, { reason: "screenshot-page-load" })
-        .then(setTranslationPrewarm)
         .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
     } catch {
       setConfig({});
@@ -1038,8 +1040,8 @@ export default function ScreenshotPage() {
     }
   };
 
-  const loadFullscreen = async () => {
-    const sessionId = startNewCaptureSession();
+  const loadFullscreen = async (mode = screenshotModeRef.current || "normal") => {
+    const sessionId = startNewCaptureSession(mode);
     try {
       loadWindowRects(true);
       const base64 = await invoke<string>("get_fullscreen_image");
@@ -1059,8 +1061,8 @@ export default function ScreenshotPage() {
     }
   };
 
-  const loadFullscreenFromBase64 = (base64: string) => {
-    const sessionId = startNewCaptureSession();
+  const loadFullscreenFromBase64 = (base64: string, mode = "normal") => {
+    const sessionId = startNewCaptureSession(mode);
     try {
       if (!base64 || base64.length < 1000) {
         console.warn("[ScreenshotPage] Stale or invalid base64 event payload ignored", base64?.length || 0);
@@ -1077,11 +1079,11 @@ export default function ScreenshotPage() {
     }
   };
 
-  const loadFullscreenFromFile = (path: string, bytes?: number) => {
-    const sessionId = startNewCaptureSession();
+  const loadFullscreenFromFile = (path: string, bytes?: number, mode = "normal") => {
+    const sessionId = startNewCaptureSession(mode);
     try {
       if (!path) {
-        loadFullscreen();
+        loadFullscreen(mode);
         return;
       }
       loadWindowRects(true);
@@ -1090,7 +1092,7 @@ export default function ScreenshotPage() {
       if (sessionId !== captureIdRef.current) return;
       const msg = err?.message || err?.toString?.() || String(err);
       console.error("[ScreenshotPage] loadFullscreenFromFile failed:", msg);
-      loadFullscreen();
+      loadFullscreen(mode);
     }
   };
 
@@ -1384,6 +1386,7 @@ export default function ScreenshotPage() {
     const cy = e.clientY;
     if (
       (e.buttons & 1) === 1
+      && activePointerIdRef.current !== null
       && !nativePointerRecoveryStartedRef.current
       && !hasSelectedRef.current
       && !isSelectingRef.current
@@ -1449,6 +1452,7 @@ export default function ScreenshotPage() {
     if (pendingDetectionRef.current) {
       const moved = Math.hypot(cx - mouseDownRef.current.x, cy - mouseDownRef.current.y);
       if (moved > 4) {
+        selectionDragDistanceRef.current = moved;
         pendingDetectionRef.current = null;
         setHoverCandidate(null);
         isSelectingRef.current = true;
@@ -1507,6 +1511,7 @@ export default function ScreenshotPage() {
       }
       const snapCx = snap(cx, snapX);
       const snapCy = snap(cy, snapY);
+      selectionDragDistanceRef.current = Math.max(selectionDragDistanceRef.current, Math.hypot(snapCx - startPosRef.current.x, snapCy - startPosRef.current.y));
       const next = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
       setCurrentRect(next, true);
       renderNeededRef.current = true;
@@ -1570,19 +1575,21 @@ export default function ScreenshotPage() {
     }
 
     const valid = rectRef.current.w > 5 && rectRef.current.h > 5;
+    const dragDistance = Math.max(selectionDragDistanceRef.current, Math.hypot(rectRef.current.w, rectRef.current.h));
+    const explicitSelectionRelease = wasSelecting && dragDistance >= MIN_AUTO_ACTION_DRAG_PX;
     setSelection(valid);
     renderNeededRef.current = true;
-    if (valid && wasSelecting && screenshotModeRef.current === "translate") {
+    if (valid && explicitSelectionRelease && screenshotModeRef.current === "translate") {
       setTimeout(() => handleTranslate(), 0);
     }
-    if (valid && wasSelecting && screenshotModeRef.current === "record") {
+    if (valid && explicitSelectionRelease && screenshotModeRef.current === "record") {
       setTimeout(() => enterRecordingMode("region"), 0);
     }
   };
 
   const handleDoubleClick = () => {
     if (!overlayVisibleRef.current) return;
-    if (hasSelectedRef.current) confirmScreenshot("copy");
+    if (canConfirmCurrentSelection(220)) confirmScreenshot("copy");
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1684,6 +1691,20 @@ export default function ScreenshotPage() {
     annotationsRef.current.length > 0 ? await renderCurrentEditedSelectionBase64() : (translatedResult || await captureRegionBase64())
   );
 
+  const canConfirmCurrentSelection = (minAgeMs = MIN_SELECTION_CONFIRM_AGE_MS) => (
+    overlayVisibleRef.current
+    && hasSelectedRef.current
+    && rectRef.current.w > 5
+    && rectRef.current.h > 5
+    && !isSelectingRef.current
+    && !isDraggingRef.current
+    && !isResizingRef.current
+    && !isDrawingAnnotationRef.current
+    && !isDraggingAnnotationRef.current
+    && !isResizingAnnotationRef.current
+    && performance.now() - selectionCompletedAtRef.current >= minAgeMs
+  );
+
   const handlePin = async () => {
     if (!hasSelected || rect.w <= 0 || rect.h <= 0) return;
     const { base64, x, y, w, h } = cropCurrentSelectionFromLoadedImage();
@@ -1720,17 +1741,12 @@ export default function ScreenshotPage() {
     let base64 = "";
     prewarmLocalOcrWorker("translate-action");
     prewarmTranslationServices(configRef.current, { reason: "translate-action" })
-      .then((summary) => {
-        setTranslationPrewarm(summary);
-        return summary;
-      })
       .catch((error) => {
         console.warn("[Translation Service Prewarm] failed", error);
         return null;
       });
     try {
       setIsTranslating(true);
-      setTranslateRuntimeInfo(null);
       message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u5e76\u7ffb\u8bd1...", key: "translate", duration: 0 });
       const captureStarted = performance.now();
       base64 = await captureRegionBase64();
@@ -1767,28 +1783,6 @@ export default function ScreenshotPage() {
         translationQuality = result.translationQuality;
         setTranslatePairs(result.pairs);
         setTranslateResultPreviewBase64(resultBase64);
-        setTranslateRuntimeInfo({
-          source: result.localTimings?.source,
-          serviceUrl: result.usedServerUrl,
-          channel: result.usedChannel,
-          blocks: result.blocksCount,
-          captureMs,
-          totalMs: Math.round(performance.now() - startTime),
-          ocrMs: result.localTimings?.ocrMs,
-          translationMs: result.localTimings?.translationMs,
-          retryMs: result.localTimings?.retryMs,
-          renderMs: result.localTimings?.renderMs,
-          serverTotalMs: result.translationTimings?.total_ms,
-          providerMs: result.translationTimings?.provider_ms,
-          cacheHits: result.translationTimings?.cache_hits,
-          requestedBlocks: result.translationMemoryStats?.requestedBlocks,
-          memoryHits: result.translationMemoryStats?.memoryHits,
-          glossaryHits: result.translationMemoryStats?.glossaryHits,
-          preservedHits: result.translationMemoryStats?.preservedHits,
-          badTranslationCount: result.translationQuality?.badTranslationCount,
-          untranslatedCount: result.translationQuality?.untranslatedCount,
-          prewarm: result.servicePrewarm || translationPrewarm,
-        });
       } catch (localErr: any) {
         console.warn("[Local Translate Flow] failed", localErr);
         throw localErr;
@@ -2314,6 +2308,11 @@ export default function ScreenshotPage() {
     setWindowRects([]);
     setHoverCandidate(null);
     pendingDetectionRef.current = null;
+    nativePointerRecoveryInitialRef.current = null;
+    nativePointerRecoveryStartedRef.current = false;
+    selectionStartedAtRef.current = 0;
+    selectionCompletedAtRef.current = 0;
+    selectionDragDistanceRef.current = 0;
     setIsTranslating(false);
     setIsOCRing(false);
     setIsScrollCapturing(false);
@@ -2342,6 +2341,7 @@ export default function ScreenshotPage() {
   };
 
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
+    if (!canConfirmCurrentSelection()) return;
     try {
       const base64 = await getOutputBase64();
       await emit("screenshot-captured", base64);
@@ -2368,25 +2368,6 @@ export default function ScreenshotPage() {
 
   const currentToolbarStyle = getActionToolbarStyle({ rect, toolbarSize: actionToolbarSize, fallbackSize: recordingStatus !== "idle" || recordingPickerMode || scrollCaptureMode !== "idle" ? RECORDING_TOOLBAR_FALLBACK_SIZE : ACTION_TOOLBAR_FALLBACK_SIZE, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, margin: FLOATING_PANEL_MARGIN, gap: FLOATING_PANEL_GAP });
   const currentOverlayToolbarStyle: React.CSSProperties = { ...currentToolbarStyle, padding: 0, border: "none", boxShadow: "none", background: "transparent" };
-  const translateDiagnosticTop = hasSelected ? Math.max(12, rect.y - 36) : 12;
-  const translateDiagnosticLeft = hasSelected ? clamp(rect.x, 12, Math.max(12, window.innerWidth - 520)) : 12;
-  const translateDiagnosticText = isTranslating
-    ? "正在识别并翻译…"
-    : translateRuntimeInfo
-      ? [
-          `总 ${translateRuntimeInfo.totalMs}ms`,
-          translateRuntimeInfo.source === "text-source" ? "源 文本" : "源 OCR",
-          `OCR ${translateRuntimeInfo.ocrMs ?? "-"}ms`,
-          `翻译 ${translateRuntimeInfo.translationMs ?? "-"}ms`,
-          translateRuntimeInfo.serverTotalMs !== undefined ? `服务端 ${translateRuntimeInfo.serverTotalMs}ms` : "",
-          translateRuntimeInfo.providerMs !== undefined ? `模型 ${translateRuntimeInfo.providerMs}ms` : "",
-          `服务 ${formatServiceHost(translateRuntimeInfo.serviceUrl)}`,
-          translateRuntimeInfo.requestedBlocks !== undefined ? `请求 ${translateRuntimeInfo.requestedBlocks}/${translateRuntimeInfo.blocks}` : `${translateRuntimeInfo.blocks} 行`,
-          translateRuntimeInfo.cacheHits !== undefined ? `缓存 ${translateRuntimeInfo.cacheHits}` : "",
-          translateRuntimeInfo.badTranslationCount ? `风险 ${translateRuntimeInfo.badTranslationCount}` : "",
-          translateRuntimeInfo.untranslatedCount ? `未译 ${translateRuntimeInfo.untranslatedCount}` : "",
-        ].filter(Boolean).join(" · ")
-      : "";
   const currentRecordingDevices = getRecordingDevices();
   const audioOptions = [
     { label: "静音", value: "none" },
@@ -2402,34 +2383,6 @@ export default function ScreenshotPage() {
       )}
 
       {isTranslating && <TranslationLoadingOverlay rect={rect} />}
-
-      {overlayVisible && hasSelected && translateDiagnosticText && (
-        <div
-          style={{
-            position: "absolute",
-            top: translateDiagnosticTop,
-            left: translateDiagnosticLeft,
-            zIndex: 22,
-            maxWidth: Math.min(520, window.innerWidth - 24),
-            padding: "7px 10px",
-            borderRadius: 999,
-            background: "rgba(15, 23, 42, 0.82)",
-            color: "#fff",
-            fontSize: 12,
-            fontWeight: 700,
-            lineHeight: "18px",
-            boxShadow: "0 10px 28px rgba(15,23,42,0.24)",
-            backdropFilter: "blur(10px)",
-            pointerEvents: "none",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-          title={translateDiagnosticText}
-        >
-          {translateDiagnosticText}
-        </div>
-      )}
 
       {editingTextDraft && (
         <TextAnnotationEditor

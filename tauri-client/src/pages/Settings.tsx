@@ -1,4 +1,4 @@
-﻿import { Form, Space } from "antd";
+import { Form, Space } from "antd";
 import useSettingsController from "../hooks/useSettingsController";
 import SettingsPageHeader from "../components/settings/SettingsPageHeader";
 import TranslationServiceCard from "../components/settings/TranslationServiceCard";
@@ -45,7 +45,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       onFinish={controller.onFinish}
       onValuesChange={controller.handleFormChange}
       requiredMark={false}
-      style={{ maxWidth: 800, margin: "0 auto" }}
+      style={{ width: "min(100%, 840px)", margin: "0 auto", paddingBottom: 24 }}
     >
       <SettingsPageHeader saving={controller.isSaving} />
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -60,8 +60,10 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           isTestingDeepl={controller.isTestingDeepl}
           channelTestStatuses={controller.channelTestStatuses}
           serverChannelStatus={controller.serverChannelStatus}
+          isActivatingGoogle={controller.isActivatingGoogle}
           fetchModels={controller.fetchModels}
           testChannel={controller.testChannel}
+          activateGoogleChannel={controller.activateGoogleChannel}
         />
         <ScreenshotRecognitionCard />
         <SystemHotkeyCard form={form} onRestoreDefaultHotkeys={controller.restoreDefaultHotkeys} />

@@ -13,8 +13,9 @@ use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, Command};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -23,6 +24,7 @@ use tokio::time::Duration;
 const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+static LAST_CAPTURE_SHORTCUT_MS: AtomicU64 = AtomicU64::new(0);
 static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
 static RECORDING_OVERLAY_COLOR: AtomicU32 = AtomicU32::new(RECORDING_BORDER_BLUE);
 static STARTUP_READINESS: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
@@ -60,6 +62,23 @@ const RECORDING_BORDER_BLUE: u32 = 0xeb6325;
 const RECORDING_BORDER_RED: u32 = 0x4444ef;
 const RECORDING_BORDER_YELLOW: u32 = 0x0b9ef5;
 const RECORDING_HOTKEY_LABEL: &str = "Alt+R";
+
+fn now_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn accept_capture_shortcut_press() -> bool {
+    let now = now_epoch_millis();
+    let previous = LAST_CAPTURE_SHORTCUT_MS.load(Ordering::SeqCst);
+    if now.saturating_sub(previous) < 450 {
+        return false;
+    }
+    LAST_CAPTURE_SHORTCUT_MS.store(now, Ordering::SeqCst);
+    true
+}
 
 fn normalize_key_code(key: &str) -> Option<String> {
     let trimmed = key.trim();
@@ -179,7 +198,9 @@ fn register_global_shortcuts(
                 if let Err(e) =
                     app.global_shortcut()
                         .on_shortcut(shortcut, move |app, _shortcut, event| {
-                            if event.state() == ShortcutState::Pressed {
+                            if event.state() == ShortcutState::Pressed
+                                && accept_capture_shortcut_press()
+                            {
                                 let app_h = app.clone();
                                 tauri::async_runtime::spawn(async move {
                                     if let Err(e) = start_screenshot(app_h, None).await {
@@ -202,7 +223,9 @@ fn register_global_shortcuts(
                 if let Err(e) =
                     app.global_shortcut()
                         .on_shortcut(shortcut, move |app, _shortcut, event| {
-                            if event.state() == ShortcutState::Pressed {
+                            if event.state() == ShortcutState::Pressed
+                                && accept_capture_shortcut_press()
+                            {
                                 let app_h = app.clone();
                                 tauri::async_runtime::spawn(async move {
                                     if let Err(e) =
@@ -226,7 +249,9 @@ fn register_global_shortcuts(
             if let Err(e) =
                 app.global_shortcut()
                     .on_shortcut(shortcut, move |app, _shortcut, event| {
-                        if event.state() == ShortcutState::Pressed {
+                        if event.state() == ShortcutState::Pressed
+                            && accept_capture_shortcut_press()
+                        {
                             let app_h = app.clone();
                             tauri::async_runtime::spawn(async move {
                                 if let Err(e) =
@@ -1006,8 +1031,8 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     close_screenshot_windows(&app, false);
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime.
-    let (png_bytes, screen_info) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
+    let (png_bytes, screen_info) =
+        tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
             let screens =
                 Screen::all().map_err(|e| format!("Failed to enumerate displays: {}", e))?;
             if screens.is_empty() {
@@ -1030,10 +1055,9 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
                 .map_err(|e| format!("Encode PNG failed: {}", e))?;
             let png_bytes = buffer.into_inner();
             Ok((png_bytes, screen_info))
-        },
-    )
-    .await
-    .map_err(|e| format!("Screenshot task failed: {}", e))??;
+        })
+        .await
+        .map_err(|e| format!("Screenshot task failed: {}", e))??;
 
     // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
     if let Ok(mut guard) = get_screenshot_image().lock() {
@@ -1097,13 +1121,17 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
             "kind": "file",
             "path": path.to_string_lossy().to_string(),
             "bytes": png_bytes.len(),
+            "mode": screenshot_mode,
         }),
         Err(error) => {
-            eprintln!("[screenshot] failed to write temp file, falling back to base64 event: {error}");
+            eprintln!(
+                "[screenshot] failed to write temp file, falling back to base64 event: {error}"
+            );
             serde_json::json!({
                 "kind": "base64",
                 "base64": BASE64_STANDARD.encode(&png_bytes),
                 "bytes": png_bytes.len(),
+                "mode": screenshot_mode,
             })
         }
     };

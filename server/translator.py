@@ -1,4 +1,5 @@
 import abc
+import os
 import requests
 import json
 import urllib.parse
@@ -6,12 +7,42 @@ import hashlib
 import random
 import logging
 import re
+from collections import OrderedDict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from security import normalize_public_base_url, normalize_relay_base_url, request_public_url, request_relay_url
 from translation_prompt import DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, ""))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+GOOGLE_SINGLE_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_GOOGLE_SINGLE_TIMEOUT", 3.5)
+GOOGLE_BATCH_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_GOOGLE_BATCH_TIMEOUT", 4.5)
+GOOGLE_BATCH_BUDGET_SECONDS = _env_float("SS_TRANSLATOR_GOOGLE_BATCH_BUDGET", 8.0)
+BAIDU_SINGLE_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_BAIDU_SINGLE_TIMEOUT", 4.0)
+BAIDU_BATCH_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_BAIDU_BATCH_TIMEOUT", 5.5)
+DEEPL_BATCH_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_DEEPL_BATCH_TIMEOUT", 8.0)
+LLM_SINGLE_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_LLM_SINGLE_TIMEOUT", 5.0)
+LLM_BATCH_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_LLM_BATCH_TIMEOUT", 7.5)
+LLM_BATCH_BUDGET_SECONDS = _env_float("SS_TRANSLATOR_LLM_BATCH_BUDGET", 8.5)
+LLM_FALLBACK_MAX_WORKERS = max(1, int(_env_float("SS_TRANSLATOR_LLM_FALLBACK_WORKERS", 4)))
+
+
+def _seconds_left(deadline: float, cap: float) -> float:
+    return max(0.0, min(cap, deadline - time.perf_counter()))
+
+
+def _increment_stat(stats_ref: dict | None, key: str, value: int = 1) -> None:
+    if stats_ref is not None:
+        stats_ref[key] = stats_ref.get(key, 0) + value
 
 _HAS_CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 _HAS_LATIN_RE = re.compile(r"[A-Za-z]{2,}")
@@ -154,8 +185,7 @@ class TranslationCache:
         self.maxsize = maxsize
         self.ttl_seconds = ttl_seconds
         self.lock = threading.RLock()
-        self.cache = {} # key -> (value, expire_time)
-        self.access_order = [] # key access ordering (LRU)
+        self.cache = OrderedDict() # key -> (value, expire_time), newest at the end
 
     def _normalize_text(self, text: str) -> str:
         # 去除首尾空白，折叠连续空白字符
@@ -172,28 +202,20 @@ class TranslationCache:
             if time.time() > expire:
                 # Expired
                 self.cache.pop(key, None)
-                if key in self.access_order:
-                    self.access_order.remove(key)
                 return None
             # Refresh LRU ordering
-            if key in self.access_order:
-                self.access_order.remove(key)
-            self.access_order.append(key)
+            self.cache.move_to_end(key)
             return val
 
     def set(self, key: tuple, value: str):
         with self.lock:
             # Evict oldest if full
             if len(self.cache) >= self.maxsize and key not in self.cache:
-                if self.access_order:
-                    oldest = self.access_order.pop(0)
-                    self.cache.pop(oldest, None)
+                self.cache.popitem(last=False)
 
             expire = time.time() + self.ttl_seconds
             self.cache[key] = (value, expire)
-            if key in self.access_order:
-                self.access_order.remove(key)
-            self.access_order.append(key)
+            self.cache.move_to_end(key)
 
 # 全局共享翻译缓存实例 (maxsize=5000, TTL=24h)
 GLOBAL_TRANSLATE_CACHE = TranslationCache(maxsize=5000, ttl_seconds=86400)
@@ -261,6 +283,10 @@ class BaseTranslator(abc.ABC):
         stats_ref.setdefault("provider_misses", 0)
         stats_ref.setdefault("request_duplicates", 0)
         stats_ref.setdefault("preserved_hits", 0)
+        stats_ref.setdefault("provider_failures", 0)
+        stats_ref.setdefault("provider_fallbacks", 0)
+        stats_ref.setdefault("provider_batch_ms", 0)
+        stats_ref.setdefault("provider_fallback_ms", 0)
         return stats_ref
 
     def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
@@ -355,7 +381,7 @@ class GoogleTranslator(BaseTranslator):
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         source_lang = detect_source_lang_hint(text, source_lang)
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source_lang}&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
-        response = self.session.get(url, timeout=5)
+        response = self.session.get(url, timeout=GOOGLE_SINGLE_TIMEOUT_SECONDS)
         if response.status_code == 200:
             try:
                 res_json = response.json()
@@ -393,9 +419,12 @@ class GoogleTranslator(BaseTranslator):
             "q": query
         }
 
+        budget_deadline = time.perf_counter() + GOOGLE_BATCH_BUDGET_SECONDS
         try:
             # 使用 Post 请求，避免 Get 请求由于文本过长导致超长报错
-            response = self.session.post(url, data=data, timeout=8)
+            batch_started = time.perf_counter()
+            response = self.session.post(url, data=data, timeout=GOOGLE_BATCH_TIMEOUT_SECONDS)
+            _increment_stat(stats_ref, "provider_batch_ms", int((time.perf_counter() - batch_started) * 1000))
             if response.status_code == 200:
                 res_json = response.json()
                 if isinstance(res_json, list) and len(res_json) > 0 and isinstance(res_json[0], list):
@@ -413,10 +442,19 @@ class GoogleTranslator(BaseTranslator):
                             len(texts), len(translated_lines)
                         )
         except Exception as e:
+            _increment_stat(stats_ref, "provider_failures")
             logger.warning("[Google Batch] 批量翻译请求失败: %s。正在降级为线程池并发翻译...", e)
 
         # 2. 降级兜底：使用基类的多线程并发请求，保证稳定性
-        return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+        remaining = _seconds_left(budget_deadline, GOOGLE_SINGLE_TIMEOUT_SECONDS)
+        if remaining < 0.75:
+            _increment_stat(stats_ref, "provider_failures", len(texts))
+            return [""] * len(texts)
+        fallback_started = time.perf_counter()
+        result = super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+        _increment_stat(stats_ref, "provider_fallbacks", len(texts))
+        _increment_stat(stats_ref, "provider_fallback_ms", int((time.perf_counter() - fallback_started) * 1000))
+        return result
 
 class LLMTranslator(BaseTranslator):
     SEGMENT_SEPARATOR = "\n%%\n"
@@ -496,7 +534,7 @@ class LLMTranslator(BaseTranslator):
             return []
         return parts
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+    def _translate_one(self, text: str, source_lang: str, target_lang: str, timeout_seconds: float) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -510,10 +548,13 @@ class LLMTranslator(BaseTranslator):
             "temperature": 0.3
         }
         request_fn = request_relay_url if self.allow_private_base_url else request_public_url
-        res = request_fn(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        res = request_fn(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=timeout_seconds)
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"].strip()
         raise Exception(f"LLM translation failed: {res.text}")
+
+    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        return self._translate_one(text, source_lang, target_lang, LLM_SINGLE_TIMEOUT_SECONDS)
 
     def _do_translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         if not texts:
@@ -534,14 +575,27 @@ class LLMTranslator(BaseTranslator):
         }
 
         parsed = {}
+        batch_failed = False
+        budget_deadline = time.perf_counter() + LLM_BATCH_BUDGET_SECONDS
         try:
             request_fn = request_relay_url if self.allow_private_base_url else request_public_url
-            res = request_fn(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=12)
+            batch_started = time.perf_counter()
+            res = request_fn(self.session, "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload, timeout=LLM_BATCH_TIMEOUT_SECONDS)
+            _increment_stat(stats_ref, "provider_batch_ms", int((time.perf_counter() - batch_started) * 1000))
             if res.status_code == 200:
                 content = res.json()["choices"][0]["message"]["content"].strip()
                 parsed = {idx: value for idx, value in enumerate(self._parse_percent_segments(content, len(texts)))}
+            else:
+                batch_failed = True
+                _increment_stat(stats_ref, "provider_failures")
+                logger.warning("LLM segment-based batch translation returned status %s", res.status_code)
         except Exception as e:
+            batch_failed = True
+            _increment_stat(stats_ref, "provider_failures")
             logger.warning("LLM segment-based batch translation failed: %s", e)
+
+        if batch_failed and not parsed:
+            return [""] * len(texts)
 
         # 2. 精准缺失补偿与兜底 (以多线程并发重试缺失索引)
         final_results = [None] * len(texts)
@@ -553,14 +607,16 @@ class LLMTranslator(BaseTranslator):
             else:
                 missing_indices.append(idx)
 
-        if missing_indices:
+        remaining = _seconds_left(budget_deadline, LLM_SINGLE_TIMEOUT_SECONDS)
+        if missing_indices and remaining >= 1.0:
             logger.warning(
                 "[LLM Segment Batch] 检测到 %d 个片段翻译缺失，正在进行精准多线程并发补偿...",
                 len(missing_indices)
             )
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            fallback_started = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=min(LLM_FALLBACK_MAX_WORKERS, len(missing_indices))) as executor:
                 futures = {
-                    idx: executor.submit(self.translate, texts[idx], source_lang, target_lang)
+                    idx: executor.submit(self._translate_one, texts[idx], source_lang, target_lang, remaining)
                     for idx in missing_indices
                 }
                 for idx, fut in futures.items():
@@ -569,6 +625,13 @@ class LLMTranslator(BaseTranslator):
                     except Exception as fe:
                         logger.error(f"[LLM Precision Fallback] 补偿翻译索引 {idx} 失败: {fe}")
                         final_results[idx] = ""
+
+            _increment_stat(stats_ref, "provider_fallbacks", len(missing_indices))
+            _increment_stat(stats_ref, "provider_fallback_ms", int((time.perf_counter() - fallback_started) * 1000))
+        elif missing_indices:
+            _increment_stat(stats_ref, "provider_failures", len(missing_indices))
+            for idx in missing_indices:
+                final_results[idx] = ""
 
         return final_results
 
@@ -587,7 +650,7 @@ class BaiduTranslator(BaseTranslator):
         to_lang = "zh" if target_lang == "zh" else target_lang
 
         url = f"https://fanyi-api.baidu.com/api/trans/vip/translate?q={urllib.parse.quote(text)}&from={from_lang}&to={to_lang}&appid={self.app_id}&salt={salt}&sign={sign}"
-        res = self.session.get(url, timeout=5)
+        res = self.session.get(url, timeout=BAIDU_SINGLE_TIMEOUT_SECONDS)
         if res.status_code == 200:
             res_json = res.json()
             if "error_code" in res_json:
@@ -618,7 +681,9 @@ class BaiduTranslator(BaseTranslator):
             "sign": sign
         }
         try:
-            res = self.session.post(url, data=data, timeout=8)
+            batch_started = time.perf_counter()
+            res = self.session.post(url, data=data, timeout=BAIDU_BATCH_TIMEOUT_SECONDS)
+            _increment_stat(stats_ref, "provider_batch_ms", int((time.perf_counter() - batch_started) * 1000))
             if res.status_code == 200:
                 res_json = res.json()
                 if "error_code" in res_json:
@@ -707,7 +772,7 @@ class DeepLTranslator(BaseTranslator):
             f"{self.endpoint}/v2/translate",
             headers=headers,
             data=self._payload_pairs(texts, source_lang, target_lang),
-            timeout=10,
+            timeout=DEEPL_BATCH_TIMEOUT_SECONDS,
         )
         if res.status_code != 200:
             raise Exception(f"DeepL translation failed: status {res.status_code} {res.text}")

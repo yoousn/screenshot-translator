@@ -37,6 +37,7 @@ import {
 } from "../src/utils/ocrTranslationRequest.ts";
 import { buildTranslationEraseRegion, shouldRenderTranslationBlock } from "../src/translation-render/renderGeometry.ts";
 import { buildRenderBlocks } from "../src/translation-render/renderBlockLayout.ts";
+import { estimateOriginalFontSize } from "../src/translation-render/renderTranslatedBlocks.ts";
 import { distributeTranslationsForRender } from "../src/translation-render/renderTranslationDistribution.ts";
 import { buildTextSourceBlocksForPhysicalSelection } from "../src/utils/textSourceSelection.ts";
 import { createTranslationMemoryStats, lookupLocalTranslation, storeTranslationMemory } from "../src/utils/translationMemory.ts";
@@ -320,6 +321,15 @@ assert(distributedRender.blocks.length === paragraphRenderLines.length, "paragra
 assert(distributedRender.translations.length === paragraphRenderLines.length, "paragraph render translations should match line anchors");
 assert(distributedRender.blocks.every((item) => item.box_coords[2][1] - item.box_coords[0][1] <= 22), "paragraph render must not use the tall merged paragraph box");
 assert(distributedRender.translations.join("").includes("OCR/翻译优化闭环"), "distributed paragraph translation should preserve full translated text");
+const singleLineDistributedRender = distributeTranslationsForRender(
+  [paragraphTranslationBlock],
+  ["为截图应用完成端到端商业级 OCR/翻译优化闭环。"],
+  [paragraphRenderLines[0]],
+);
+assert(singleLineDistributedRender.blocks[0].box_coords[2][1] - singleLineDistributedRender.blocks[0].box_coords[0][1] <= 22, "single matched render line must not fall back to tall paragraph bounds");
+assert(estimateOriginalFontSize(348, 146, paragraphTranslationBlock.text) <= 10, "tall paragraph bounds should not produce oversized translation font");
+const normalLineFontSize = estimateOriginalFontSize(110, 18, "How are you?");
+assert(normalLineFontSize >= 12 && normalLineFontSize <= 18, "normal one-line OCR bounds should keep a natural font size");
 
 console.log("OCR processing checks passed.");
 `;

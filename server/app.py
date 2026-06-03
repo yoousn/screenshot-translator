@@ -188,6 +188,10 @@ async def translate_text_endpoint(
                 "provider_misses": 0,
                 "request_duplicates": 0,
                 "preserved_hits": 0,
+                "provider_failures": 0,
+                "provider_fallbacks": 0,
+                "provider_batch_ms": 0,
+                "provider_fallback_ms": 0,
                 "blocks": 0,
             },
         }
@@ -197,24 +201,46 @@ async def translate_text_endpoint(
     # 动态获取当前激活的翻译引擎
     translator = get_active_translator()
     
-    stats_ref = {"cache_hits": 0, "provider_ms": 0, "provider_misses": 0, "request_duplicates": 0, "preserved_hits": 0}
+    stats_ref = {
+        "cache_hits": 0,
+        "provider_ms": 0,
+        "provider_misses": 0,
+        "request_duplicates": 0,
+        "preserved_hits": 0,
+        "provider_failures": 0,
+        "provider_fallbacks": 0,
+        "provider_batch_ms": 0,
+        "provider_fallback_ms": 0,
+    }
     try:
         provider_started_at = time.perf_counter()
         translations = translator.translate_batch(texts, req.source_lang, req.target_lang, stats_ref)
         stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
     except Exception as e:
-        logger.warning("translate_text batch failed, falling back to single: %s", e)
-        translations = []
-        provider_started_at = time.perf_counter()
-        # 降级：如果 translate_batch 崩溃，则对单个单词独立处理，容错性极强
-        for text in texts:
-            try:
-                res = translator.translate(text, source_lang=req.source_lang, target_lang=req.target_lang)
-                translations.append(res)
-            except Exception:
-                translations.append("")
-        stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
+        logger.warning("translate_text batch failed; returning aligned blank translations without slow per-item retry: %s", e)
+        stats_ref["provider_failures"] += len(texts)
         stats_ref["provider_misses"] = max(0, len(texts) - stats_ref["cache_hits"])
+        total_ms = int((time.perf_counter() - request_started_at) * 1000)
+        cache_hits = stats_ref["cache_hits"]
+        return {
+            "status": "success",
+            "translations": [""] * len(texts),
+            "cache_hits": cache_hits,
+            "channel": get_config().get("active_channel", "google"),
+            "timings": {
+                "total_ms": total_ms,
+                "provider_ms": stats_ref["provider_ms"],
+                "cache_hits": cache_hits,
+                "provider_misses": stats_ref["provider_misses"],
+                "request_duplicates": stats_ref["request_duplicates"],
+                "preserved_hits": stats_ref["preserved_hits"],
+                "provider_failures": stats_ref["provider_failures"],
+                "provider_fallbacks": stats_ref["provider_fallbacks"],
+                "provider_batch_ms": stats_ref["provider_batch_ms"],
+                "provider_fallback_ms": stats_ref["provider_fallback_ms"],
+                "blocks": len(texts),
+            },
+        }
                 
     total_ms = int((time.perf_counter() - request_started_at) * 1000)
     cache_hits = stats_ref["cache_hits"]
@@ -230,6 +256,10 @@ async def translate_text_endpoint(
             "provider_misses": stats_ref["provider_misses"],
             "request_duplicates": stats_ref["request_duplicates"],
             "preserved_hits": stats_ref["preserved_hits"],
+            "provider_failures": stats_ref["provider_failures"],
+            "provider_fallbacks": stats_ref["provider_fallbacks"],
+            "provider_batch_ms": stats_ref["provider_batch_ms"],
+            "provider_fallback_ms": stats_ref["provider_fallback_ms"],
             "blocks": len(texts),
         },
     }

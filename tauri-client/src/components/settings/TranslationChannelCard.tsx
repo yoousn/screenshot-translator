@@ -23,6 +23,7 @@ const { TextArea } = Input;
 type TranslationChannelCardProps = Pick<
   SettingsControllerState,
   | "currentChannel"
+  | "isActivatingGoogle"
   | "availableModels"
   | "isFetchingModels"
   | "isTestingBaidu"
@@ -30,6 +31,7 @@ type TranslationChannelCardProps = Pick<
   | "isTestingDeepl"
   | "channelTestStatuses"
   | "serverChannelStatus"
+  | "activateGoogleChannel"
   | "fetchModels"
   | "testChannel"
 > & {
@@ -43,6 +45,7 @@ const formatMissingParts = (template: string, parts: string[]) => template.repla
 export default function TranslationChannelCard({
   form,
   currentChannel,
+  isActivatingGoogle,
   availableModels,
   isFetchingModels,
   isTestingBaidu,
@@ -50,6 +53,7 @@ export default function TranslationChannelCard({
   isTestingDeepl,
   channelTestStatuses,
   serverChannelStatus,
+  activateGoogleChannel,
   fetchModels,
   testChannel,
 }: TranslationChannelCardProps) {
@@ -95,8 +99,14 @@ export default function TranslationChannelCard({
       : labels.channelHealthServerUnknown;
 
   const renderConfiguredTag = (configured: boolean) => (
-    <Tag color={configured ? "success" : "warning"} icon={configured ? <CheckCircleOutlined /> : <WarningOutlined />}>
+    <Tag color={configured ? "success" : "warning"} icon={configured ? <CheckCircleOutlined /> : <WarningOutlined />} style={{ marginInlineEnd: 0 }}>
       {configured ? labels.channelHealthConfigured : labels.channelHealthMissing}
+    </Tag>
+  );
+
+  const renderUnavailableTag = () => (
+    <Tag color="default" icon={<WarningOutlined />} style={{ marginInlineEnd: 0 }}>
+      {labels.temporarilyUnavailable || "Unavailable"}
     </Tag>
   );
 
@@ -136,6 +146,7 @@ export default function TranslationChannelCard({
     configured: boolean;
     testStatus?: TranslationChannelTestStatus;
     risk?: boolean;
+    unavailable?: boolean;
   }> = [
     {
       channel: "google",
@@ -161,22 +172,26 @@ export default function TranslationChannelCard({
     {
       channel: "deepl",
       label: labels.channelDeepL,
-      detail: deeplMissing.length > 0 ? formatMissingParts(labels.channelHealthMissingParts, deeplMissing) : labels.channelHealthDeepLDesc,
+      detail: labels.deeplUnavailableDesc || labels.channelHealthDeepLDesc,
       configured: deeplMissing.length === 0,
       testStatus: channelTestStatuses.deepl,
+      unavailable: true,
     },
   ];
 
   return (
     <Card title={<span><GlobalOutlined style={{ marginRight: 8 }} />{labels.translationChannel}</span>} bordered={false}>
-      <Form.Item label={<Text strong style={{ fontSize: 12 }}>{labels.activeChannel}</Text>} name="channel" initialValue="google">
+      <Form.Item label={<Text strong style={{ fontSize: 12 }}>{labels.activeChannel}</Text>} name="channel" initialValue="google" style={{ marginBottom: 6 }}>
         <Select options={getChannelOptions(labels)} style={{ height: 32 }} />
       </Form.Item>
+      <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.5, marginBottom: 12 }}>
+        {labels.channelApplyHint || "Choose a channel, then save settings to apply it."}
+      </Text>
 
-      <Form.Item label={<Text strong style={{ fontSize: 12 }}>{labels.targetLanguage}</Text>} name="targetLang" initialValue="zh">
+      <Form.Item label={<Text strong style={{ fontSize: 12 }}>{labels.targetLanguage}</Text>} name="targetLang" initialValue="zh" style={{ marginBottom: 6 }}>
         <Select options={getTargetLangOptions(labels)} style={{ height: 32 }} />
       </Form.Item>
-      <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -10 }}>
+      <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.5 }}>
         {labels.sourceAutoHint}
       </Text>
 
@@ -198,27 +213,28 @@ export default function TranslationChannelCard({
                 display: "flex",
                 alignItems: "flex-start",
                 justifyContent: "space-between",
+                flexWrap: "wrap",
                 gap: 8,
                 paddingTop: index === 0 ? 2 : 8,
                 borderTop: index === 0 ? "none" : "1px solid #eef1f4",
               }}
             >
-              <div style={{ minWidth: 0 }}>
+              <div style={{ minWidth: 220, flex: "1 1 260px" }}>
                 <Space size={4} wrap>
-                  <Text strong style={{ fontSize: 12 }}>{row.label}</Text>
-                  {currentChannel === row.channel && <Tag color="blue">{labels.channelHealthCurrent}</Tag>}
+                  <Text strong style={{ fontSize: 12, lineHeight: 1.4 }}>{row.label}</Text>
+                  {currentChannel === row.channel && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{labels.channelHealthCurrent}</Tag>}
                 </Space>
-                <Text type="secondary" style={{ display: "block", fontSize: 11, marginTop: 2 }}>
+                <Text type="secondary" style={{ display: "block", fontSize: 11, marginTop: 2, lineHeight: 1.45, wordBreak: "break-word" }}>
                   {row.detail}
                 </Text>
               </div>
-              <Space size={4} wrap style={{ justifyContent: "flex-end" }}>
+              <Space size={4} wrap style={{ justifyContent: "flex-end", flex: "0 1 280px" }}>
                 {renderConfiguredTag(row.configured)}
                 {row.risk ? (
-                  <Tag color="warning" icon={<WarningOutlined />}>
+                  <Tag color="warning" icon={<WarningOutlined />} style={{ marginInlineEnd: 0 }}>
                     {labels.channelHealthGoogleRisk}
                   </Tag>
-                ) : renderTestTag(row.testStatus)}
+                ) : row.unavailable ? renderUnavailableTag() : renderTestTag(row.testStatus)}
               </Space>
             </div>
           ))}
@@ -231,6 +247,11 @@ export default function TranslationChannelCard({
           showIcon
           message={labels.googleQualityWarningTitle}
           description={labels.googleQualityWarningDesc}
+          action={
+            <Button size="small" type="primary" ghost loading={isActivatingGoogle} onClick={activateGoogleChannel}>
+              {labels.setAsActiveChannel || "Set as active"}
+            </Button>
+          }
           style={{ marginTop: 12 }}
         />
       )}
@@ -238,13 +259,13 @@ export default function TranslationChannelCard({
       {currentChannel === "baidu" && (
         <Card type="inner" title={labels.baiduParams} style={{ marginTop: 12 }}>
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item label="App ID" name="baiduAppId">
+            <Col xs={24} sm={12}>
+              <Form.Item label="App ID" name="baiduAppId" style={{ marginBottom: 12 }}>
                 <Input placeholder="2026011900..." style={{ height: 32 }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item label={labels.baiduSecret} name="baiduSecretKey">
+            <Col xs={24} sm={12}>
+              <Form.Item label={labels.baiduSecret} name="baiduSecretKey" style={{ marginBottom: 12 }}>
                 <Input.Password placeholder={labels.baiduSecretPlaceholder} style={{ height: 32 }} />
               </Form.Item>
             </Col>
@@ -258,23 +279,23 @@ export default function TranslationChannelCard({
       {currentChannel === "new-api" && (
         <Card type="inner" title={labels.newApiConfig} style={{ marginTop: 12 }}>
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item label={labels.relayServiceUrl} name="newApiBase">
+            <Col xs={24} sm={12}>
+              <Form.Item label={labels.relayServiceUrl} name="newApiBase" style={{ marginBottom: 12 }}>
                 <Input placeholder="api.yousn.me" style={{ height: 32 }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item label="API Key" name="newApiKey">
+            <Col xs={24} sm={12}>
+              <Form.Item label="API Key" name="newApiKey" style={{ marginBottom: 12 }}>
                 <Input.Password placeholder="sk-..." style={{ height: 32 }} />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item label={labels.modelName}>
-            <Space style={{ width: "100%" }}>
+          <Form.Item label={labels.modelName} style={{ marginBottom: 12 }}>
+            <Space wrap style={{ width: "100%" }}>
               <Form.Item name="newApiModel" noStyle>
                 <AutoComplete
                   options={availableModels.map((model) => ({ value: model, label: model }))}
-                  style={{ width: 280 }}
+                  style={{ width: "min(100%, 320px)" }}
                   onSelect={(value) => form.setFieldValue("newApiModel", value)}
                   filterOption={(inputValue, option) => String(option?.value || "").toLowerCase().includes(inputValue.toLowerCase())}
                 >
@@ -286,7 +307,7 @@ export default function TranslationChannelCard({
               </Button>
             </Space>
           </Form.Item>
-          <Form.Item label={labels.translationDomain || "Translation domain"} name="newApiDomain">
+          <Form.Item label={labels.translationDomain || "Translation domain"} name="newApiDomain" style={{ marginBottom: 12 }}>
             <Input placeholder={labels.translationDomainPlaceholder || DEFAULT_LLM_TRANSLATION_DOMAIN} style={{ height: 32 }} />
           </Form.Item>
           <Form.Item
@@ -307,6 +328,7 @@ export default function TranslationChannelCard({
               </Space>
             }
             name="newApiPrompt"
+            style={{ marginBottom: 12 }}
           >
             <TextArea
               autoSize={{ minRows: 8, maxRows: 14 }}
@@ -322,20 +344,28 @@ export default function TranslationChannelCard({
 
       {currentChannel === "deepl" && (
         <Card type="inner" title={labels.deeplConfig} style={{ marginTop: 12 }}>
+          <Alert
+            type="warning"
+            showIcon
+            message={labels.deeplUnavailableTitle || "DeepL channel is unavailable"}
+            description={labels.deeplUnavailableDesc || "Use Google, Baidu, or the LLM translation channel in this build."}
+            style={{ marginBottom: 12 }}
+          />
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item label={labels.deeplEndpoint} name="deeplEndpoint">
-                <Input placeholder="https://api-free.deepl.com" style={{ height: 32 }} />
+            <Col xs={24} sm={12}>
+              <Form.Item label={labels.deeplEndpoint} name="deeplEndpoint" style={{ marginBottom: 12 }}>
+                <Input disabled placeholder="https://api-free.deepl.com" style={{ height: 32 }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item label="API Key" name="deeplApiKey">
-                <Input.Password placeholder="DeepL-Auth-Key" style={{ height: 32 }} />
+            <Col xs={24} sm={12}>
+              <Form.Item label="API Key" name="deeplApiKey" style={{ marginBottom: 12 }}>
+                <Input.Password disabled placeholder="DeepL-Auth-Key" style={{ height: 32 }} />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item label={labels.deeplFormality} name="deeplFormality">
+          <Form.Item label={labels.deeplFormality} name="deeplFormality" style={{ marginBottom: 12 }}>
             <Select
+              disabled
               style={{ height: 32 }}
               options={[
                 { value: "default", label: labels.deeplFormalityDefault || "Default" },
@@ -344,8 +374,8 @@ export default function TranslationChannelCard({
               ]}
             />
           </Form.Item>
-          <Button type="dashed" onClick={() => testChannel("deepl")} loading={isTestingDeepl} block style={{ height: 32 }}>
-            {labels.testAndEnable}
+          <Button disabled block style={{ height: 32 }}>
+            {labels.temporarilyUnavailable || "Unavailable"}
           </Button>
         </Card>
       )}

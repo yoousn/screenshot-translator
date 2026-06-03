@@ -1,4 +1,4 @@
-﻿import type { FormInstance } from "antd";
+import type { FormInstance } from "antd";
 
 export type SettingsForm = FormInstance<any>;
 
@@ -23,6 +23,7 @@ export type ServerChannelStatus = {
 
 export type SettingsControllerState = {
   isSaving: boolean;
+  isActivatingGoogle: boolean;
   isTestingBaidu: boolean;
   isTestingNewApi: boolean;
   isTestingDeepl: boolean;
@@ -32,6 +33,7 @@ export type SettingsControllerState = {
   channelTestStatuses: TranslationChannelTestStatuses;
   serverChannelStatus: ServerChannelStatus;
   fetchModels: () => void;
+  activateGoogleChannel: () => void;
   testChannel: (channel: TranslationChannel) => void;
   restoreDefaultHotkeys: () => void;
 };

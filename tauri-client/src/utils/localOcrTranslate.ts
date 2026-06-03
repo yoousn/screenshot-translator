@@ -91,6 +91,10 @@ type TranslationServiceTimings = {
   provider_misses?: number;
   request_duplicates?: number;
   preserved_hits?: number;
+  provider_failures?: number;
+  provider_fallbacks?: number;
+  provider_batch_ms?: number;
+  provider_fallback_ms?: number;
   blocks?: number;
 };
 
@@ -211,6 +215,12 @@ export const prewarmTranslationServices = async (
 
 export const getLastTranslationServicePrewarm = () => lastPrewarmSummary;
 
+const getPreferredTranslationMemoryChannel = (config: LocalTranslateConfig) => (
+  config.channel
+  || lastPrewarmSummary?.candidates.find((candidate) => candidate.ok)?.activeChannel
+  || "auto"
+);
+
 const requestTextTranslations = async (serverUrl: string, token: string, blocks: OcrBlock[], sourceLang: TranslationSourceLanguage, targetLang: string, timeoutMs: number) => {
   const normalizedServerUrl = normalizeTranslationServerUrl(serverUrl);
   const endpoint = `${normalizedServerUrl}/api/translate_text`;
@@ -290,6 +300,7 @@ export const translateOcrBlocks = async (
   const token = config.clientToken || "";
   const targetLang = config.targetLang || "zh";
   const translationTimeoutMs = config.translationTimeoutMs || DEFAULT_TRANSLATION_TIMEOUT_MS;
+  const memoryChannel = getPreferredTranslationMemoryChannel(config);
   const normalization = await buildOcrNormalizationReport(rawBlocks || []);
   const ocrBlocks = normalization.blocks;
   const routePlan = normalization.routePlan;
@@ -301,7 +312,7 @@ export const translateOcrBlocks = async (
   const requestItems: { block: OcrBlock; index: number }[] = [];
 
   ocrBlocks.forEach((block, index) => {
-    const localHit = lookupLocalTranslation(block, preferredSourceLang, targetLang, config.channel);
+    const localHit = lookupLocalTranslation(block, preferredSourceLang, targetLang, memoryChannel);
     if (localHit) {
       translations[index] = localHit.translation;
       if (localHit.source === "preserved") translationMemoryStats.preservedHits += 1;
@@ -358,7 +369,7 @@ export const translateOcrBlocks = async (
   }
   const retryMs = Math.round(performance.now() - retryStarted);
   const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(ocrBlocks, translations, targetLang);
-  translationMemoryStats.stored = storeTranslationMemory(ocrBlocks, normalizedTranslations, preferredSourceLang, targetLang, transData.channel || config.channel);
+  translationMemoryStats.stored = storeTranslationMemory(ocrBlocks, normalizedTranslations, preferredSourceLang, targetLang, transData.channel || memoryChannel);
 
   const renderStarted = performance.now();
   const distributedRender = distributeTranslationsForRender(ocrBlocks, normalizedTranslations, normalization.renderBlocks || ocrBlocks);

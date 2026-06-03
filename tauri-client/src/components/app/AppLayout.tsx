@@ -101,9 +101,9 @@ export default function AppLayout({
       </Sider>
 
       <Layout>
-        <Header style={{ height: 64, background: "rgba(255,255,255,0.92)", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #e5e7eb", lineHeight: "64px", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
-          <Space direction="vertical" size={0}>
-            <Text strong style={{ fontSize: 13, color: "#0f172a" }}>{labels.appName}</Text>
+        <Header style={{ height: 64, background: "rgba(255,255,255,0.92)", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #e5e7eb", lineHeight: "normal", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+          <Space direction="vertical" size={2} style={{ minWidth: 0 }}>
+            <Text strong style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.2 }}>{labels.appName}</Text>
             <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.2 }}>{labels.tagline}</Text>
           </Space>
 

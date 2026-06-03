@@ -129,8 +129,16 @@ export const distributeTranslationsForRender = (
       ))
       .sort((left, right) => left.renderBounds.minY - right.renderBounds.minY || left.renderBounds.minX - right.renderBounds.minX);
 
-    if (matchingIndexes.length <= 1) {
+    if (matchingIndexes.length === 0) {
       outputBlocks.push(translationBlock);
+      outputTranslations.push(translations[index] || translationBlock.text);
+      return;
+    }
+
+    if (matchingIndexes.length === 1) {
+      const [{ renderBlock, renderIndex }] = matchingIndexes;
+      usedRenderIndexes.add(renderIndex);
+      outputBlocks.push(renderBlock);
       outputTranslations.push(translations[index] || translationBlock.text);
       return;
     }

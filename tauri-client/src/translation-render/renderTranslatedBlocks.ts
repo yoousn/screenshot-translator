@@ -4,17 +4,35 @@ import { buildTranslationEraseRegion, shouldRenderTranslationBlock } from "./ren
 import { buildRenderBlocks } from "./renderBlockLayout";
 import { getTranslationFontFamily } from "./textLayout";
 
-const estimateOriginalFontSize = (rawHeight: number) => {
-  const scale = rawHeight <= 18 ? 0.96 : 0.82;
-  return Math.max(7, Math.min(64, Math.round(rawHeight * scale)));
-};
-
 const splitRenderLines = (text: string) => (
   text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
 );
+
+const estimateTextWidthUnits = (text: string) => {
+  const units = Array.from(text || "").reduce((sum, char) => {
+    if (/\s/.test(char)) return sum + 0.32;
+    if (/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(char)) return sum + 1;
+    if (/[A-Za-z0-9]/.test(char)) return sum + 0.55;
+    return sum + 0.42;
+  }, 0);
+  return Math.max(1, units);
+};
+
+export const estimateOriginalFontSize = (rawWidth: number, rawHeight: number, sourceText: string) => {
+  const sourceLines = splitRenderLines(sourceText).length ? splitRenderLines(sourceText) : [sourceText || ""];
+  const sourceLineCount = Math.max(1, sourceLines.length);
+  const lineHeightEstimate = Math.max(1, rawHeight / sourceLineCount);
+  const heightEstimate = lineHeightEstimate * (lineHeightEstimate <= 18 ? 0.96 : 0.82);
+  const widestSourceUnits = Math.max(...sourceLines.map(estimateTextWidthUnits), 1);
+  const widthEstimate = rawWidth / widestSourceUnits;
+  const compactLength = (sourceText || "").replace(/\s+/g, "").length;
+  const tallSparseBox = rawHeight >= 48 && compactLength <= 32 && rawHeight > rawWidth * 0.65;
+  const maxFontSize = tallSparseBox ? 28 : 48;
+  return Math.max(7, Math.min(maxFontSize, Math.round(Math.min(heightEstimate, widthEstimate * 1.12))));
+};
 
 const splitWrappableUnits = (line: string) => {
   if (/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(line)) return Array.from(line);
@@ -100,13 +118,13 @@ export const renderTranslatedBlocks = (
         const fontColor = getReadableTextColor(background);
         const paddingX = Math.max(2, Math.round(rawHeight * 0.12));
         const paddingY = Math.max(2, Math.round(rawHeight * 0.16));
-        const baseFontSize = estimateOriginalFontSize(rawHeight);
+        const baseFontSize = estimateOriginalFontSize(rawWidth, rawHeight, block.text);
         const isVertical = rawHeight / rawWidth > 2.6 && !/[A-Za-z0-9]{2,}/.test(block.text);
         ctx.font = `${baseFontSize}px ${getTranslationFontFamily()}`;
         const lines = splitRenderLines(text);
         const lineHeight = Math.round(baseFontSize * 1.12);
         const measuredWidth = Math.ceil(Math.max(...lines.map((line) => ctx.measureText(line).width), 1)) + paddingX * 2;
-        const maxExpandedWidth = Math.max(rawWidth, img.width - block.minX);
+        const maxExpandedWidth = Math.max(rawWidth, Math.min(img.width - block.minX, rawWidth + Math.max(160, rawWidth * 2.2)));
         const desiredWidth = isVertical ? rawWidth : Math.max(rawWidth, Math.min(maxExpandedWidth, measuredWidth));
         const { eraseX, eraseY, eraseRight, eraseBottom } = buildTranslationEraseRegion(
           block,

@@ -7,9 +7,9 @@
 ### 当前阶段
 
 - 当前主线：产品内置 `RapidOCR / ONNXRuntime` OCR 主路径。
-- 当前最新完整验证章节：Chapter 147。
-- 当前正在推进章节：Chapter 148：真实用户感知延迟诊断、动态 small-text retry 与 OCR worker 细分打点。
-- Chapter 147 当前状态：已完成，UIA 文本源父容器串台防护、翻译渲染字号/换行/clip 保险、透明程序图标重建、便携打包和 release smoke 均通过验证。
+- 当前最新完整验证章节：Chapter 148。
+- 当前正在推进章节：Chapter 149：继续做真实覆盖层肉眼 smoke、动态 small-text retry 与 OCR worker 细分打点。
+- Chapter 148 当前状态：已完成，服务端翻译批处理超时预算、生产缓存测试、LLM 慢失败防护、翻译覆盖字号保险和截图状态机误触防护均已通过本地验证。
 - 关键原则：旧自研 `YSN OCR Runtime` 已废弃为非主路径；普通主流程只走 RapidOCR runner。OCR ready 必须由打包 runner、自测、fixture、真实 `Ctrl+D` 结果窗和翻译覆盖层共同证明。
 
 ### 当前已验证命令
@@ -27,7 +27,7 @@
 
 ### 当前未完成事项
 
-- Chapter 148 下一步：继续优化真实用户感知延迟，优先做动态 small-text retry，并把 OCR worker warm/cold、detector、recognizer、文本源拒绝原因和翻译服务耗时写入可复制诊断报告。
+- Chapter 149 下一步：继续优化真实用户感知延迟，优先做动态 small-text retry，并把 OCR worker warm/cold、detector、recognizer、文本源拒绝原因和翻译服务耗时写入可复制诊断报告。
 - 打包版 RapidOCR runner 已改为 Python 3.12 onedir 便携产物；迁移电脑时复制整个 `release\YSN-Screenshot-Translator` 目录，不要只复制 exe。
 - Windows 主窗口前台 `Alt+A` 首击框选已做自动 smoke，但仍建议用户回来后在自己的多屏/DPI/杀毒环境下再做人工复测。
 - 仍需用户用侧边栏样例做一次肉眼复测，确认 UIA 保守过滤后不再出现单词被整列父容器污染。
@@ -3934,3 +3934,80 @@ Chapter 147：做真实覆盖层视觉 smoke，重点复测用户刚才的大字
 ### 下一章建议
 
 Chapter 148：继续优化真实用户感知延迟。优先把 small-text retry 改成动态触发，并把 OCR worker warm/cold、detector、recognizer、文本源拒绝原因、翻译服务耗时合并到可复制诊断报告。
+
+## Chapter 148 - 翻译批处理延迟、渲染字号保险与截图误触状态机修复（2026-06-03）
+
+### 目标
+
+- 深入审查 `server/app.py`、`server/translator.py` 的批量翻译、缓存和 LLM 超时路径，减少慢失败导致的长等待。
+- 修复英文/段落翻译后覆盖层字体异常变大的剩余风险。
+- 修复 `Alt+A` 截图入口、native pointer recovery、拖拽释放和确认入口之间的误触/自动确认风险。
+
+### 实际完成
+
+- 服务端翻译性能：
+  - `TranslationCache` 从列表式 LRU 改为 `OrderedDict` LRU，生产缓存测试不再复制一份假实现，而是直接覆盖 `translator.py` 的真实缓存类。
+  - Google/Baidu/DeepL/LLM timeout 改为可通过环境变量配置，并把默认值对齐客户端默认 9 秒翻译超时。
+  - LLM 批量翻译新增总预算：批量网络失败时不再逐条慢 fallback；只有批量响应成功但缺少分隔段时，才在剩余预算内做精准补偿。
+  - `/api/translate_text` 移除应用层串行单条 fallback，批处理崩溃时返回行数对齐的空译文，并在 `timings` 暴露 `provider_failures`、`provider_fallbacks`、`provider_batch_ms`、`provider_fallback_ms`。
+  - 客户端本地翻译缓存查询优先使用预热 health 得到的真实服务端 channel，减少 `config.channel` 为空时重复文本错过本地 memory 的情况。
+- 覆盖渲染字号：
+  - `distributeTranslationsForRender` 在只匹配到一个原始 render line 时也使用原始行锚点，不再回退到高大的段落合并框。
+  - `renderTranslatedBlocks` 的字号估算同时参考原框高度和原文宽度密度，限制稀疏高框/段落框把短译文放大到异常字号。
+  - 翻译擦除区域最大横向扩展收紧，避免异常长译文擦掉整行或整屏。
+  - `npm run check:ocr-processing` 增加段落高框字号和单行分发门禁。
+- 截图交互状态机：
+  - Rust 全局截图/翻译/录制快捷键增加 450ms 防抖，避免按键重复 Pressed 事件连续重启截图窗口。
+  - Rust `screenshot-updated` payload 携带 mode，前端按 payload 初始化 session，避免 normal/translate/record 模式事件竞态串台。
+  - native pointer recovery 改为先记录初始点，只有鼠标移动超过门槛才接管创建选区，避免主窗口按钮点击或残留左键状态误建选区。
+  - 前端确认入口统一检查有效选区、非拖拽/缩放/标注绘制状态，以及 120ms 稳定时间；双击确认需要更长稳定时间，防止双击选择候选后直接复制。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `server/app.py`
+- `server/translator.py`
+- `server/tests/test_cache.py`
+- `server/tests/test_translate_text.py`
+- `server/tests/test_translator.py`
+- `tauri-client/src/utils/localOcrTranslate.ts`
+- `tauri-client/src/translation-render/renderTranslatedBlocks.ts`
+- `tauri-client/src/translation-render/renderTranslationDistribution.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不默认启用 VLM。
+- 不恢复旧自研 `YSN OCR Runtime`。
+- 不恢复 PaddleOCR-json 作为普通主路径。
+- 不做发布签名、自动更新、CDN 或完整 release 重新打包。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `python -m pytest server\tests`：通过，`31 passed, 1 skipped`。
+- `npm run check:ocr-processing`：通过。
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+- `cargo check`：通过。
+- `cargo fmt`：已执行；无关 `text_source.rs` 格式 churn 已手动恢复。
+
+### 当前风险
+
+- 本章修复了服务端慢失败和状态机误触的根因路径，但仍建议用真实 `Alt+A`、主窗口按钮、翻译按钮、按住拖拽、多屏/DPI 场景做人工 smoke。
+- Google 免费通道仍有质量和公网 RTT 风险；正式质量路线仍应优先配置 LAN/近端服务或付费 LLM/Baidu/DeepL 通道。
+- 动态 small-text retry、OCR worker detector/recognizer 细分打点仍未完成，继续留给下一章。
+
+### 下一章建议
+
+Chapter 149：做真实覆盖层肉眼 smoke，重点复测用户遇到的英文大字与 Alt+A 误触；继续把 small-text retry 改成动态触发，并将 OCR worker warm/cold、detector、recognizer、UIA 文本源拒绝原因合并进可复制诊断报告。

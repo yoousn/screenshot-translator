@@ -17,20 +17,21 @@ export default function SystemHotkeyCard({ form, onRestoreDefaultHotkeys }: Syst
 
   return (
     <Card title={<span><AppstoreOutlined style={{ marginRight: 8 }} />{labels.systemHotkeys}</span>} bordered={false}>
-      <Row gutter={24}>
-        <Col span={12}>
-          <Form.Item label={labels.autostart} name="autostart" valuePropName="checked">
+      <Row gutter={[24, 16]}>
+        <Col xs={24} sm={12}>
+          <Form.Item label={labels.autostart} name="autostart" valuePropName="checked" style={{ marginBottom: 6 }}>
             <Switch />
           </Form.Item>
-          <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: -20 }}>
+          <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
             {labels.autostartDesc}
           </Text>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Form.Item
             label={labels.screenshotHotkey}
             name="hotkey"
             rules={[{ pattern: hotkeyPattern, message: labels.hotkeyFormatAltA }]}
+            style={{ marginBottom: 12 }}
           >
             <Input placeholder={labels.hotkeyPlaceholderAltA} style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
           </Form.Item>
@@ -38,6 +39,7 @@ export default function SystemHotkeyCard({ form, onRestoreDefaultHotkeys }: Syst
             label={labels.translateHotkey}
             name="translateHotkey"
             rules={[{ pattern: hotkeyPattern, message: labels.hotkeyFormatAltT }]}
+            style={{ marginBottom: 12 }}
           >
             <Input placeholder={labels.hotkeyPlaceholderAltT} style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
           </Form.Item>
@@ -46,7 +48,7 @@ export default function SystemHotkeyCard({ form, onRestoreDefaultHotkeys }: Syst
             <Button onClick={() => form.setFieldsValue({ translateHotkey: "" })}>{labels.clearTranslateHotkey}</Button>
             <Button onClick={onRestoreDefaultHotkeys}>{labels.restoreDefaults}</Button>
           </Space>
-          <Text type="secondary" style={{ fontSize: 10, display: "block", marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 8, lineHeight: 1.45 }}>
             {labels.hotkeyDesc}
           </Text>
         </Col>

@@ -54,6 +54,7 @@ const requestJsonFromCandidates = async <T>(
 
 export default function useSettingsController(form: FormInstance, onConfigSaved: () => void) {
   const [isSaving, setIsSaving] = useState(false);
+  const [isActivatingGoogle, setIsActivatingGoogle] = useState(false);
   const [isTestingBaidu, setIsTestingBaidu] = useState(false);
   const [isTestingNewApi, setIsTestingNewApi] = useState(false);
   const [isTestingDeepl, setIsTestingDeepl] = useState(false);
@@ -247,6 +248,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
           serviceUrl: serverUrl,
           checkedAt: new Date().toISOString(),
         });
+        onConfigSaved();
       } else {
         throw new Error(resData.error || "接口验证失败");
       }
@@ -315,6 +317,42 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     return serverUrl;
   };
 
+  const saveLocalChannelOnly = async (channel: string) => {
+    let existingConfig = {};
+    try {
+      existingConfig = JSON.parse(await invoke<string>("get_config"));
+    } catch {}
+    await invoke("save_config", {
+      configStr: JSON.stringify({ ...existingConfig, channel }, null, 4),
+    });
+  };
+
+  const activateGoogleChannel = async () => {
+    const values = { ...form.getFieldsValue(true), channel: "google" };
+    form.setFieldValue("channel", "google");
+    setCurrentChannel("google");
+    setIsActivatingGoogle(true);
+    try {
+      const savedServerUrl = await saveServerChannelConfig(values);
+      await saveLocalChannelOnly("google");
+      setServerChannelStatus({
+        activeChannel: "google",
+        serviceUrl: savedServerUrl,
+        checkedAt: new Date().toISOString(),
+      });
+      message.success("Google Translate 已设为当前活动通道。");
+      onConfigSaved();
+    } catch (error: any) {
+      setServerChannelStatus({
+        error: error.message || String(error),
+        checkedAt: new Date().toISOString(),
+      });
+      message.error(`Google 通道启用失败：${error.message || error}`);
+    } finally {
+      setIsActivatingGoogle(false);
+    }
+  };
+
   const onFinish = async (values: any) => {
     setIsSaving(true);
     try {
@@ -374,6 +412,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
 
   return {
     isSaving,
+    isActivatingGoogle,
     isTestingBaidu,
     isTestingNewApi,
     isTestingDeepl,
@@ -384,6 +423,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     serverChannelStatus,
     handleFormChange,
     fetchModels,
+    activateGoogleChannel,
     testChannel,
     onFinish,
     restoreDefaultHotkeys,

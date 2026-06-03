@@ -120,11 +120,25 @@ def test_llm_percent_segment_validation_falls_back_on_missing_separator():
     with patch("translator.normalize_public_base_url", lambda url: url.rstrip('/')):
         translator = LLMTranslator("https://example.com", "sk-test", "model-a")
     translator.session = FakeLLMSession("only first")
-    translator.translate = lambda text, *_args, **_kwargs: f"fallback:{text}"
+    translator._translate_one = lambda text, *_args, **_kwargs: f"fallback:{text}"
 
-    result = translator._do_translate_batch(["first", "second"], "en", "zh")
+    with patch("translator.request_public_url", lambda session, method, url, **kwargs: session.post(url, **kwargs)):
+        result = translator._do_translate_batch(["first", "second"], "en", "zh")
 
     assert result == ["fallback:first", "fallback:second"]
+
+
+def test_llm_batch_network_failure_does_not_start_slow_single_fallback():
+    with patch("translator.normalize_public_base_url", lambda url: url.rstrip('/')):
+        translator = LLMTranslator("https://example.com", "sk-test", "model-a")
+    fallback_calls = []
+    translator._translate_one = lambda text, *_args, **_kwargs: fallback_calls.append(text) or f"fallback:{text}"
+
+    with patch("translator.request_public_url", side_effect=requests.Timeout("batch timeout")):
+        result = translator._do_translate_batch(["first", "second"], "en", "zh")
+
+    assert result == ["", ""]
+    assert fallback_calls == []
 
 
 def test_deepl_batch_uses_official_v2_translate_protocol():
