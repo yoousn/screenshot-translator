@@ -2113,14 +2113,18 @@ export default function ScreenshotPage() {
       setRecordingPickerMode(null);
       recordingStatusRef.current = "ready";
       setRecordingStatus("ready");
+      console.log("[screenshot-trace] startRecording: openRecordingWindows before, recordingStatus=", recordingStatusRef.current, "hasSelected=", hasSelectedRef.current, "shouldCloseScreenshot=", true);
       await openRecordingWindows({
         options: normalizedOptions,
         countdownSeconds: 0,
         autoStart: false,
       }, region);
+      console.log("[screenshot-trace] startRecording: openRecordingWindows after");
       const win = getCurrentWindow();
+      console.log("[screenshot-trace] startRecording: closing screenshot window before");
       await win.setAlwaysOnTop(false).catch(() => {});
       await win.hide().catch(() => {});
+      console.log("[screenshot-trace] startRecording: closing screenshot window after");
       await invoke('set_capturing_state', { state: false }).catch(() => {});
     } catch (error: any) {
       recordingStatusRef.current = "idle";

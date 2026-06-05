@@ -12,6 +12,13 @@ import { I18nProvider } from "./i18n";
 import "./index.css";
 
 const resolveWindowLabel = () => {
+  const search = window.location.search;
+  if (search.includes("recordingSessionKey") || search.includes("recording_control")) {
+    return "recording_control";
+  }
+  if (search.includes("recording_notice")) {
+    return "recording_notice";
+  }
   try {
     return getCurrentWindow().label;
   } catch {

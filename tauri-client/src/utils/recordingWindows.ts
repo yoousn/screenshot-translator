@@ -136,12 +136,16 @@ const removeRecordingSessionPayload = (key: string) => {
 };
 
 export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
+  console.log("[window-trace] action=closeRecordingBorderWindows start");
   await Promise.all([
     setWindowCaptureExcludedIfExists("main", false),
     setWindowCaptureExcludedIfExists("screenshot", false),
     setWindowCaptureExcludedByPrefix(RECORDING_CONTROL_PREFIX, false),
     setWindowCaptureExcludedIfExists(RECORDING_NOTICE_LABEL, false),
-    withTimeout(invoke("force_close_recording_controls").catch(() => {}), 700),
+    (async () => {
+      console.log("[window-trace] invoke force_close_recording_controls source=closeRecordingBorderWindows");
+      await withTimeout(invoke("force_close_recording_controls", { source: "closeRecordingBorderWindows" }).catch(() => {}), 700);
+    })(),
     withTimeout(invoke("hide_recording_overlay").catch(() => {}), 500),
     withTimeout(closeWindowIfExists("recording_overlay", 500).catch(() => {}), 500),
   ]);
@@ -150,6 +154,7 @@ export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
 };
 
 export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload, "borderLabels">, selection: RecordingBorderRect) => {
+  console.log("[window-trace] action=openRecordingWindows start");
   await closeRecordingBorderWindows([]);
   await Promise.all([
     setWindowCaptureExcludedIfExists("main", true),
@@ -178,10 +183,13 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
   const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"], noticeRect: overlayRect, restoreMainWindow: false };
   const controlLabel = `${RECORDING_CONTROL_PREFIX}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const sessionStorageKey = `${RECORDING_SESSION_STORAGE_PREFIX}${controlLabel}`;
+  console.log(`[window-trace] controlLabel=${controlLabel} sessionStorageKey=${sessionStorageKey}`);
   writeRecordingSessionPayload(sessionStorageKey, fullPayload);
   let sent = false;
   const unlistenReady = await listen("recording-overlay-ready", () => {
+    console.log("[window-trace] recording-overlay-ready received");
     sent = true;
+    console.log("[window-trace] emitting recording-overlay-session");
     emit("recording-overlay-session", fullPayload).catch(() => {});
   });
 
@@ -204,6 +212,7 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
 
   try {
     await waitForWindowCreated(control, controlLabel);
+    await invoke("dump_all_windows_state", { source: "openRecordingWindows-after-create" }).catch(() => {});
     await invoke("set_window_capture_excluded", { label: controlLabel, excluded: true }).catch(() => {});
     await invoke("show_recording_overlay", {
       x: Math.round(selection.x),
@@ -212,12 +221,16 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
       h: Math.round(selection.h),
     });
     window.setTimeout(() => {
-      if (!sent) emit("recording-overlay-session", fullPayload).catch(() => {});
+      if (!sent) {
+        console.log("[window-trace] emitting recording-overlay-session (fallback)");
+        emit("recording-overlay-session", fullPayload).catch(() => {});
+      }
     }, 600);
     control.once("tauri://destroyed", () => {
       unlistenReady();
       removeRecordingSessionPayload(sessionStorageKey);
     }).catch(() => {});
+    console.log("[window-trace] action=openRecordingWindows successful, returning (does not call screenshot.hide itself)");
   } catch (error) {
     unlistenReady();
     removeRecordingSessionPayload(sessionStorageKey);

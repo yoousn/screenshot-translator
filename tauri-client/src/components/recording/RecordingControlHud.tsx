@@ -93,13 +93,13 @@ export default function RecordingControlHud({
   const canUseControls = sessionReady && !isSaving;
 
   return (
-    <div className="ysn-rec-shell" style={{ width: "100vw", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", background: "transparent", padding: 8, boxSizing: "border-box" }}>
+    <div className="ysn-rec-shell" style={{ width: "100vw", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.005)", padding: 8, boxSizing: "border-box" }}>
       <style>{`
         @keyframes ysn-rec-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.22); opacity: .68; } }
         .ysn-rec-tool button, .ysn-rec-drag-handle { pointer-events: auto; }
         .ysn-rec-tool button:not(:disabled):hover { transform: translateY(-1px); }
-        .ysn-rec-drag-region, .ysn-rec-drag-region * { app-region: drag; }
-        .ysn-rec-action, .ysn-rec-action * { app-region: no-drag; }
+        .ysn-rec-drag-region, .ysn-rec-drag-region * { -webkit-app-region: drag; app-region: drag; }
+        .ysn-rec-action, .ysn-rec-action * { -webkit-app-region: no-drag; app-region: no-drag; }
         .ysn-rec-drag-handle:hover { background: rgba(148, 163, 184, 0.14) !important; }
         .ysn-rec-drag-handle:active { cursor: grabbing; transform: scale(0.96); }
       `}</style>
@@ -127,7 +127,9 @@ export default function RecordingControlHud({
           <Button className="ysn-rec-action" data-no-drag="true" type="text" icon={<FolderOpenOutlined />} onClick={onOpenFolder} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: "#2563eb", background: "#eff6ff" }} />
         </Tooltip>
         <Tooltip {...tooltipProps} title="关闭 / 取消">
-          <Button className="ysn-rec-action" data-no-drag="true" type="text" icon={<CloseOutlined />} onClick={onCancel} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: "#dc2626", background: "#fef2f2" }} />
+          <button className="ysn-rec-action" data-no-drag="true" type="button" onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }} onClick={(e) => { e.stopPropagation(); e.preventDefault(); console.log('[window-trace] close-button click fired'); onCancel(); }} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: "#dc2626", background: "#fef2f2", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+            <CloseOutlined />
+          </button>
         </Tooltip>
         <Tooltip {...tooltipProps} title={hasSavedVideo ? "复制视频" : "保存后可复制"}>
           <Button className="ysn-rec-action" data-no-drag="true" type="text" icon={<CopyOutlined />} disabled={!hasSavedVideo || busy || isSaving} onClick={onCopy} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: hasSavedVideo ? "#0f766e" : "#94a3b8", background: hasSavedVideo ? "#ccfbf1" : "#f1f5f9" }} />

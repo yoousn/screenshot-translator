@@ -1,7 +1,15 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use crate::recording_process::*;
+use crate::window_control::*;
+
 
 mod text_source;
+pub mod recording_overlay;
+pub mod recording_process;
+pub mod window_control;
+pub mod recording_commands;
+pub use recording_overlay::*;
 
 use arboard::{Clipboard, ImageData};
 use base64::{prelude::BASE64_STANDARD, Engine};
@@ -13,20 +21,17 @@ use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, Command};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::time::Duration;
 
-const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static LAST_CAPTURE_SHORTCUT_MS: AtomicU64 = AtomicU64::new(0);
-static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
-static RECORDING_OVERLAY_COLOR: AtomicU32 = AtomicU32::new(RECORDING_BORDER_BLUE);
 static STARTUP_READINESS: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
 
 static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
@@ -39,17 +44,6 @@ fn get_text_source_snapshot_state() -> &'static Mutex<Option<serde_json::Value>>
     TEXT_SOURCE_SNAPSHOT.get_or_init(|| Mutex::new(None))
 }
 
-#[derive(Clone, Copy)]
-struct NativeRecordingOverlay {
-    hwnd: isize,
-}
-
-unsafe impl Send for NativeRecordingOverlay {}
-
-fn get_recording_overlay() -> &'static Mutex<Option<NativeRecordingOverlay>> {
-    RECORDING_OVERLAY.get_or_init(|| Mutex::new(None))
-}
-
 fn get_startup_readiness_cache() -> &'static Mutex<Option<serde_json::Value>> {
     STARTUP_READINESS.get_or_init(|| Mutex::new(None))
 }
@@ -58,9 +52,6 @@ struct AppShortcutStatus(std::sync::Mutex<Result<(), String>>);
 
 const DEFAULT_SCREENSHOT_HOTKEY: &str = "Alt+A";
 const TRANSLATE_HOTKEY_LABEL: &str = "Alt+T";
-const RECORDING_BORDER_BLUE: u32 = 0xeb6325;
-const RECORDING_BORDER_RED: u32 = 0x4444ef;
-const RECORDING_BORDER_YELLOW: u32 = 0x0b9ef5;
 const RECORDING_HOTKEY_LABEL: &str = "Alt+R";
 
 fn now_epoch_millis() -> u64 {
@@ -456,7 +447,7 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-mod win32 {
+pub(crate) mod win32 {
     use std::ffi::c_void;
 
     #[repr(C)]
@@ -568,6 +559,7 @@ mod win32 {
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
         pub fn GetWindowTextLengthW(hWnd: isize) -> i32;
         pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
+        pub fn GetClassNameW(hWnd: isize, lpClassName: *mut u16, nMaxCount: i32) -> i32;
         pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
         pub fn GetAsyncKeyState(vKey: i32) -> i16;
         pub fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> isize;
@@ -606,21 +598,6 @@ mod win32 {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn set_hwnd_capture_excluded(hwnd: isize, excluded: bool) -> Result<(), String> {
-    const WDA_NONE: u32 = 0x00000000;
-    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
-    let affinity = if excluded {
-        WDA_EXCLUDEFROMCAPTURE
-    } else {
-        WDA_NONE
-    };
-    let ok = unsafe { win32::SetWindowDisplayAffinity(hwnd, affinity) };
-    if ok == 0 {
-        return Err("SetWindowDisplayAffinity failed".to_string());
-    }
-    Ok(())
-}
 
 fn set_webview_capture_excluded(
     app: &tauri::AppHandle,
@@ -642,14 +619,6 @@ fn set_webview_capture_excluded(
     }
 }
 
-#[tauri::command]
-fn set_window_capture_excluded(
-    app: tauri::AppHandle,
-    label: String,
-    excluded: bool,
-) -> Result<(), String> {
-    set_webview_capture_excluded(&app, &label, excluded)
-}
 
 #[cfg(target_os = "windows")]
 fn get_cursor_position() -> Option<(i32, i32)> {
@@ -669,356 +638,14 @@ fn get_cursor_position() -> Option<(i32, i32)> {
     None
 }
 
-fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = window.hwnd() {
-        let value: i32 = 1;
-        // SAFETY: Calling Dwmapi function DwmSetWindowAttribute with valid hwnd and parameters.
-        unsafe {
-            let _ = win32::DwmSetWindowAttribute(
-                hwnd.0 as isize,
-                DWMWA_TRANSITIONS_FORCEDISABLED,
-                &value as *const i32 as *const std::ffi::c_void,
-                std::mem::size_of::<i32>() as u32,
-            );
-        }
-    }
-}
 
-fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
-    let _ = window.show();
-    let _ = window.set_always_on_top(true);
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = window.hwnd() {
-        let hwnd = hwnd.0 as isize;
-        unsafe {
-            let foreground = win32::GetForegroundWindow();
-            let current_thread = win32::GetCurrentThreadId();
-            let foreground_thread = if foreground != 0 {
-                win32::GetWindowThreadProcessId(foreground, std::ptr::null_mut())
-            } else {
-                0
-            };
-            let attached = foreground_thread != 0
-                && foreground_thread != current_thread
-                && win32::AttachThreadInput(current_thread, foreground_thread, 1) != 0;
-            let _ = win32::ShowWindow(hwnd, SW_SHOW);
-            let _ = win32::SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-            );
-            let _ = win32::BringWindowToTop(hwnd);
-            let _ = win32::SetForegroundWindow(hwnd);
-            let _ = win32::SetActiveWindow(hwnd);
-            let _ = win32::SetFocus(hwnd);
-            if attached {
-                let _ = win32::AttachThreadInput(current_thread, foreground_thread, 0);
-            }
-        }
-    }
-    let _ = window.set_focus();
-}
+
 
 #[cfg(target_os = "windows")]
-const SW_SHOW: i32 = 5;
-#[cfg(target_os = "windows")]
-const HWND_TOPMOST: isize = -1;
-#[cfg(target_os = "windows")]
-const SWP_NOSIZE: u32 = 0x0001;
-#[cfg(target_os = "windows")]
-const SWP_NOMOVE: u32 = 0x0002;
-#[cfg(target_os = "windows")]
-const SWP_SHOWWINDOW: u32 = 0x0040;
-#[cfg(target_os = "windows")]
-const RECORDING_OVERLAY_CLASS: &str = "YSNRecordingOverlayNative";
-#[cfg(target_os = "windows")]
-const WM_PAINT: u32 = 0x000F;
-#[cfg(target_os = "windows")]
-const WM_DESTROY: u32 = 0x0002;
-#[cfg(target_os = "windows")]
-const WM_CLOSE: u32 = 0x0010;
-#[cfg(target_os = "windows")]
-const WM_NCHITTEST: u32 = 0x0084;
-#[cfg(target_os = "windows")]
-const HTTRANSPARENT: isize = -1;
-#[cfg(target_os = "windows")]
-const WS_POPUP: u32 = 0x80000000;
-#[cfg(target_os = "windows")]
-const WS_EX_TOPMOST: u32 = 0x00000008;
-#[cfg(target_os = "windows")]
-const WS_EX_TRANSPARENT: u32 = 0x00000020;
-#[cfg(target_os = "windows")]
-const WS_EX_TOOLWINDOW: u32 = 0x00000080;
-#[cfg(target_os = "windows")]
-const WS_EX_LAYERED: u32 = 0x00080000;
-#[cfg(target_os = "windows")]
-const WS_EX_NOACTIVATE: u32 = 0x08000000;
-#[cfg(target_os = "windows")]
-const SW_SHOWNOACTIVATE: i32 = 4;
-#[cfg(target_os = "windows")]
-const LWA_COLORKEY: u32 = 0x00000001;
-#[cfg(target_os = "windows")]
-const TRANSPARENT_COLOR_KEY: u32 = 0x000000;
-#[cfg(target_os = "windows")]
-const RECORDING_BORDER_THICKNESS: i32 = 2;
 
-#[cfg(target_os = "windows")]
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn recording_overlay_wnd_proc(
-    hwnd: isize,
-    msg: u32,
-    w_param: usize,
-    l_param: isize,
-) -> isize {
-    match msg {
-        WM_NCHITTEST => HTTRANSPARENT,
-        WM_PAINT => {
-            let mut ps = win32::PAINTSTRUCT {
-                hdc: 0,
-                f_erase: 0,
-                rc_paint: win32::RECT {
-                    left: 0,
-                    top: 0,
-                    right: 0,
-                    bottom: 0,
-                },
-                f_restore: 0,
-                f_inc_update: 0,
-                rgb_reserved: [0; 32],
-            };
-            let hdc = win32::BeginPaint(hwnd, &mut ps);
-            let width = ps.rc_paint.right.max(1);
-            let height = ps.rc_paint.bottom.max(1);
-            let transparent_brush = win32::CreateSolidBrush(TRANSPARENT_COLOR_KEY);
-            let border_color = RECORDING_OVERLAY_COLOR.load(Ordering::Relaxed);
-            let red_brush = win32::CreateSolidBrush(border_color);
-            let full = win32::RECT {
-                left: 0,
-                top: 0,
-                right: width,
-                bottom: height,
-            };
-            let top = win32::RECT {
-                left: 0,
-                top: 0,
-                right: width,
-                bottom: RECORDING_BORDER_THICKNESS.min(height),
-            };
-            let bottom = win32::RECT {
-                left: 0,
-                top: (height - RECORDING_BORDER_THICKNESS).max(0),
-                right: width,
-                bottom: height,
-            };
-            let left = win32::RECT {
-                left: 0,
-                top: 0,
-                right: RECORDING_BORDER_THICKNESS.min(width),
-                bottom: height,
-            };
-            let right = win32::RECT {
-                left: (width - RECORDING_BORDER_THICKNESS).max(0),
-                top: 0,
-                right: width,
-                bottom: height,
-            };
-            win32::FillRect(hdc, &full, transparent_brush);
-            win32::FillRect(hdc, &top, red_brush);
-            win32::FillRect(hdc, &bottom, red_brush);
-            win32::FillRect(hdc, &left, red_brush);
-            win32::FillRect(hdc, &right, red_brush);
-            let _ = win32::DeleteObject(transparent_brush);
-            let _ = win32::DeleteObject(red_brush);
-            win32::EndPaint(hwnd, &ps);
-            0
-        }
-        WM_CLOSE => {
-            win32::DestroyWindow(hwnd);
-            0
-        }
-        WM_DESTROY => {
-            win32::PostQuitMessage(0);
-            0
-        }
-        _ => win32::DefWindowProcW(hwnd, msg, w_param, l_param),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn hide_recording_overlay_internal() {
-    let overlay = get_recording_overlay()
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take());
-    if let Some(overlay) = overlay {
-        unsafe {
-            let _ = win32::PostMessageW(overlay.hwnd, WM_CLOSE, 0, 0);
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn hide_recording_overlay_internal() {}
-
-#[tauri::command]
-fn hide_recording_overlay() -> Result<(), String> {
-    hide_recording_overlay_internal();
-    Ok(())
-}
-fn recording_color_ref(status: &str) -> u32 {
-    match status {
-        "recording" => RECORDING_BORDER_RED,
-        "paused" => RECORDING_BORDER_YELLOW,
-        _ => RECORDING_BORDER_BLUE,
-    }
-}
-
-#[tauri::command]
-fn set_recording_overlay_status(status: String) -> Result<(), String> {
-    RECORDING_OVERLAY_COLOR.store(recording_color_ref(status.trim()), Ordering::Relaxed);
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(overlay) = get_recording_overlay().lock().ok().and_then(|guard| *guard) {
-            unsafe {
-                let _ = win32::InvalidateRect(overlay.hwnd, std::ptr::null(), 1);
-                let _ = win32::UpdateWindow(overlay.hwnd);
-            }
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
-    if w <= 0 || h <= 0 {
-        return Err("Invalid recording region size".to_string());
-    }
-    hide_recording_overlay_internal();
-    RECORDING_OVERLAY_COLOR.store(RECORDING_BORDER_BLUE, Ordering::Relaxed);
-    #[cfg(target_os = "windows")]
-    {
-        let (tx, rx) = mpsc::channel::<Result<isize, String>>();
-        std::thread::spawn(move || {
-            let result = unsafe {
-                let class_name = wide_null(RECORDING_OVERLAY_CLASS);
-                let title = wide_null("YSN Recording Border");
-                let h_instance = win32::GetModuleHandleW(std::ptr::null());
-                let wnd_class = win32::WNDCLASSW {
-                    style: 0,
-                    lpfn_wnd_proc: Some(recording_overlay_wnd_proc),
-                    cb_cls_extra: 0,
-                    cb_wnd_extra: 0,
-                    h_instance,
-                    h_icon: 0,
-                    h_cursor: 0,
-                    hbr_background: 0,
-                    lpsz_menu_name: std::ptr::null(),
-                    lpsz_class_name: class_name.as_ptr(),
-                };
-                let _ = win32::RegisterClassW(&wnd_class);
-                let hwnd = win32::CreateWindowExW(
-                    WS_EX_TOPMOST
-                        | WS_EX_TRANSPARENT
-                        | WS_EX_TOOLWINDOW
-                        | WS_EX_LAYERED
-                        | WS_EX_NOACTIVATE,
-                    class_name.as_ptr(),
-                    title.as_ptr(),
-                    WS_POPUP,
-                    x,
-                    y,
-                    w,
-                    h,
-                    0,
-                    0,
-                    h_instance,
-                    std::ptr::null_mut(),
-                );
-                if hwnd == 0 {
-                    Err("Failed to create native recording border".to_string())
-                } else {
-                    let _ = win32::SetLayeredWindowAttributes(
-                        hwnd,
-                        TRANSPARENT_COLOR_KEY,
-                        255,
-                        LWA_COLORKEY,
-                    );
-                    let _ = set_hwnd_capture_excluded(hwnd, true);
-                    let _ = win32::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                    let _ = win32::UpdateWindow(hwnd);
-                    Ok(hwnd)
-                }
-            };
-            let hwnd = match result {
-                Ok(hwnd) => {
-                    let _ = tx.send(Ok(hwnd));
-                    hwnd
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(error));
-                    return;
-                }
-            };
-            let mut msg = win32::MSG {
-                hwnd: 0,
-                message: 0,
-                w_param: 0,
-                l_param: 0,
-                time: 0,
-                pt: win32::POINT { x: 0, y: 0 },
-            };
-            unsafe {
-                while win32::GetMessageW(&mut msg, 0, 0, 0) > 0 {
-                    let _ = win32::TranslateMessage(&msg);
-                    let _ = win32::DispatchMessageW(&msg);
-                }
-            }
-            if let Ok(mut guard) = get_recording_overlay().lock() {
-                if guard.map(|value| value.hwnd) == Some(hwnd) {
-                    *guard = None;
-                }
-            }
-        });
-        let hwnd = rx
-            .recv_timeout(std::time::Duration::from_millis(1000))
-            .map_err(|_| "Timed out creating native recording border".to_string())??;
-        *get_recording_overlay().lock().map_err(|e| e.to_string())? =
-            Some(NativeRecordingOverlay { hwnd });
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok(())
-    }
-}
-
-fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
-    for (label, window) in app.webview_windows() {
-        if label == "screenshot" && include_primary {
-            let _ = window.set_always_on_top(false);
-            let _ = window.hide();
-        } else if label.starts_with("screenshot_") {
-            let _ = window.set_always_on_top(false);
-            let _ = window.hide();
-            let win_clone = window.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let _ = win_clone.close();
-            });
-        }
-    }
-}
 
 async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
+    println!("[screenshot-trace] enter start_screenshot_impl, mode={:?}", mode);
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
     start_text_source_snapshot_capture(&app);
 
@@ -1085,8 +712,11 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     .map_err(|e| format!("Screenshot file write task failed: {}", e))?;
 
     let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
+        let is_visible = win.is_visible().unwrap_or(false);
+        println!("[screenshot-trace] start_screenshot_impl: reusing screenshot window, visible={is_visible}");
         win
     } else {
+        println!("[screenshot-trace] start_screenshot_impl: creating new screenshot window");
         tauri::WebviewWindowBuilder::new(
             &app,
             "screenshot",
@@ -1111,6 +741,7 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     let (x, y, width, height) = screen_info;
 
     // Position and configure the window while still hidden
+    println!("[screenshot-trace] start_screenshot_impl: configuring window, url={:?}, title={:?}", screenshot_win.url(), screenshot_win.title());
     let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = screenshot_win.set_always_on_top(true);
@@ -1140,19 +771,6 @@ async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> R
     Ok(())
 }
 
-#[tauri::command]
-async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
-    let target_label = label.unwrap_or_else(|| "screenshot".to_string());
-    if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
-        return Ok(());
-    }
-    if let Some(screenshot_win) = app.get_webview_window(&target_label) {
-        activate_webview_window(&screenshot_win);
-        tokio::time::sleep(Duration::from_millis(35)).await;
-        activate_webview_window(&screenshot_win);
-    }
-    Ok(())
-}
 
 #[tauri::command]
 fn get_screenshot_pointer_state(
@@ -1193,6 +811,7 @@ fn get_screenshot_pointer_state(
 
 #[tauri::command]
 async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
+    println!("[screenshot-trace] enter start_screenshot, mode={:?}", mode);
     let is_recording = {
         let guard = get_recording_process().lock().map_err(|e| e.to_string())?;
         guard.is_some()
@@ -1203,8 +822,10 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
 
     // Restart cleanly on repeated hotkey presses instead of racing two overlay sessions.
     if CAPTURING.swap(true, Ordering::SeqCst) {
+        println!("[screenshot-trace] start_screenshot: CAPTURING was already true, closing existing windows");
         close_screenshot_windows(&app, true);
     }
+    println!("[screenshot-trace] start_screenshot: CAPTURING is now true");
 
     match start_screenshot_impl(app, mode).await {
         Ok(()) => Ok(()),
@@ -1217,40 +838,14 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
 
 #[tauri::command]
 async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
+    println!("[screenshot-trace] enter force_close_screenshots");
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
+    println!("[screenshot-trace] force_close_screenshots: CAPTURING is now false");
     Ok(())
 }
 
-#[tauri::command]
-async fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
-    }
-    Ok(())
-}
 
-#[tauri::command]
-async fn force_close_recording_controls(app: tauri::AppHandle) -> Result<(), String> {
-    hide_recording_overlay_internal();
-    let mut recording_windows: Vec<tauri::WebviewWindow> = Vec::new();
-    for (label, window) in app.webview_windows() {
-        if label == "recording_notice" || label.starts_with("recording_control") {
-            recording_windows.push(window);
-        }
-    }
-    for window in recording_windows {
-        let _ = window.set_always_on_top(false);
-        let _ = window.hide();
-        // Delay closing to prevent the transparent window from flashing white on Windows
-        let win_clone = window.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let _ = win_clone.close();
-        });
-    }
-    Ok(())
-}
 
 #[tauri::command]
 fn quick_fullscreen_capture() -> Result<(), String> {
@@ -1687,56 +1282,7 @@ async fn save_image_to_file(image_base64: String) -> Result<String, String> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct RecordingOptions {
-    fps: Option<u32>,
-    resolution: Option<String>,
-    audio_mode: Option<String>,
-    mic_device: Option<String>,
-    system_audio_device: Option<String>,
-    output_dir: Option<String>,
-    region_x: Option<i32>,
-    region_y: Option<i32>,
-    region_w: Option<i32>,
-    region_h: Option<i32>,
-}
 
-fn ffmpeg_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
-    use tauri::path::BaseDirectory;
-    let mut candidates = Vec::new();
-
-    if let Some(path) = config_value_string("recordingFfmpegPath") {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(path) = std::env::var("FFMPEG_PATH") {
-        if !path.trim().is_empty() {
-            candidates.push(PathBuf::from(path.trim()));
-        }
-    }
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            candidates.push(dir.join("ffmpeg").join("ffmpeg.exe"));
-            candidates.push(dir.join("tools").join("ffmpeg").join("ffmpeg.exe"));
-            candidates.push(dir.join("plugins").join("ffmpeg").join("ffmpeg.exe"));
-        }
-    }
-
-    if let Ok(path) = app
-        .path()
-        .resolve("resources/ffmpeg/ffmpeg.exe", BaseDirectory::Resource)
-    {
-        candidates.push(path);
-    }
-
-    let mut app_ffmpeg = app_data_dir();
-    app_ffmpeg.push("ffmpeg");
-    app_ffmpeg.push("ffmpeg.exe");
-    candidates.push(app_ffmpeg);
-    candidates.push(PathBuf::from("ffmpeg"));
-    candidates
-}
 
 #[derive(Debug, Deserialize)]
 struct GithubReleaseAsset {
@@ -1752,34 +1298,7 @@ struct GithubReleaseInfo {
     assets: Vec<GithubReleaseAsset>,
 }
 
-fn emit_ffmpeg_progress(
-    app: &tauri::AppHandle,
-    phase: &str,
-    downloaded: u64,
-    total: Option<u64>,
-    percent: u8,
-) {
-    let _ = app.emit(
-        "ffmpeg-download-progress",
-        serde_json::json!({
-            "phase": phase,
-            "downloaded": downloaded,
-            "total": total,
-            "percent": percent,
-        }),
-    );
-}
 
-fn default_ffmpeg_install_dir() -> PathBuf {
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            return dir.join("ffmpeg");
-        }
-    }
-    let mut dir = app_data_dir();
-    dir.push("ffmpeg");
-    dir
-}
 
 fn ensure_writable_dir(preferred: PathBuf) -> PathBuf {
     if fs::create_dir_all(&preferred).is_ok() {
@@ -1794,42 +1313,6 @@ fn ensure_writable_dir(preferred: PathBuf) -> PathBuf {
     fallback
 }
 
-fn extract_ffmpeg_exe_from_zip(
-    bytes: &[u8],
-    install_dir: &std::path::Path,
-) -> Result<PathBuf, String> {
-    let reader = Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|e| format!("Read ffmpeg archive failed: {}", e))?;
-    fs::create_dir_all(install_dir)
-        .map_err(|e| format!("Create ffmpeg directory failed: {}", e))?;
-    let target = install_dir.join("ffmpeg.exe");
-    let mut found = false;
-    for index in 0..archive.len() {
-        let mut file = archive
-            .by_index(index)
-            .map_err(|e| format!("Read ffmpeg archive entry failed: {}", e))?;
-        if !file
-            .name()
-            .replace('\\', "/")
-            .to_ascii_lowercase()
-            .ends_with("/bin/ffmpeg.exe")
-            && !file.name().eq_ignore_ascii_case("ffmpeg.exe")
-        {
-            continue;
-        }
-        let mut out =
-            fs::File::create(&target).map_err(|e| format!("Create ffmpeg.exe failed: {}", e))?;
-        std::io::copy(&mut file, &mut out)
-            .map_err(|e| format!("Extract ffmpeg.exe failed: {}", e))?;
-        found = true;
-        break;
-    }
-    if !found {
-        return Err("ffmpeg.exe was not found in the archive".to_string());
-    }
-    Ok(target)
-}
 
 fn cleanup_finished_recording_process() -> Result<bool, String> {
     let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
@@ -1847,134 +1330,11 @@ fn cleanup_finished_recording_process() -> Result<bool, String> {
     Ok(finished)
 }
 
-fn find_ffmpeg_executable(app: &tauri::AppHandle) -> Option<PathBuf> {
-    for candidate in ffmpeg_candidates(app) {
-        if candidate.to_string_lossy().eq_ignore_ascii_case("ffmpeg") {
-            if hidden_ffmpeg_command(Path::new("ffmpeg"))
-                .arg("-version")
-                .output()
-                .is_ok()
-            {
-                return Some(candidate);
-            }
-        } else if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
 
-fn parse_quoted_audio_devices(
-    output: &str,
-    audio_marker_required: bool,
-    prefix: Option<&str>,
-) -> Vec<String> {
-    let mut devices = Vec::new();
-    for line in output.lines() {
-        if audio_marker_required && !line.contains("(audio)") {
-            continue;
-        }
-        if let Some(first_quote) = line.find('"') {
-            if let Some(second_quote) = line[first_quote + 1..].find('"') {
-                let name = line[first_quote + 1..first_quote + 1 + second_quote].trim();
-                if !name.is_empty() {
-                    let value = match prefix {
-                        Some(prefix) => format!("{}{}", prefix, name),
-                        None => name.to_string(),
-                    };
-                    if !devices.contains(&value) {
-                        devices.push(value);
-                    }
-                }
-            }
-        }
-    }
-    devices
-}
 
-fn ffmpeg_supports_input_format(formats_output: &str, format_name: &str) -> bool {
-    formats_output.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("D") && trimmed.split_whitespace().nth(1) == Some(format_name)
-    })
-}
 
-fn hidden_ffmpeg_command(ffmpeg_path: &Path) -> Command {
-    let mut cmd = Command::new(ffmpeg_path);
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
-}
 
-fn ffmpeg_input_formats(ffmpeg_path: &Path) -> String {
-    hidden_ffmpeg_command(ffmpeg_path)
-        .args(["-hide_banner", "-formats"])
-        .output()
-        .map(|out| {
-            format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        })
-        .unwrap_or_default()
-}
 
-fn collect_ffmpeg_audio_devices(ffmpeg_path: &Path) -> Vec<String> {
-    let mut devices = Vec::new();
-    let input_formats = ffmpeg_input_formats(ffmpeg_path);
-    if let Ok(out) = hidden_ffmpeg_command(ffmpeg_path)
-        .args([
-            "-hide_banner",
-            "-list_devices",
-            "true",
-            "-f",
-            "dshow",
-            "-i",
-            "dummy",
-        ])
-        .output()
-    {
-        let combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        devices.extend(parse_quoted_audio_devices(&combined, true, None));
-    }
-    if ffmpeg_supports_input_format(&input_formats, "wasapi") {
-        if let Ok(out) = hidden_ffmpeg_command(ffmpeg_path)
-            .args([
-                "-hide_banner",
-                "-list_devices",
-                "true",
-                "-f",
-                "wasapi",
-                "-i",
-                "dummy",
-            ])
-            .output()
-        {
-            let combined = format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            devices.extend(parse_quoted_audio_devices(
-                &combined,
-                false,
-                Some("wasapi:"),
-            ));
-        }
-        if !devices.contains(&"wasapi:default".to_string()) {
-            devices.push("wasapi:default".to_string());
-        }
-    }
-    devices
-}
 
 #[cfg(target_os = "windows")]
 struct RecordingWindowListContext {
@@ -2524,74 +1884,11 @@ async fn run_startup_readiness_probe(app: tauri::AppHandle) -> Result<serde_json
     Ok(snapshot)
 }
 
-#[tauri::command]
-fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let _ = cleanup_finished_recording_process()?;
-    let ffmpeg = find_ffmpeg_executable(&app);
-    let is_recording = get_recording_process()
-        .lock()
-        .map_err(|e| e.to_string())?
-        .is_some();
-    let audio_devices = if let Some(ffmpeg_path) = &ffmpeg {
-        collect_ffmpeg_audio_devices(ffmpeg_path)
-    } else {
-        Vec::new()
-    };
 
-    Ok(serde_json::json!({
-        "ffmpegFound": ffmpeg.is_some(),
-        "ffmpegPath": ffmpeg.map(|path| path.to_string_lossy().to_string()),
-        "isRecording": is_recording,
-        "audioDevices": audio_devices,
-    }))
-}
 
-fn recording_temp_dir() -> PathBuf {
-    let mut dir = app_data_dir();
-    dir.push("recordings");
-    dir
-}
 
-fn default_recording_output_dir() -> PathBuf {
-    dirs::video_dir().unwrap_or_else(app_data_dir).join("YSN")
-}
 
-fn timestamped_recording_file_name() -> String {
-    let now = chrono::Local::now();
-    format!("YSN_{}.mp4", now.format("%Y%m%d_%H%M%S"))
-}
 
-fn unique_recording_output_path() -> Result<PathBuf, String> {
-    let dir = default_recording_output_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("create recording directory failed: {}", e))?;
-    let base = timestamped_recording_file_name();
-    let path = dir.join(&base);
-    if !path.exists() {
-        return Ok(path);
-    }
-    let stem = base.trim_end_matches(".mp4");
-    for index in 2..1000 {
-        let candidate = dir.join(format!("{}_{}.mp4", stem, index));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err("failed to create unique recording filename".to_string())
-}
-
-fn recording_output_path(output_dir: Option<String>) -> Result<PathBuf, String> {
-    let dir = output_dir
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| PathBuf::from(value.trim()))
-        .unwrap_or_else(recording_temp_dir);
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("create recording temp directory failed: {}", e))?;
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    Ok(dir.join(format!("recording_{}.mp4", millis)))
-}
 
 #[tauri::command]
 fn get_default_recording_output_dir() -> Result<String, String> {
@@ -2600,690 +1897,30 @@ fn get_default_recording_output_dir() -> Result<String, String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
-#[tauri::command]
-fn open_path_in_file_manager(path: String) -> Result<(), String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("path is empty".to_string());
-    }
-    let input_path = PathBuf::from(trimmed);
-    let target_path = if input_path.exists() {
-        input_path
-    } else {
-        fs::create_dir_all(&input_path)
-            .map_err(|e| format!("create directory before opening failed: {}", e))?;
-        input_path
-    };
 
-    #[cfg(target_os = "windows")]
-    {
-        let mut command = Command::new("explorer.exe");
-        if target_path.is_file() {
-            command.arg(format!("/select,{}", target_path.to_string_lossy()));
-        } else {
-            command.arg(target_path.to_string_lossy().to_string());
-        }
-        command
-            .spawn()
-            .map_err(|e| format!("open path with Explorer failed: {}", e))?;
-        Ok(())
-    }
 
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(&target_path)
-            .spawn()
-            .map_err(|e| format!("open path failed: {}", e))?;
-        Ok(())
-    }
 
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    {
-        Command::new("xdg-open")
-            .arg(&target_path)
-            .spawn()
-            .map_err(|e| format!("open path failed: {}", e))?;
-        Ok(())
-    }
-}
 
-fn resolution_scale_filter(resolution: &str) -> Option<&'static str> {
-    match resolution {
-        "480p" => Some("scale=-2:480"),
-        "720p" => Some("scale=-2:720"),
-        "1080p" => Some("scale=-2:1080"),
-        "original" => None,
-        _ => Some("scale=-2:1080"),
-    }
-}
 
-fn push_recording_audio_input(
-    device: Option<&str>,
-    label: &str,
-    args: &mut Vec<String>,
-) -> Result<(), String> {
-    let name = device
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("Please choose {} audio device", label))?;
-    let trimmed = name.trim();
-    if let Some(wasapi_device) = trimmed.strip_prefix("wasapi:") {
-        args.extend([
-            "-f".to_string(),
-            "wasapi".to_string(),
-            "-i".to_string(),
-            wasapi_device.trim().to_string(),
-        ]);
-    } else {
-        let dshow_device = trimmed.strip_prefix("dshow:").unwrap_or(trimmed);
-        args.extend([
-            "-f".to_string(),
-            "dshow".to_string(),
-            "-i".to_string(),
-            format!("audio={}", dshow_device.trim()),
-        ]);
-    }
-    Ok(())
-}
 
-fn build_recording_args(
-    options: &RecordingOptions,
-    output_path: &Path,
-) -> Result<Vec<String>, String> {
-    let fps = options.fps.unwrap_or(30).clamp(1, 60).to_string();
-    let resolution = options.resolution.as_deref().unwrap_or("1080p");
-    let audio_mode = options.audio_mode.as_deref().unwrap_or("none");
 
-    let mut args: Vec<String> = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
-        "-f".to_string(),
-        "gdigrab".to_string(),
-        "-framerate".to_string(),
-        fps.clone(),
-    ];
-    if let (Some(x), Some(y), Some(w), Some(h)) = (
-        options.region_x,
-        options.region_y,
-        options.region_w,
-        options.region_h,
-    ) {
-        if w <= 0 || h <= 0 {
-            return Err("Invalid recording region size".to_string());
-        }
-        args.extend([
-            "-offset_x".to_string(),
-            x.to_string(),
-            "-offset_y".to_string(),
-            y.to_string(),
-            "-video_size".to_string(),
-            format!("{}x{}", w, h),
-        ]);
-    }
-    args.extend(["-i".to_string(), "desktop".to_string()]);
 
-    let audio_inputs = match audio_mode {
-        "none" => 0,
-        "mic" => {
-            push_recording_audio_input(options.mic_device.as_deref(), "microphone", &mut args)?;
-            1
-        }
-        "system" => {
-            push_recording_audio_input(
-                options.system_audio_device.as_deref(),
-                "绯荤粺澹伴煶",
-                &mut args,
-            )?;
-            1
-        }
-        "system_mic" => {
-            push_recording_audio_input(
-                options.system_audio_device.as_deref(),
-                "绯荤粺澹伴煶",
-                &mut args,
-            )?;
-            push_recording_audio_input(options.mic_device.as_deref(), "microphone", &mut args)?;
-            2
-        }
-        _ => return Err("Unknown recording audio mode".to_string()),
-    };
 
-    args.extend([
-        "-c:v".to_string(),
-        "libx264".to_string(),
-        "-preset".to_string(),
-        "veryfast".to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-        "-r".to_string(),
-        fps,
-    ]);
-    if let Some(filter) = resolution_scale_filter(resolution) {
-        args.extend(["-vf".to_string(), filter.to_string()]);
-    }
 
-    match audio_inputs {
-        0 => args.push("-an".to_string()),
-        1 => args.extend([
-            "-map".to_string(),
-            "0:v".to_string(),
-            "-map".to_string(),
-            "1:a".to_string(),
-            "-c:a".to_string(),
-            "aac".to_string(),
-            "-b:a".to_string(),
-            "160k".to_string(),
-        ]),
-        2 => args.extend([
-            "-filter_complex".to_string(),
-            "[1:a][2:a]amix=inputs=2:duration=longest[aout]".to_string(),
-            "-map".to_string(),
-            "0:v".to_string(),
-            "-map".to_string(),
-            "[aout]".to_string(),
-            "-c:a".to_string(),
-            "aac".to_string(),
-            "-b:a".to_string(),
-            "160k".to_string(),
-        ]),
-        _ => {}
-    }
-    args.push(output_path.to_string_lossy().to_string());
-    Ok(args)
-}
 
-#[tauri::command]
-async fn get_ffmpeg_release_info() -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("ScreenshotTranslator/1.0")
-        .build()
-        .map_err(|e| format!("Create request client failed: {}", e))?;
-    let release = client
-        .get("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest")
-        .send()
-        .await
-        .map_err(|e| format!("Check ffmpeg release failed: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Read ffmpeg release response failed: {}", e))?
-        .json::<GithubReleaseInfo>()
-        .await
-        .map_err(|e| format!("Parse ffmpeg release failed: {}", e))?;
 
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| {
-            let name = asset.name.to_ascii_lowercase();
-            name.ends_with(".zip")
-                && name.contains("win64")
-                && name.contains("gpl")
-                && !name.contains("shared")
-        })
-        .or_else(|| {
-            release.assets.iter().find(|asset| {
-                let name = asset.name.to_ascii_lowercase();
-                name.ends_with(".zip") && name.contains("win64") && !name.contains("shared")
-            })
-        })
-        .ok_or_else(|| {
-            "No Windows x64 ffmpeg zip asset found in the official release".to_string()
-        })?;
 
-    Ok(serde_json::json!({
-        "tag": release.tag_name,
-        "pageUrl": release.html_url,
-        "assetName": asset.name,
-        "downloadUrl": asset.browser_download_url,
-        "size": asset.size,
-        "installDir": default_ffmpeg_install_dir().to_string_lossy().to_string(),
-    }))
-}
 
-#[tauri::command]
-async fn download_ffmpeg_release(
-    app: tauri::AppHandle,
-    url: String,
-    tag: String,
-) -> Result<serde_json::Value, String> {
-    let allowed = [
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/",
-        "https://objects.githubusercontent.com/github-production-release-asset-",
-    ];
-    if !allowed.iter().any(|prefix| url.starts_with(prefix))
-        || !url.to_ascii_lowercase().ends_with(".zip")
-    {
-        return Err(
-            "Please choose an official Windows zip from BtbN/FFmpeg-Builds GitHub Releases"
-                .to_string(),
-        );
-    }
 
-    emit_ffmpeg_progress(&app, "Preparing", 0, None, 1);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .user_agent("ScreenshotTranslator/1.0")
-        .build()
-        .map_err(|e| format!("Create download client failed: {}", e))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Download ffmpeg failed: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("Download ffmpeg failed: HTTP {}", resp.status()));
-    }
 
-    let total = resp.content_length();
-    let mut stream = resp.bytes_stream();
-    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
-    let mut downloaded: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Read ffmpeg download stream failed: {}", e))?;
-        downloaded += chunk.len() as u64;
-        bytes.extend_from_slice(&chunk);
-        let percent = total
-            .map(|value| ((downloaded as f64 / value.max(1) as f64) * 80.0).round() as u8)
-            .unwrap_or(10)
-            .clamp(1, 80);
-        emit_ffmpeg_progress(&app, "Downloading", downloaded, total, percent);
-    }
 
-    let safe_tag = sanitize_tag(&tag);
-    let mut download_dir = app_data_dir();
-    download_dir.push("ffmpeg");
-    download_dir.push("downloads");
-    fs::create_dir_all(&download_dir)
-        .map_err(|e| format!("Create ffmpeg download directory failed: {}", e))?;
-    let archive_path = download_dir.join(format!("ffmpeg-{}.zip", safe_tag));
-    fs::write(&archive_path, &bytes).map_err(|e| format!("Save ffmpeg archive failed: {}", e))?;
 
-    emit_ffmpeg_progress(&app, "Installing", downloaded, total, 85);
-    let install_dir = ensure_writable_dir(default_ffmpeg_install_dir());
-    let exe_path = extract_ffmpeg_exe_from_zip(&bytes, &install_dir)?;
-    let _ = fs::remove_file(&archive_path);
-    emit_ffmpeg_progress(&app, "瀹屾垚", downloaded, total, 100);
 
-    Ok(serde_json::json!({
-        "path": exe_path.to_string_lossy().to_string(),
-        "installDir": install_dir.to_string_lossy().to_string(),
-        "bytes": bytes.len(),
-    }))
-}
-
-#[tauri::command]
-fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new()
-        .set_title("Choose ffmpeg.exe")
-        .add_filter("ffmpeg", &["exe"]);
-    if let Some(path) = current_path {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            let path_buf = PathBuf::from(trimmed);
-            if let Some(parent) = path_buf.parent() {
-                dialog = dialog.set_directory(parent);
-            }
-        }
-    }
-    Ok(dialog
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string()))
-}
-
-#[tauri::command]
-fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new().set_title("Choose recording output directory");
-    if let Some(dir) = current_dir {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            dialog = dialog.set_directory(trimmed);
-        }
-    }
-    Ok(dialog
-        .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
-}
-
-#[tauri::command]
-fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<String, String> {
-    let _ = cleanup_finished_recording_process()?;
-    {
-        let guard = get_recording_process().lock().map_err(|e| e.to_string())?;
-        if guard.is_some() {
-            return Err("Recording is already running".to_string());
-        }
-    }
-
-    let ffmpeg = find_ffmpeg_executable(&app).ok_or_else(|| {
-        "ffmpeg.exe was not found. Put ffmpeg.exe next to the app or choose ffmpeg.exe in settings.".to_string()
-    })?;
-    let output_path = recording_output_path(options.output_dir.clone())?;
-    let args = build_recording_args(&options, &output_path)?;
-
-    let mut cmd = hidden_ffmpeg_command(&ffmpeg);
-    cmd.args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to start ffmpeg recording: {}", e))?;
-    if let Some(status) = child
-        .try_wait()
-        .map_err(|e| format!("Failed to inspect ffmpeg recording process: {}", e))?
-    {
-        return Err(format!("ffmpeg recording exited immediately with status {}. Check recording options, audio device, or ffmpeg version.", status));
-    }
-    let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("Recording is already running".to_string());
-    }
-    *guard = Some(child);
-    Ok(output_path.to_string_lossy().to_string())
-}
-
-fn stop_recording_internal(grace_ms: u64, kill_on_timeout: bool) -> Result<(), String> {
-    let child = {
-        let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
-        guard.take()
-    };
-    if let Some(mut child) = child {
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(b"q\n");
-            let _ = stdin.flush();
-        }
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_millis(grace_ms);
-        let mut exited = false;
-        while start.elapsed() < timeout {
-            if child
-                .try_wait()
-                .map_err(|e| format!("Failed to stop recording process: {}", e))?
-                .is_some()
-            {
-                exited = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        if !exited {
-            if kill_on_timeout {
-                let _ = child.kill();
-            } else {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("ffmpeg did not finalize the recording segment in time".to_string());
-            }
-        }
-        let status = child
-            .wait()
-            .map_err(|e| format!("Failed to wait for recording process: {}", e))?;
-        if !status.success() {
-            eprintln!("ffmpeg recording stopped with status {}", status);
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn stop_recording() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| stop_recording_internal(15000, false))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn cancel_recording_process() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| stop_recording_internal(350, true))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn escape_concat_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .replace('\'', "\\'")
-}
-
-fn ffmpeg_stderr_excerpt(stderr: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stderr);
-    let excerpt = text
-        .lines()
-        .rev()
-        .filter(|line| !line.trim().is_empty())
-        .take(12)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("\n");
-    if excerpt.trim().is_empty() {
-        "(no ffmpeg stderr)".to_string()
-    } else {
-        excerpt
-    }
-}
-
-fn run_ffmpeg_merge(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
-    let output = hidden_ffmpeg_command(ffmpeg)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to start ffmpeg merge: {}", e))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{}\n{}",
-            output.status,
-            ffmpeg_stderr_excerpt(&output.stderr)
-        ))
-    }
-}
-
-#[tauri::command]
-fn concat_recording_segments(
-    app: tauri::AppHandle,
-    segment_paths: Vec<String>,
-) -> Result<String, String> {
-    if segment_paths.is_empty() {
-        return Err("no recording segments to merge".to_string());
-    }
-    let mut existing_segments: Vec<PathBuf> = Vec::new();
-    for raw_path in &segment_paths {
-        let path = PathBuf::from(raw_path.trim());
-        if !path.is_file() {
-            return Err(format!("recording segment does not exist: {}", raw_path));
-        }
-        let size = fs::metadata(&path)
-            .map_err(|e| format!("read recording segment metadata failed: {}", e))?
-            .len();
-        if size == 0 {
-            return Err(format!("recording segment is empty: {}", path.to_string_lossy()));
-        }
-        existing_segments.push(path);
-    }
-    if existing_segments.is_empty() {
-        return Err("video file does not exist".to_string());
-    }
-
-    let save_path = unique_recording_output_path()?;
-    if existing_segments.len() == 1 {
-        fs::copy(&existing_segments[0], &save_path)
-            .map_err(|e| format!("save recording failed: {}", e))?;
-        return Ok(save_path.to_string_lossy().to_string());
-    }
-
-    let ffmpeg = find_ffmpeg_executable(&app)
-        .ok_or_else(|| "ffmpeg.exe not found, cannot merge recording segments".to_string())?;
-    let mut list_path = recording_temp_dir();
-    fs::create_dir_all(&list_path)
-        .map_err(|e| format!("create recording temp directory failed: {}", e))?;
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    list_path.push(format!("concat_{}.txt", millis));
-    let list_body = existing_segments
-        .iter()
-        .map(|path| format!("file '{}'", escape_concat_path(path)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(&list_path, list_body)
-        .map_err(|e| format!("create recording temp directory failed: {}", e))?;
-
-    let copy_args = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
-        "-fflags".to_string(),
-        "+genpts".to_string(),
-        "-f".to_string(),
-        "concat".to_string(),
-        "-safe".to_string(),
-        "0".to_string(),
-        "-i".to_string(),
-        list_path.to_string_lossy().to_string(),
-        "-map".to_string(),
-        "0".to_string(),
-        "-c".to_string(),
-        "copy".to_string(),
-        "-movflags".to_string(),
-        "+faststart".to_string(),
-        save_path.to_string_lossy().to_string(),
-    ];
-    let copy_error = match run_ffmpeg_merge(&ffmpeg, &copy_args) {
-        Ok(()) => {
-            let _ = fs::remove_file(&list_path);
-            return Ok(save_path.to_string_lossy().to_string());
-        }
-        Err(error) => error,
-    };
-    let _ = fs::remove_file(&save_path);
-
-    let transcode_args = vec![
-        "-y".to_string(),
-        "-hide_banner".to_string(),
-        "-fflags".to_string(),
-        "+genpts".to_string(),
-        "-f".to_string(),
-        "concat".to_string(),
-        "-safe".to_string(),
-        "0".to_string(),
-        "-i".to_string(),
-        list_path.to_string_lossy().to_string(),
-        "-map".to_string(),
-        "0:v:0".to_string(),
-        "-map".to_string(),
-        "0:a?".to_string(),
-        "-c:v".to_string(),
-        "libx264".to_string(),
-        "-preset".to_string(),
-        "veryfast".to_string(),
-        "-crf".to_string(),
-        "22".to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-        "-c:a".to_string(),
-        "aac".to_string(),
-        "-b:a".to_string(),
-        "160k".to_string(),
-        "-movflags".to_string(),
-        "+faststart".to_string(),
-        save_path.to_string_lossy().to_string(),
-    ];
-    if let Err(transcode_error) = run_ffmpeg_merge(&ffmpeg, &transcode_args) {
-        let _ = fs::remove_file(&list_path);
-        return Err(format!(
-            "ffmpeg failed to merge recording segments.\ncopy attempt:\n{}\ntranscode fallback:\n{}",
-            copy_error, transcode_error
-        ));
-    }
-    let _ = fs::remove_file(&list_path);
-    Ok(save_path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn copy_file_to_clipboard(path: String) -> Result<(), String> {
-    let file_path = PathBuf::from(path.trim());
-    if !file_path.is_file() {
-        return Err("video file does not exist".to_string());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            "Set-Clipboard -LiteralPath {}",
-            shell_escape_powershell_single(&file_path.to_string_lossy())
-        );
-        let status = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &script,
-            ])
-            .status()
-            .map_err(|e| format!("failed to start clipboard command: {}", e))?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err(format!(
-            "failed to copy video file to clipboard: {}",
-            status
-        ));
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("copying video files is not supported on this platform".to_string())
-    }
-}
-
-fn shell_escape_powershell_single(value: &str) -> String {
-    format!("'{}'", value.replace("'", "''"))
-}
-
-fn is_recording_temp_file(path: &Path, temp_dir: &Path) -> bool {
-    let Ok(canonical_path) = fs::canonicalize(path) else {
-        return false;
-    };
-    let Ok(canonical_temp_dir) = fs::canonicalize(temp_dir) else {
-        return false;
-    };
-    canonical_path.starts_with(canonical_temp_dir)
-        && canonical_path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.eq_ignore_ascii_case("mp4"))
-            .unwrap_or(false)
-}
-
-#[tauri::command]
-fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
-    let temp_dir = recording_temp_dir();
-    for path in paths {
-        let trimmed = path.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let path_buf = PathBuf::from(trimmed);
-        if path_buf.exists() && is_recording_temp_file(&path_buf, &temp_dir) {
-            let _ = fs::remove_file(path_buf);
-        }
-    }
-    Ok(())
-}
 
 use serde::{Deserialize, Serialize};
 use std::process::{Child, Stdio};
 use std::time::Instant;
 
-static RECORDING_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
-fn get_recording_process() -> &'static Mutex<Option<Child>> {
-    RECORDING_PROCESS.get_or_init(|| Mutex::new(None))
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OcrBlock {
@@ -4467,13 +3104,31 @@ fn clear_history() -> Result<(), String> {
     Ok(())
 }
 
+/// Hide all non-overlay application windows (main, screenshot, screenshot_*) to prevent
+/// Windows OS focus-fallback from activating any of them when a recording overlay closes.
+fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
+    for (lbl, win) in app.webview_windows() {
+        // 只 hide main 和 screenshot 系列窗口，不 hide 正在关闭中的 recording_control 自身
+        if lbl == "main" || lbl == "screenshot" || lbl.starts_with("screenshot_") {
+            let is_visible = win.is_visible().unwrap_or(false);
+            if is_visible {
+                println!("[window-trace] source=hide_all_app_windows action=hide label={} trigger={}", lbl, trigger);
+                let _ = win.hide();
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
+                println!("[window-trace] source=single-instance action=show-main label=main reason=single_instance");
                 let _ = window.show();
+                println!("[window-trace] source=single-instance action=unminimize-main label=main reason=single_instance");
                 let _ = window.unminimize();
+                println!("[window-trace] source=single-instance action=focus-main label=main reason=single_instance");
                 let _ = window.set_focus();
             }
         }))
@@ -4520,6 +3175,7 @@ pub fn run() {
             force_close_screenshots,
             hide_main_window,
             force_close_recording_controls,
+            dump_all_windows_state,
             get_window_rects,
             get_text_source_snapshot,
             overlay_ready_to_show,
@@ -4600,7 +3256,9 @@ pub fn run() {
                     }
                     "show" => {
                         if let Some(win) = app.get_webview_window("main") {
+                            println!("[window-trace] source=tray-menu action=show-main label=main reason=tray_menu");
                             let _ = win.show();
+                            println!("[window-trace] source=tray-menu action=focus-main label=main reason=tray_menu");
                             let _ = win.set_focus();
                         }
                     }
@@ -4616,8 +3274,22 @@ pub fn run() {
                         ..
                     } => {
                         let app = tray.app_handle();
+                        let has_overlay_window = app.webview_windows().keys().any(|label| {
+                            label == "screenshot"
+                                || label.starts_with("screenshot_")
+                                || label == "recording_notice"
+                                || label.starts_with("recording_control")
+                        });
+
+                        if has_overlay_window {
+                            println!("[window-trace] source=tray-click action=skip-show-main reason=overlay-active");
+                            return;
+                        }
+
                         if let Some(win) = app.get_webview_window("main") {
+                            println!("[window-trace] source=tray-click action=show-main label=main reason=tray_click");
                             let _ = win.show();
+                            println!("[window-trace] source=tray-click action=focus-main label=main reason=tray_click");
                             let _ = win.set_focus();
                         }
                     }
@@ -4669,13 +3341,30 @@ pub fn run() {
                 // 这里只保证销毁后不触发 main 窗口的副作用：
                 // - 不调用 set_always_on_top(false)，避免 Z-order 重排让 main 被自动激活并绘制出来；
                 // - 不主动 hide() 任何其他窗口，仅在窗口被销毁时同步关闭态。
-                if let tauri::WindowEvent::Destroyed = event {
-                    CAPTURING.store(false, Ordering::SeqCst);
-                    // 防御：recording_control 销毁后立即 hide main，防止 Windows 焦点回退
-                    let app_handle = window.app_handle();
-                    if let Some(main) = app_handle.get_webview_window("main") {
-                        let _ = main.hide();
+                match &event {
+                    tauri::WindowEvent::CloseRequested { .. } => {
+                        // 关键：在窗口关闭 BEFORE OS 回收焦点前就 hide 所有可能被激活的窗口
+                        println!("[window-trace] source=window-event action=event label={} event=CloseRequested", label);
+                        let app_handle = window.app_handle().clone();
+                        hide_all_app_windows(&app_handle, label);
                     }
+                    tauri::WindowEvent::Destroyed => {
+                        println!("[window-trace] source=window-event action=destroyed label={} event=Destroyed", label);
+                        CAPTURING.store(false, Ordering::SeqCst);
+                        let app_handle = window.app_handle().clone();
+                        // 立即 hide 所有
+                        hide_all_app_windows(&app_handle, label);
+                        // 延迟 re-hide 防御 Windows OS 在 Destroyed 之后的焦点回退
+                        let app_handle2 = app_handle.clone();
+                        let label_owned = label.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            hide_all_app_windows(&app_handle2, &label_owned);
+                            // 诊断：打印销毁后窗口状态
+                            crate::window_control::dump_all_windows_state_internal(&app_handle2, format!("recording_control-Destroyed-after-100ms({})", label_owned));
+                        });
+                    }
+                    _ => {}
                 }
             } else if label == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {

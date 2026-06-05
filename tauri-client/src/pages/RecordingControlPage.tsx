@@ -54,6 +54,7 @@ const setRecordingCaptureShield = async (excluded: boolean) => {
 function RecordingControlContent() {
   const winRef = useRef(getCurrentWindow());
   const winLabel = winRef.current.label;
+  console.log(`[window-trace] RecordingControlContent mount. label=${winLabel}`);
   const allowCloseRef = useRef(false);
   const closingRef = useRef(false);
   const sessionRef = useRef<RecordingWindowPayload | null>(null);
@@ -73,37 +74,53 @@ function RecordingControlContent() {
   const { message } = AntdApp.useApp();
 
   const setOverlayStatus = (nextStatus: OverlayStatus) => {
+    console.log("[window-trace] setOverlayStatus", nextStatus);
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     invoke("set_recording_overlay_status", { status: nextStatus }).catch(() => {});
   };
 
   const setOverlayBusy = (nextBusy: boolean) => {
+    console.log("[window-trace] setOverlayBusy", nextBusy);
     busyRef.current = nextBusy;
     setBusy(nextBusy);
   };
 
+  const closeCurrentRecordingWindowSafely = async () => {
+    console.log(`[window-trace] closeCurrentRecordingWindowSafely start label=${winLabel}`);
+    allowCloseRef.current = true;
+    await invoke("hide_main_window").catch(() => {});
+    await winRef.current.setAlwaysOnTop(false).catch(() => {});
+    await withTimeout(winRef.current.hide().catch(() => {}), 150);
+    console.log("[window-trace] closeCurrentRecordingWindowSafely calling winRef.current.close()");
+    await withTimeout(winRef.current.close().catch(() => {}), 300);
+  };
+
   const dismissOverlay = async (notifyParent = true) => {
+    console.log(`[window-trace] dismissOverlay start notifyParent=${notifyParent}`);
     cancelledRef.current = true;
     allowCloseRef.current = true;
     await setRecordingCaptureShield(false);
     await Promise.all([
+      withTimeout(invoke("hide_main_window").catch(() => {}), 150),
       withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
       withTimeout(closeWindowIfExists("recording_notice"), 150),
       notifyParent ? withTimeout(emit("recording-ended").catch(() => {}), 150) : Promise.resolve(null),
-      withTimeout(winRef.current.hide().catch(() => {}), 150),
     ]);
   };
 
   const closeOverlay = async () => {
     await dismissOverlay(true);
-    await withTimeout(winRef.current.close().catch(() => {}), 300);
+    await closeCurrentRecordingWindowSafely();
   };
 
   const startSegment = async () => {
+    console.log("[window-trace] startSegment enter");
     const current = sessionRef.current;
     if (!current) throw new Error("Recording session is not ready");
+    console.log("[window-trace] before invoke start_recording");
     const path = await invoke<string>("start_recording", { options: current.options });
+    console.log("[window-trace] after invoke start_recording, path=", path);
     if (cancelledRef.current) {
       await withTimeout(invoke("cancel_recording_process").catch(() => {}), 800);
       await invoke("cleanup_recording_files", { paths: [path] }).catch(() => {});
@@ -125,6 +142,7 @@ function RecordingControlContent() {
   };
 
   const startRecording = async () => {
+    console.log("[window-trace] startRecording enter, busy:", busyRef.current, "status:", statusRef.current, "sessionExists:", !!sessionRef.current);
     if (busyRef.current || statusRef.current !== "ready") return;
     setSavedPath(null);
     segmentsRef.current = [];
@@ -137,20 +155,24 @@ function RecordingControlContent() {
     try {
       const seconds = Math.max(0, Math.floor(sessionRef.current?.countdownSeconds || 0));
       if (seconds > 0) {
+        console.log("[window-trace] countdown start", seconds);
         setOverlayStatus("countdown");
         for (let value = seconds; value > 0; value -= 1) {
           setCountdown(value);
           await new Promise((resolve) => window.setTimeout(resolve, 1000));
           if (cancelledRef.current) return;
         }
+        console.log("[window-trace] countdown end");
       }
       setCountdown(null);
       await setRecordingCaptureShield(true);
       await startSegment();
     } catch (error: any) {
+      console.log("[window-trace] startRecording catch error", error);
       message.error(`启动录制失败：${error?.message || error}`);
       setOverlayStatus("ready");
     } finally {
+      console.log("[window-trace] startRecording finally setOverlayBusy(false)");
       setOverlayBusy(false);
     }
   };
@@ -218,6 +240,7 @@ function RecordingControlContent() {
   };
 
   const cancelRecording = async () => {
+    console.log("[window-trace] ui-close-click / cancelRecording start");
     if (closingRef.current) return;
     if (statusRef.current === "saved") {
       await closeOverlay();
@@ -226,24 +249,29 @@ function RecordingControlContent() {
     closingRef.current = true;
     cancelledRef.current = true;
     allowCloseRef.current = true;
+    
+    // 立即在视觉上隐藏控制条窗口与主窗口，防止视觉残留，但保持 JS 运行环境进行清理
+    await winRef.current.setAlwaysOnTop(false).catch(() => {});
+    await winRef.current.hide().catch(() => {});
+    await invoke("hide_main_window").catch(() => {});
+    
     setOverlayBusy(true);
     setOverlayStatus("saving");
     try {
       await setRecordingCaptureShield(false);
-      await Promise.all([
-        withTimeout(winRef.current.hide().catch(() => {}), 150),
-        withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
-        withTimeout(closeWindowIfExists("recording_notice"), 150),
-        withTimeout(emit("recording-ended").catch(() => {}), 150),
-      ]);
+      await withTimeout(emit("recording-ended").catch(() => {}), 150);
       await withTimeout(stopActiveSegment(true), 800);
       const segments = [...segmentsRef.current];
-      if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
+      if (segments.length > 0) {
+        await withTimeout(invoke("cleanup_recording_files", { paths: segments }).catch(() => {}), 800);
+      }
       segmentsRef.current = [];
     } finally {
       setOverlayBusy(false);
-      await withTimeout(winRef.current.close().catch(() => {}), 300);
       await withTimeout(invoke("hide_main_window").catch(() => {}), 300);
+      // 在所有异步资源停止/清理完毕后，再彻底关闭并销毁窗口
+      console.log("[window-trace] cancelRecording complete, closing window now");
+      await winRef.current.close().catch(() => {});
     }
   };
 
@@ -289,15 +317,24 @@ function RecordingControlContent() {
   };
 
   useEffect(() => {
+    console.log(`[window-trace] Guard check. label=${winLabel}`);
     // Guard: RecordingControlPage must only render in windows whose label starts with "recording_control_"
     if (!winLabel.startsWith("recording_control_")) {
       invoke("hide_main_window").catch(() => {});
       winRef.current.close().catch(() => {});
       return;
     }
+    const urlParams = new URLSearchParams(window.location.search);
+    const key = urlParams.get('recordingSessionKey');
+    console.log(`[window-trace] URL recordingSessionKey=${key}`);
+    if (key) {
+      console.log(`[window-trace] localStorage value exists: ${!!window.localStorage.getItem(key)}`);
+    }
+
     let unlistenSession: (() => void) | null = null;
     let unlistenClose: (() => void) | null = null;
     listen<RecordingWindowPayload>("recording-overlay-session", (event) => {
+      console.log("[window-trace] listen('recording-overlay-session') received payload", !!event.payload);
       if (sessionStartedRef.current) return;
       sessionStartedRef.current = true;
       cancelledRef.current = false;
@@ -308,6 +345,7 @@ function RecordingControlContent() {
       setElapsedMs(0);
       setSavedPath(null);
       setOverlayStatus("ready");
+      console.log("[window-trace] sessionReady -> true");
       if (event.payload.autoStart) window.setTimeout(() => startRecording(), 0);
     }).then((unsub) => {
       unlistenSession = unsub;
@@ -346,6 +384,7 @@ function RecordingControlContent() {
         toggleRecord();
       } else if (event.key === "Escape") {
         event.preventDefault();
+        console.log("[window-trace] escape close recording_control");
         cancelRecording();
       } else if (event.code === "Space") {
         event.preventDefault();
