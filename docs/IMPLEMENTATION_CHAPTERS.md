@@ -4499,3 +4499,31 @@ Chapter 149：做真实覆盖层肉眼 smoke，重点复测用户遇到的英文
 - **验证状态**：cargo check 与 
 pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowWindow(hwnd, SW_HIDE)，消除 Windows 焦点回落时的不可见状态不同步问题。
 - **下一步**：阶段 3（前端模块化，抽取 React Pages 中的巨石逻辑到 Hooks 中）。
+
+
+## Chapter 156 - 前端与后端巨石源文件彻底拆分与优化 (2026-06-06)
+
+### 目标
+- 将前端唯一超标巨石文件 `ScreenshotPage.tsx`（1308 行）和后端 `lib.rs` 进行了深度的二次解耦和模块化拆分。
+- 消除项目里所有行数超过 800 行的源文件，以提升代码架构的可读性和维护性。
+- 修复拆分后后端单元测试的模块级可见性错误，确保测试通过。
+
+### 新增文件
+- `tauri-client/src/hooks/useScreenshotTextSource.ts`
+- `tauri-client/src/hooks/useScreenshotActions.ts`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+
+### 修改文件
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src-tauri/src/tests.rs`
+- `tauri-client/src-tauri/src/diagnostics.rs`
+- `tauri-client/src-tauri/src/recording_overlay.rs`
+
+### 验证结果
+- `npm run build` 前端打包 100% 成功，`ScreenshotPage.tsx` 自身行数减少至 728 行（已全面低于 800 行安全上限）。
+- `cargo test` 19 个单元测试全部正常运行并通过（19 passed, 0 failed）。
+- `npm run check:i18n` 多语言词典 566 个 key 完全对齐。
+- `npm run tauri dev` 成功拉起调试客户端，各项前后台功能运转正常，界面响应无阻塞。
+
+### 下一章建议
+- 开始优化截图/翻译/OCR 耗时，将耗时细节分别打点暴露给用户诊断，并继续优化 OCR candidate 和 LLM 通道。
