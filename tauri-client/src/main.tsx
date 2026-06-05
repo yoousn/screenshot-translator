@@ -1,3 +1,4 @@
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -52,6 +53,7 @@ let Component: React.ComponentType;
 let needsI18nProvider = false;
 if (label === "screenshot") {
   Component = ScreenshotPage;
+  needsI18nProvider = true;
 } else if (label.startsWith("pin_")) {
   Component = PinPage;
 } else if (label.startsWith("ocr_")) {

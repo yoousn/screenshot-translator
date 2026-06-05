@@ -53,6 +53,7 @@ def get_config():
 def verify_token(x_api_key: str):
     cfg = get_config()
     if not x_api_key or x_api_key != cfg["client_token"]:
+        logger.error(f"[verify_token] Failed! Received: '{x_api_key}', Expected: '{cfg.get('client_token')}'")
         raise HTTPException(status_code=401, detail="Unauthorized client token.")
 
 # Translator instance cache to avoid re-creating per request (fix 4.3)

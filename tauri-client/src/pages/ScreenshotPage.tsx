@@ -407,7 +407,7 @@ export default function ScreenshotPage() {
     setTranslatedResult,
     setTranslatePairs,
   } = useScreenshotOcr({
-    config: configRef.current,
+    config,
     rectRef,
     captureRegionBase64: () => captureRegionBase64(),
     resetScreenshotState: () => resetScreenshotState(),
@@ -727,7 +727,8 @@ export default function ScreenshotPage() {
     let unlistenEvent: (() => void) | null = null;
     let unlistenRecordingEnded: (() => void) | null = null;
 
-    listen<string>("screenshot-mode", (event) => {
+    listen<string>("screenshot-mode", async (event) => {
+      await loadConfig();
       const nextMode = event.payload || "normal";
       setScreenshotMode(nextMode);
       if (nextMode === "translate") {
@@ -757,7 +758,8 @@ export default function ScreenshotPage() {
       .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
-    listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => {
+    listen<ScreenshotUpdatedPayload>("screenshot-updated", async (event) => {
+      await loadConfig();
       primeTextSourceSnapshot("screenshot-updated", 160);
       const payload = event.payload;
       if (typeof payload === "string") {
@@ -913,7 +915,7 @@ export default function ScreenshotPage() {
         height: Math.ceil(bounds.height) || ACTION_TOOLBAR_FALLBACK_SIZE.height,
       };
       setActionToolbarSize((current) => (
-        current.width === next.width && current.height === next.height ? current : next
+        Math.abs(current.width - next.width) > 2 || Math.abs(current.height - next.height) > 2 ? next : current
       ));
     };
 
