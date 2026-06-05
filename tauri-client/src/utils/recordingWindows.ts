@@ -27,14 +27,51 @@ export type RecordingWindowPayload = {
 
 export type RecordingBorderRect = { x: number; y: number; w: number; h: number };
 
-const closeWindowIfExists = async (label: string) => {
+const RECORDING_CONTROL_PREFIX = "recording_control";
+const RECORDING_NOTICE_LABEL = "recording_notice";
+const RECORDING_SESSION_STORAGE_PREFIX = "ysn-recording-session:";
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+const waitForWindowGone = async (label: string, timeoutMs = 1200) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const existing = await WebviewWindow.getByLabel(label).catch(() => null);
+    if (!existing) return true;
+    await sleep(40);
+  }
+  return !(await WebviewWindow.getByLabel(label).catch(() => null));
+};
+
+const closeWindowIfExists = async (label: string, timeoutMs = 1200) => {
   const win = await WebviewWindow.getByLabel(label).catch(() => null);
   if (!win) return;
-  await win.destroy().catch(() => win.close().catch(() => {}));
+  await win.hide().catch(() => {});
+  await win.close().catch(() => {});
+  const closed = await waitForWindowGone(label, timeoutMs);
+  if (!closed) throw new Error(`${label} did not close in time`);
 };
 
 const setWindowCaptureExcludedIfExists = async (label: string, excluded: boolean) => {
   await invoke("set_window_capture_excluded", { label, excluded }).catch(() => {});
+};
+
+const getWindowsByPrefix = async (prefix: string) => {
+  const windows = await WebviewWindow.getAll().catch(() => []);
+  return windows.filter((win) => win.label === prefix || win.label.startsWith(`${prefix}_`));
+};
+
+const closeWindowsByPrefix = async (prefix: string, timeoutMs = 800) => {
+  const windows = await getWindowsByPrefix(prefix);
+  await Promise.all(windows.map(async (win) => {
+    await win.hide().catch(() => {});
+    return withTimeout(win.close().catch(() => {}), timeoutMs).catch(() => null);
+  }));
+};
+
+const setWindowCaptureExcludedByPrefix = async (prefix: string, excluded: boolean) => {
+  const windows = await getWindowsByPrefix(prefix);
+  await Promise.all(windows.map((win) => setWindowCaptureExcludedIfExists(win.label, excluded)));
 };
 
 const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> => {
@@ -51,26 +88,69 @@ const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> 
   }
 };
 
+const waitForWindowCreated = async (win: WebviewWindow, label: string, timeoutMs = 1600) => new Promise<void>((resolve, reject) => {
+  let settled = false;
+  const unlisteners: Array<() => void> = [];
+  const settle = (callback: () => void) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timeoutId);
+    unlisteners.forEach((unlisten) => unlisten());
+    callback();
+  };
+  const timeoutId = window.setTimeout(() => {
+    settle(() => reject(new Error(`${label} was not created in time`)));
+  }, timeoutMs);
+
+  win.once("tauri://created", () => {
+    settle(resolve);
+  }).then((unlisten) => {
+    if (settled) unlisten();
+    else unlisteners.push(unlisten);
+  }).catch((error) => {
+    settle(() => reject(error));
+  });
+
+  win.once<{ error?: string }>("tauri://error", (event) => {
+    settle(() => reject(new Error(event.payload?.error || `${label} failed to create`)));
+  }).then((unlisten) => {
+    if (settled) unlisten();
+    else unlisteners.push(unlisten);
+  }).catch((error) => {
+    settle(() => reject(error));
+  });
+});
+
+const writeRecordingSessionPayload = (key: string, payload: RecordingWindowPayload) => {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+  }
+};
+
+const removeRecordingSessionPayload = (key: string) => {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+  }
+};
+
 export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
   await Promise.all([
     setWindowCaptureExcludedIfExists("main", false),
     setWindowCaptureExcludedIfExists("screenshot", false),
-    setWindowCaptureExcludedIfExists("recording_control", false),
-    setWindowCaptureExcludedIfExists("recording_notice", false),
-    withTimeout(invoke("hide_recording_overlay").catch(() => {}), 250),
-    withTimeout(closeWindowIfExists("recording_overlay"), 250),
-    withTimeout(closeWindowIfExists("recording_control"), 250),
-    withTimeout(closeWindowIfExists("recording_notice"), 250),
+    setWindowCaptureExcludedByPrefix(RECORDING_CONTROL_PREFIX, false),
+    setWindowCaptureExcludedIfExists(RECORDING_NOTICE_LABEL, false),
+    withTimeout(invoke("force_close_recording_controls").catch(() => {}), 700),
+    withTimeout(invoke("hide_recording_overlay").catch(() => {}), 500),
+    withTimeout(closeWindowIfExists("recording_overlay", 500).catch(() => {}), 500),
   ]);
+  await closeWindowIfExists(RECORDING_NOTICE_LABEL, 1000).catch(() => {});
+  await closeWindowsByPrefix(RECORDING_CONTROL_PREFIX, 800);
 };
 
 export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload, "borderLabels">, selection: RecordingBorderRect) => {
   await closeRecordingBorderWindows([]);
-  const mainWindow = await WebviewWindow.getByLabel("main").catch(() => null);
-  const restoreMainWindow = Boolean(await mainWindow?.isVisible().catch(() => false));
-  if (restoreMainWindow) {
-    await mainWindow?.hide().catch(() => {});
-  }
   await Promise.all([
     setWindowCaptureExcludedIfExists("main", true),
     setWindowCaptureExcludedIfExists("screenshot", true),
@@ -82,7 +162,7 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
     w: Math.max(160, Math.round(selection.w / factor)),
     h: Math.max(100, Math.round(selection.h / factor)),
   };
-  const controlSize = { w: 560, h: 58 };
+  const controlSize = { w: 620, h: 96 };
   const screenInfo = window.screen as Screen & { availLeft?: number; availTop?: number };
   const screenLeft = screenInfo.availLeft || 0;
   const screenTop = screenInfo.availTop || 0;
@@ -95,22 +175,18 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
   const preferredY = belowY + controlSize.h <= screenBottom - 8 ? belowY : aboveY;
   const controlY = Math.min(Math.max(screenTop + 8, preferredY), Math.max(screenTop + 8, screenBottom - controlSize.h - 8));
 
-  const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"], noticeRect: overlayRect, restoreMainWindow };
+  const fullPayload: RecordingWindowPayload = { ...payload, borderLabels: ["recording_overlay"], noticeRect: overlayRect, restoreMainWindow: false };
+  const controlLabel = `${RECORDING_CONTROL_PREFIX}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionStorageKey = `${RECORDING_SESSION_STORAGE_PREFIX}${controlLabel}`;
+  writeRecordingSessionPayload(sessionStorageKey, fullPayload);
   let sent = false;
   const unlistenReady = await listen("recording-overlay-ready", () => {
     sent = true;
     emit("recording-overlay-session", fullPayload).catch(() => {});
   });
 
-  invoke("show_recording_overlay", {
-    x: Math.round(selection.x),
-    y: Math.round(selection.y),
-    w: Math.round(selection.w),
-    h: Math.round(selection.h),
-  }).catch((error) => console.warn("Failed to show recording overlay", error));
-
-  const control = new WebviewWindow("recording_control", {
-    url: "index.html",
+  const control = new WebviewWindow(controlLabel, {
+    url: `index.html?recordingSessionKey=${encodeURIComponent(sessionStorageKey)}`,
     title: "Recording Control",
     decorations: false,
     transparent: true,
@@ -126,11 +202,26 @@ export const openRecordingWindows = async (payload: Omit<RecordingWindowPayload,
     y: controlY,
   });
 
-  control.once("tauri://created", () => {
-    invoke("set_window_capture_excluded", { label: "recording_control", excluded: true }).catch(() => {});
+  try {
+    await waitForWindowCreated(control, controlLabel);
+    await invoke("set_window_capture_excluded", { label: controlLabel, excluded: true }).catch(() => {});
+    await invoke("show_recording_overlay", {
+      x: Math.round(selection.x),
+      y: Math.round(selection.y),
+      w: Math.round(selection.w),
+      h: Math.round(selection.h),
+    });
     window.setTimeout(() => {
       if (!sent) emit("recording-overlay-session", fullPayload).catch(() => {});
     }, 600);
-  });
-  control.once("tauri://destroyed", () => unlistenReady());
+    control.once("tauri://destroyed", () => {
+      unlistenReady();
+      removeRecordingSessionPayload(sessionStorageKey);
+    }).catch(() => {});
+  } catch (error) {
+    unlistenReady();
+    removeRecordingSessionPayload(sessionStorageKey);
+    await closeRecordingBorderWindows([]).catch(() => {});
+    throw error;
+  }
 };

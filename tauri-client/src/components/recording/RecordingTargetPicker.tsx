@@ -1,3 +1,4 @@
+import { useEffect, useState, type CSSProperties } from "react";
 import { Button, Empty, Space, Tooltip } from "antd";
 import { AppstoreOutlined, CheckOutlined, CloseOutlined, DesktopOutlined } from "@ant-design/icons";
 
@@ -35,15 +36,199 @@ const subtitleByMode: Record<RecordingPickerMode, string> = {
   display: "点击显示器预览蓝框，确认后进入录制控制条。",
 };
 
+const ICON_FRAME_STYLE: CSSProperties = {
+  width: 26,
+  height: 26,
+  borderRadius: 8,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flex: "0 0 auto",
+  background: "linear-gradient(180deg, rgba(248,250,252,0.96), rgba(241,245,249,0.92))",
+  border: "1px solid rgba(226,232,240,0.92)",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.72), 0 1px 2px rgba(15,23,42,0.08)",
+  overflow: "hidden",
+};
+
+const ICON_IMAGE_STYLE: CSSProperties = {
+  width: 20,
+  height: 20,
+  display: "block",
+  objectFit: "contain",
+  filter: "drop-shadow(0 1px 1px rgba(15,23,42,0.18))",
+};
+
+function ProcessedTargetIconImage({ src }: { src: string }) {
+  const [processedSrc, setProcessedSrc] = useState(src);
+
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.decoding = "async";
+
+    image.onload = () => {
+      if (cancelled) return;
+
+      try {
+        const sourceSize = Math.max(image.width, image.height, 1);
+        const workCanvas = document.createElement("canvas");
+        workCanvas.width = sourceSize;
+        workCanvas.height = sourceSize;
+        const workCtx = workCanvas.getContext("2d", { willReadFrequently: true });
+        if (!workCtx) {
+          setProcessedSrc(src);
+          return;
+        }
+
+        workCtx.clearRect(0, 0, sourceSize, sourceSize);
+        workCtx.drawImage(image, 0, 0, sourceSize, sourceSize);
+
+        const imageData = workCtx.getImageData(0, 0, sourceSize, sourceSize);
+        const { data } = imageData;
+        const visited = new Uint8Array(sourceSize * sourceSize);
+        const queueX = new Int32Array(sourceSize * sourceSize);
+        const queueY = new Int32Array(sourceSize * sourceSize);
+        let head = 0;
+        let tail = 0;
+
+        const isEdgeMatte = (x: number, y: number) => {
+          const idx = (y * sourceSize + x) * 4;
+          const alpha = data[idx + 3];
+          if (alpha < 12) return false;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          return r >= 238 && g >= 238 && b >= 238;
+        };
+
+        const push = (x: number, y: number) => {
+          const pos = y * sourceSize + x;
+          if (visited[pos] || !isEdgeMatte(x, y)) return;
+          visited[pos] = 1;
+          queueX[tail] = x;
+          queueY[tail] = y;
+          tail++;
+        };
+
+        for (let x = 0; x < sourceSize; x++) {
+          push(x, 0);
+          push(x, sourceSize - 1);
+        }
+        for (let y = 1; y < sourceSize - 1; y++) {
+          push(0, y);
+          push(sourceSize - 1, y);
+        }
+
+        while (head < tail) {
+          const x = queueX[head];
+          const y = queueY[head];
+          head++;
+          const idx = (y * sourceSize + x) * 4;
+          data[idx + 3] = 0;
+          if (x > 0) push(x - 1, y);
+          if (x + 1 < sourceSize) push(x + 1, y);
+          if (y > 0) push(x, y - 1);
+          if (y + 1 < sourceSize) push(x, y + 1);
+        }
+
+        workCtx.putImageData(imageData, 0, 0);
+
+        let minX = sourceSize;
+        let minY = sourceSize;
+        let maxX = -1;
+        let maxY = -1;
+        for (let y = 0; y < sourceSize; y++) {
+          for (let x = 0; x < sourceSize; x++) {
+            const idx = (y * sourceSize + x) * 4;
+            if (data[idx + 3] < 20) continue;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+        }
+
+        if (maxX < minX || maxY < minY) {
+          setProcessedSrc(src);
+          return;
+        }
+
+        const boundsWidth = maxX - minX + 1;
+        const boundsHeight = maxY - minY + 1;
+        const outputSize = 64;
+        const padding = 6;
+        const scale = Math.min(
+          (outputSize - padding * 2) / boundsWidth,
+          (outputSize - padding * 2) / boundsHeight,
+        );
+        const drawWidth = boundsWidth * scale;
+        const drawHeight = boundsHeight * scale;
+        const dx = (outputSize - drawWidth) / 2;
+        const dy = (outputSize - drawHeight) / 2;
+
+        const outputCanvas = document.createElement("canvas");
+        outputCanvas.width = outputSize;
+        outputCanvas.height = outputSize;
+        const outputCtx = outputCanvas.getContext("2d");
+        if (!outputCtx) {
+          setProcessedSrc(src);
+          return;
+        }
+        outputCtx.clearRect(0, 0, outputSize, outputSize);
+        outputCtx.imageSmoothingEnabled = true;
+        outputCtx.imageSmoothingQuality = "high";
+        outputCtx.drawImage(
+          workCanvas,
+          minX,
+          minY,
+          boundsWidth,
+          boundsHeight,
+          dx,
+          dy,
+          drawWidth,
+          drawHeight,
+        );
+
+        setProcessedSrc(outputCanvas.toDataURL("image/png"));
+      } catch {
+        setProcessedSrc(src);
+      }
+    };
+
+    image.onerror = () => {
+      if (!cancelled) setProcessedSrc(src);
+    };
+
+    image.src = src;
+    setProcessedSrc(src);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  return <img src={processedSrc} alt="" draggable={false} style={ICON_IMAGE_STYLE} />;
+}
+
 function TargetIcon({ target, mode }: { target: RecordingPickerTarget; mode: RecordingPickerMode }) {
   if (target.iconDataUrl) {
-    return <img src={target.iconDataUrl} alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover" }} />;
+    return (
+      <span style={ICON_FRAME_STYLE}>
+        <ProcessedTargetIconImage src={target.iconDataUrl} />
+      </span>
+    );
   }
   const fallback = (target.exeName || target.title || "?").trim().slice(0, 1).toUpperCase();
-  if (mode === "display") return <DesktopOutlined style={{ fontSize: 18, color: "#1677ff" }} />;
+  if (mode === "display") {
+    return (
+      <span style={ICON_FRAME_STYLE}>
+        <DesktopOutlined style={{ fontSize: 18, color: "#1677ff" }} />
+      </span>
+    );
+  }
   return (
-    <span style={{ width: 22, height: 22, borderRadius: 7, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#eef4ff", color: "#1677ff", fontSize: 12, fontWeight: 800 }}>
-      {fallback || <AppstoreOutlined />}
+    <span style={{ ...ICON_FRAME_STYLE, color: "#1677ff", fontSize: 12, fontWeight: 800 }}>
+      {fallback || <AppstoreOutlined style={{ fontSize: 16 }} />}
     </span>
   );
 }

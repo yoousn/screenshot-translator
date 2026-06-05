@@ -34,7 +34,8 @@ const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> 
 const closeWindowIfExists = async (label: string) => {
   const win = await WebviewWindow.getByLabel(label).catch(() => null);
   if (!win) return;
-  await win.destroy().catch(() => win.close().catch(() => {}));
+  await win.hide().catch(() => {});
+  await win.close().catch(() => {});
 };
 
 const setWindowCaptureExcludedIfExists = async (label: string, excluded: boolean) => {
@@ -122,7 +123,7 @@ function RecordingControlContent() {
       setElapsedMs(accumulatedMsRef.current);
     }
     const command = fastCancel ? "cancel_recording_process" : "stop_recording";
-    await withTimeout(invoke(command).catch(() => {}), fastCancel ? 800 : 1100);
+    await withTimeout(invoke(command).catch(() => {}), fastCancel ? 800 : 16000);
   };
 
   const startRecording = async () => {
@@ -379,6 +380,7 @@ function RecordingControlContent() {
       elapsedText={formatRecordingTime(elapsedMs)}
       countdown={countdown}
       busy={busy}
+      sessionReady={Boolean(sessionRef.current)}
       hasSavedVideo={Boolean(savedPath)}
       audioLabel={audioLabel}
       onToggleRecord={toggleRecord}

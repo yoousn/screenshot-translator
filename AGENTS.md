@@ -56,6 +56,13 @@
 - If touching an already large file, prefer extracting a coherent piece as part of the change when it reduces future maintenance risk and does not introduce unrelated behavior changes.
 - Refactors should preserve behavior while improving boundaries. Avoid creating one-off extracted files that simply move clutter; each extracted module should have a clear name, purpose, and ownership.
 
+## Problem Investigation Standard
+- When a bug, regression, integration failure, platform-specific behavior, or uncertain implementation problem appears, do not jump straight to a local patch.
+- First research current online sources unless the user explicitly disables internet access or the issue is provably limited to local project code. Prefer official documentation, upstream issue trackers, framework discussions, release notes, and credible examples from comparable products or libraries.
+- Look for how peers or comparable desktop productivity tools solve the same class of problem, especially lifecycle, focus, hotkey, windowing, recording, OCR, packaging, and Windows compatibility issues.
+- Before editing, summarize the external findings, the relevant peer patterns, and how they map or do not map to this project's architecture.
+- Then implement the smallest root-cause fix that fits the project standards, and verify it with the appropriate local quality gate.
+
 ## Implementation Standard
 - Fix root causes rather than layering fragile patches.
 - Keep code modular enough to support replacement of models, runtimes, and providers.
@@ -66,3 +73,12 @@
 ## Quality Bar
 - Features should be evaluated for correctness, speed, resource usage, offline capability, update strategy, error recovery, and visual polish.
 - If a commercial-grade solution requires deeper architecture work, prefer planning and implementing that path over a quick but limiting workaround.
+
+
+<claude-mem-context>
+# Memory Context
+
+# [自制截图] recent context, 2026-06-05 5:40pm GMT+8
+
+No previous sessions found.
+</claude-mem-context>

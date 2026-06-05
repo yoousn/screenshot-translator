@@ -21,7 +21,7 @@ const resolveWindowLabel = () => {
 const label = resolveWindowLabel();
 
 // Set transparent background BEFORE React renders for screenshot windows
-if (label === "screenshot" || label === "recording_control" || label === "recording_notice") {
+if (label === "screenshot" || label.startsWith("recording_control") || label === "recording_notice") {
   document.body.style.backgroundColor = "transparent";
   document.documentElement.style.backgroundColor = "transparent";
   document.body.classList.add("transparent-window");
@@ -37,7 +37,7 @@ if (label === "screenshot") {
 } else if (label.startsWith("ocr_")) {
   Component = OcrPage;
   needsI18nProvider = true;
-} else if (label === "recording_control") {
+} else if (label.startsWith("recording_control")) {
   Component = RecordingControlPage;
 } else if (label === "recording_notice") {
   Component = RecordingNoticePage;

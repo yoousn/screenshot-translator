@@ -23,7 +23,7 @@ if ($Version.Trim()) {
 }
 
 $required = @(
-    (Join-Path $portableDir "tauri-client.exe"),
+    (Join-Path $portableDir "YsnTrans.exe"),
     (Join-Path $portableDir "resources\rapidocr\rapidocr-runner\rapidocr-runner.exe"),
     (Join-Path $portableDir "models\rapidocr\ch_PP-OCRv5_det_mobile.onnx")
 )

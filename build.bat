@@ -5,8 +5,10 @@ set "ROOT=%~dp0"
 set "CLIENT_DIR=%ROOT%tauri-client"
 set "TAURI_DIR=%CLIENT_DIR%\src-tauri"
 set "PORTABLE_DIR=%ROOT%release\YSN-Screenshot-Translator"
-set "TARGET_EXE=%TAURI_DIR%\target\release\tauri-client.exe"
+set "APP_EXE_NAME=YsnTrans"
+set "TARGET_EXE=%TAURI_DIR%\target\release\%APP_EXE_NAME%.exe"
 set "LEGACY_ROOT_EXE=%ROOT%tauri-client.exe"
+set "LEGACY_PORTABLE_EXE=%PORTABLE_DIR%\tauri-client.exe"
 set "NO_PAUSE="
 
 if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
@@ -24,7 +26,7 @@ call :copy_portable || goto :fail
 echo(
 echo(=== Build succeeded ===
 echo(Portable directory: %PORTABLE_DIR%
-echo(Executable: %PORTABLE_DIR%\tauri-client.exe
+echo(Executable: %PORTABLE_DIR%\%APP_EXE_NAME%.exe
 echo(Copy the whole portable directory to another computer, not only the exe.
 echo(
 goto :done
@@ -38,11 +40,15 @@ exit /b %EXIT_CODE%
 
 :kill_running
 echo([prepare] Closing running app processes ...
+taskkill /F /T /IM %APP_EXE_NAME%.exe >nul 2>nul
+if %errorlevel% equ 0 (
+  echo([prepare] Closed %APP_EXE_NAME%.exe
+) else (
+  echo([prepare] No running %APP_EXE_NAME%.exe found
+)
 taskkill /F /T /IM tauri-client.exe >nul 2>nul
 if %errorlevel% equ 0 (
-  echo([prepare] Closed tauri-client.exe
-) else (
-  echo([prepare] No running tauri-client.exe found
+  echo([prepare] Closed legacy tauri-client.exe
 )
 echo(
 exit /b 0
@@ -77,10 +83,17 @@ if exist "%PORTABLE_DIR%" (
   rmdir /S /Q "%PORTABLE_DIR%" >nul 2>nul
   if exist "%PORTABLE_DIR%" (
     echo([hint] Old portable directory could not be fully removed. Reusing it and syncing with robocopy /MIR.
-    if exist "%PORTABLE_DIR%\tauri-client.exe" (
-      del /F /Q "%PORTABLE_DIR%\tauri-client.exe" >nul 2>nul
-      if exist "%PORTABLE_DIR%\tauri-client.exe" (
-        echo([error] Old portable exe is still locked: %PORTABLE_DIR%\tauri-client.exe
+    if exist "%LEGACY_PORTABLE_EXE%" (
+      del /F /Q "%LEGACY_PORTABLE_EXE%" >nul 2>nul
+      if exist "%LEGACY_PORTABLE_EXE%" (
+        echo([error] Old legacy portable exe is still locked: %LEGACY_PORTABLE_EXE%
+        exit /b 1
+      )
+    )
+    if exist "%PORTABLE_DIR%\%APP_EXE_NAME%.exe" (
+      del /F /Q "%PORTABLE_DIR%\%APP_EXE_NAME%.exe" >nul 2>nul
+      if exist "%PORTABLE_DIR%\%APP_EXE_NAME%.exe" (
+        echo([error] Old portable exe is still locked: %PORTABLE_DIR%\%APP_EXE_NAME%.exe
         exit /b 1
       )
     )
@@ -122,7 +135,7 @@ exit /b 0
 
 :copy_portable
 echo([2/2] Copying portable runtime files ...
-copy /Y "%TARGET_EXE%" "%PORTABLE_DIR%\tauri-client.exe" >nul
+copy /Y "%TARGET_EXE%" "%PORTABLE_DIR%\%APP_EXE_NAME%.exe" >nul
 if errorlevel 1 (
   echo([error] Failed to copy exe
   exit /b 1

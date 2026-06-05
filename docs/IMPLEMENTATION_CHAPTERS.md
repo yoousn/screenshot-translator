@@ -4011,3 +4011,400 @@ Chapter 148：继续优化真实用户感知延迟。优先把 small-text retry 
 ### 下一章建议
 
 Chapter 149：做真实覆盖层肉眼 smoke，重点复测用户遇到的英文大字与 Alt+A 误触；继续把 small-text retry 改成动态触发，并将 OCR worker warm/cold、detector、recognizer、UIA 文本源拒绝原因合并进可复制诊断报告。
+
+## Chapter 149 - Alt+A 后 Ctrl+S 即时保存焦点修复（2026-06-05）
+
+### 目标
+
+- 修复用户反馈的 `Alt+A` 进入截图后，不能马上按 `Ctrl+S` 保存、需要额外点击一次的问题。
+- 保留 Chapter 148 为防止误触加入的选区确认稳定时间，不重新放开误触风险。
+
+### 实际完成
+
+- 截图层 ready 后同时调用 Tauri 窗口 `setFocus()` 和 canvas `focus()`，并在 native `overlay_ready_to_show` 完成后再次聚焦。
+- 鼠标开始框选、智能检测选区完成、手动框选释放后主动恢复截图窗口/画布焦点，保证随后的 `Ctrl+S` 能被截图页收到。
+- 将过早触发的复制/保存确认从静默忽略改为短延迟执行：如果只是不满足 120ms 选区稳定时间，会自动等到安全窗口再继续保存。
+- 新截图会话、取消、关闭和页面卸载时清理待执行确认，避免延迟保存泄漏到下一次截图。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改全局快捷键注册逻辑。
+- 不调整截图选区确认的 120ms 防误触门槛。
+- 不碰 OCR、翻译、录制、图标或发布配置。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+
+### 当前风险
+
+- 已通过 TypeScript/Vite 构建验证；真实 `Alt+A`、框选后立刻 `Ctrl+S` 仍建议在 Windows 桌面上做一次人工 smoke。
+
+### 下一章建议
+
+- 用真实桌面流程复测 `Alt+A -> 框选 -> 立即 Ctrl+S`、`Alt+A -> 智能点选 -> 立即 Ctrl+S`、`Ctrl+C` 和双击复制，确认焦点修复没有影响防误触状态机。
+
+## Chapter 150 - 第二次录制控制条生命周期修复（2026-06-05）
+
+### 目标
+
+- 修复第一次录制后，第二次进入录制时只有蓝色区域框、没有底部控制条的问题。
+- 防止控制条窗口创建失败时截图页仍把录制入口当作成功并隐藏自身。
+
+### 实际完成
+
+- `openRecordingWindows` 打开前不再只给旧控制条 250ms 的短超时，而是销毁旧 `recording_control` 后轮询确认 label 已释放。
+- 新控制条窗口必须收到 `tauri://created` 才算创建成功；若收到 `tauri://error` 或超时，会关闭录制蓝框/残留窗口并把错误抛回截图页。
+- 调整打开顺序：先创建并确认控制条，再显示原生录制蓝框，避免出现“蓝框已显示但控制条创建失败”的半成功状态。
+- 仍保留原有 `recording-overlay-ready` / `recording-overlay-session` 会话发送机制，录制按钮、暂停、停止保存、打开目录和复制视频行为不变。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src/utils/recordingWindows.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 FFmpeg 录制参数。
+- 不改录制控制条 UI 排版。
+- 不改截图、OCR、翻译或图标相关逻辑。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+
+### 当前风险
+
+- 已通过前端类型检查和构建；真实连续录制仍建议人工 smoke：录制一次关闭后，立刻再次 `Alt+A -> 框选 -> 录制`，确认控制条每次都出现。
+
+### 下一章建议
+
+- 补一轮真实录制流程验收：开始、暂停、继续、停止保存、红色关闭取消、保存后再开第二次、第三次，确认窗口生命周期和 FFmpeg 进程都能完整回收。
+
+## Chapter 151 - 录制控制条动态会话 Label 修复（2026-06-05）
+
+### 目标
+
+- 修复上一章仍会报 `recording_control did not close in time`，导致录制入口无法再次打开的问题。
+- 对齐用户预期：按 `Esc` 或关闭退出录制后，下一次进入录制应是新的控制条会话，不应被旧窗口 label 生命周期阻塞。
+
+### 外部资料与同行模式
+
+- Tauri v2 官方 `WebviewWindow` 文档说明 webview/window label 是唯一标识，`getByLabel` 会按 label 查找已有实例，动态窗口创建应监听 `tauri://created`。
+- Tauri 官方文档也说明 `destroy()` 理论上会强制关闭窗口，不触发 `closeRequested`；但本项目真实行为显示固定 label 仍可能在短时间内无法释放。
+- 上游 issue 中有开发者反馈动态 `WebviewWindow` 创建失败时需要监听 `tauri://error` 才能拿到真实错误。
+- 同类多窗口/浮窗产品通常采用两种稳定模式：常驻单例 hide/show，或每次会话使用唯一窗口 ID；本项目录制入口更适合唯一会话 label。
+
+### 实际完成
+
+- `recording_control` 改为每次录制生成唯一 label：`recording_control_<timestamp>_<random>`。
+- `main.tsx` 改为识别所有 `recording_control*` 窗口并加载录制控制条页面。
+- 打开录制前仍尽力清理旧控制条，但不再因为旧固定 label 未释放而阻塞新会话。
+- 控制条页的录屏排除逻辑改为使用当前窗口自身 label，避免动态控制条被录进视频。
+- 保留 `tauri://created` / `tauri://error` 创建确认，控制条未创建成功时仍会清理蓝框并抛错。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src/main.tsx`
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/utils/recordingWindows.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 FFmpeg 参数。
+- 不改录制控制条 UI。
+- 不改 OCR、翻译、截图保存或图标资源。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+
+### 当前风险
+
+- 构建已通过；真实连续录制仍需用户在 Windows 桌面复测 `Alt+A -> 框选 -> 录制 -> Esc/关闭 -> 再次录制`。
+
+### 下一章建议
+
+- 如果真实复测仍有残留窗口，下一步应把录制控制条改成 Tauri/Rust 侧托管的显式 session registry，并提供 `close_recording_controls` 命令统一清理所有 `recording_control*` 窗口。
+
+## Chapter 152 - 录制退出强制销毁与禁止白屏主窗口恢复（2026-06-05）
+
+### 目标
+
+- 修复动态录制控制条方案下，退出时控制条卡住、关闭不了的问题。
+- 修复退出录制时自动弹出主窗口且主窗口白屏的问题。
+- 保持用户语义：录制退出就是退出当前录制会话，不应额外拉起无关主窗口。
+
+### 外部资料与同行模式
+
+- Tauri v2 官方窗口 API 说明 `close()` 会走 close requested 流程，而 `destroy()` 是强制关闭窗口。
+- Tauri 多窗口讨论中常见模式是：可复用工具窗用 hide/show；一次性动态工具窗退出时用强制销毁，避免 close requested 拦截造成循环。
+- 对截图/录制类浮窗产品，退出录制控制条通常只清理本会话浮窗和录制进程，不自动恢复主配置窗口，除非用户明确从主窗口启动并期望返回。
+
+### 实际完成
+
+- 录制控制条 `closeOverlay` 和 `cancelRecording` 最终关闭从 `close()` 改为 `destroy()`，绕开 close requested 拦截循环。
+- `dismissOverlay` 移除 `restoreMainWindow` 自动 show 主窗口逻辑，避免退出录制时拉起白屏主窗口。
+- `openRecordingWindows` 不再检测/隐藏/恢复主窗口；控制条 payload 明确 `restoreMainWindow: false`。
+- 保留动态控制条 label 和创建成功确认逻辑，控制条仍按当前自身 label 做录屏排除。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/utils/recordingWindows.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 FFmpeg 参数。
+- 不改控制条 UI 排版。
+- 不改截图、OCR、翻译或图标资源。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+
+### 当前风险
+
+- 构建已通过；当前桌面上如果仍有上一版运行产生的白屏主窗口或卡住控制条，需要重启应用进程后再验证新版行为。
+
+### 下一章建议
+
+- 增加 Rust 侧 `force_close_recording_controls` 命令，按 label 前缀统一关闭所有 `recording_control*` 窗口和 native recording overlay，用作用户可恢复路径和自动 smoke 清理入口。
+
+## Chapter 153 - 录制准备态颜色与强制清理入口修复（2026-06-05）
+
+### 目标
+
+- 修复打开录制控制条时，未开始录制却先短暂出现红框再变蓝框的问题。
+- 修复关闭录制后仍可能残留控制条、蓝框或白屏主窗口的问题。
+
+### 外部资料与同行模式
+
+- Tauri v2 官方 WebviewWindow/Window API 显示，动态窗口应监听 `tauri://created` / `tauri://error`，强制关闭应使用 `destroy()` 而不是普通 `close()`。
+- Tauri 白屏相关 issue/讨论中常见建议是避免在工具浮窗生命周期中反复 show/hide 主 webview；截图/录屏类同行通常让浮窗和主窗生命周期分离。
+- 录屏工具通用状态语义：准备态为蓝框，实际录制中才变红，暂停才变黄。
+
+### 实际完成
+
+- 截图页进入录制准备态时从 `recording` 改为 `ready`，避免未点击录制就进入红色状态。
+- 截图画布渲染区分 `ready` 和 `recording`：准备态蓝色，真正录制中才红色。
+- 新增 Rust 命令 `force_close_recording_controls`：
+  - 隐藏 native recording overlay。
+  - 强制 `destroy()` 所有 `recording_control*` 和 `recording_notice` 窗口。
+  - 隐藏误弹出的 `main` 主窗口。
+- 录制控制条关闭路径改为调用 Rust 统一清理命令。
+- 打开新录制控制条前也调用统一清理命令，减少旧控制条/蓝框残留影响下一次录制。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/utils/recordingWindows.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 FFmpeg 参数。
+- 不改控制条 UI 布局。
+- 不改 OCR、翻译、截图保存或图标资源。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+- `cargo check`：通过。
+
+### 当前风险
+
+- 代码和构建已通过；如果当前桌面仍显示上一版卡住的白屏主窗口，需要先彻底结束旧进程，再用新进程验证。
+
+### 下一章建议
+
+- 做真实 Windows smoke：连续三次 `Alt+A -> 框选 -> 录制准备 -> 关闭`，确认始终蓝框准备、关闭后无白屏主窗、再次进入控制条正常出现。
+
+## Chapter 154 - 录制 Session 稳定传递、拖动手柄与 Tooltip UI 修复（2026-06-05）
+
+### 目标
+
+- 修复点击开始录制时报 `Recording session is not ready`，导致无法录制的问题。
+- 修复控制条左右拖动手柄无法拖动的问题。
+- 重新整理录制控制条 UI，避免按钮 hover 提示词遮挡按钮。
+
+### 外部资料与同行模式
+
+- Tauri v2 WebviewWindow 文档说明动态窗口创建依赖 `tauri://created` / `tauri://error`，跨窗口事件存在时序要求；稳定产品不应只依赖“新窗口 ready 后再 emit”传递关键 session。
+- Tauri 窗口自定义文档建议拖动区域使用 `data-tauri-drag-region`，复杂场景可手动调用 `startDragging()`；如果子元素也要拖动，需要给子元素也标记拖动区域。
+- Ant Design Tooltip 文档支持 `placement`、`mouseEnterDelay`、`getPopupContainer`、`overlayStyle`；紧凑工具条应让 tooltip 延迟出现、放到按钮外侧，并避免 tooltip 捕获鼠标事件。
+
+### 实际完成
+
+- `openRecordingWindows` 创建控制条前把 `RecordingWindowPayload` 写入 `localStorage`，并把 `recordingSessionKey` 放进控制条 URL。
+- `RecordingControlPage` 启动后优先从 URL key 读取 session，事件通道保留为备份，避免用户点击按钮时 session 尚未到达。
+- 增加 `sessionReady` 状态，session 未就绪时禁用录制/暂停按钮，并提示“录制准备中”。
+- 重写 `RecordingControlHud`：
+  - 左右手柄改为 `data-tauri-drag-region` + `startDragging()` 双路径。
+  - 按钮显式 `no-drag`，避免拖动区域吞掉点击。
+  - Tooltip 改为顶部、延迟出现、`pointerEvents: none`，降低遮挡按钮的概率。
+  - 控制条窗口高度增加到 `96px`，给 tooltip 留透明空间。
+  - 按钮尺寸和视觉状态重新统一为更稳定的 36px 控件。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src/components/recording/RecordingControlHud.tsx`
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/utils/recordingWindows.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 FFmpeg 参数。
+- 不改 OCR、翻译、截图保存或图标资源。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+- `cargo check`：通过。
+- `git diff --check`：通过，仅有工作区 CRLF 提示。
+
+### 当前风险
+
+- 已通过构建和静态检查；拖动、tooltip 遮挡和 session 到达仍需要在真实 Tauri 窗口中人工 smoke。
+
+### 下一章建议
+
+- 真实复测 `Alt+A -> 框选 -> 录制准备 -> 拖动控制条 -> 开始录制 -> 暂停/继续 -> 关闭`，确认 session、拖动、tooltip、颜色和窗口回收都闭合。
+
+## Chapter 155 - FFmpeg 合并稳定性与录制控制条闭环修复（2026-06-05）
+
+### 目标
+
+- 继续收口用户指定的三个问题：
+  - 控制条关闭按钮只关闭录制控制条，不触发无关主窗口白屏。
+  - 修复 `ffmpeg failed to merge recording segments: exit code: 0xbebbb1b7` 类分段合并失败。
+  - 修复控制条 UI 胶囊形态、拖动和 tooltip 遮挡问题。
+
+### 外部资料与同行模式
+
+- FFmpeg 官方 concat demuxer 文档要求文件列表使用 `file 'path'` 语法，Windows 绝对路径和特殊字符需要 `-safe 0` 与正确转义。
+- FFmpeg FAQ/同行实践通常先尝试 concat demuxer `-c copy`；如果流参数或时间戳不稳定，再 fallback 到重新编码输出。
+- Tauri 官方窗口 API 说明 `destroy()` 会绕过 close requested，用于强制关闭一次性动态工具窗；`close()` 会走关闭事件链。
+- Ant Design Tooltip 文档支持 `autoAdjustOverflow`、`getPopupContainer`、`placement` 和延迟参数，紧凑工具条应给 tooltip 留出可视区域。
+
+### 实际完成
+
+- FFmpeg 停止/合并链路：
+  - 前端正常停止录制段从最多等 `1100ms` 改为最多等 `10000ms`，避免还没写完 MP4 metadata 就开始合并。
+  - Rust `stop_recording` 从 `800ms` 改为 `8000ms` 正常等待；正常停止超时或退出异常会报错，不再静默 kill 后继续合并。
+  - 取消录制仍走快速 kill 路径，不影响用户取消体验。
+  - 合并前不再静默跳过缺失/空分段；任一分段缺失或为空都会明确报错，避免“成功但丢内容”。
+  - concat list 路径转义改为 FFmpeg file-list 语法，修复包含 `'` 或 Windows 反斜杠路径的风险。
+  - 合并先尝试 concat demuxer `-c copy -movflags +faststart`。
+  - copy 失败后自动 fallback 到 concat demuxer 重新编码：`libx264 + aac + yuv420p + faststart`。
+  - FFmpeg 合并失败时保留 stderr tail，不再只返回 exit code，便于后续真实设备定位。
+- 控制条 session/UI：
+  - 控制条 session 使用 URL key + `localStorage` 传递，跨窗口事件保留为备份。
+  - session 未就绪时禁用录制按钮并显示“录制准备中”。
+  - 左右拖动手柄使用 `data-tauri-drag-region` + `startDragging()` 双路径。
+  - 控制条按钮显式 `no-drag`，避免拖动区域吞掉点击。
+  - Tooltip 放到顶部、延迟出现、禁用鼠标事件，并扩大控制条窗口透明高度到 `96px`。
+  - 控制条视觉统一为 52px 高、无多余阴影的胶囊工具条。
+- 关闭/清理：
+  - Rust `force_close_recording_controls` 使用 `destroy()` 强制关闭所有 `recording_control*` 和 `recording_notice`，并隐藏 native 蓝框和误弹主窗口。
+
+### 新增文件
+
+- 无。
+
+### 修改文件
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src/components/recording/RecordingControlHud.tsx`
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/utils/recordingWindows.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不改 OCR、翻译、截图保存或图标资源。
+- 不提交、不推送、不打 tag。
+
+### 验证
+
+- `cargo test`：通过，`19 passed`。
+  - 新增覆盖：FFmpeg concat list 路径转义。
+  - 新增覆盖：FFmpeg stderr tail 摘要保留失败上下文。
+- `npm run build`：通过，仍只有既有 `1200 kB` chunk warning。
+
+### 当前风险
+
+- 已完成代码级和构建级验证；真实录制仍需在 Windows 桌面进行端到端 smoke，重点观察 FFmpeg 合并是否成功、控制条关闭是否仍弹主窗口、tooltip 是否完全可见。
+
+### 下一章建议
+
+- 真实验收三轮录制：不暂停直接保存、暂停/继续后保存、取消后再次录制；确认输出文件可播放且关闭后没有白屏主窗口或残留控制条。

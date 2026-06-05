@@ -50,6 +50,7 @@ const DEFAULT_ANNOTATION_COLOR = "#ff4d4f";
 const DEFAULT_ANNOTATION_TOOL: AnnotationTool = "rect";
 const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circle: 4, mosaic: 16, arrow: 4, text: 4, brush: 4 };
 const RECORDING_BORDER_COLOR = "#ef4444";
+const RECORDING_READY_BORDER_COLOR = "#2563eb";
 const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
 const RECORDING_TOOLBAR_FALLBACK_SIZE = { width: 980, height: 96 };
 const MIN_NATIVE_RECOVERY_DRAG_PX = 4;
@@ -283,6 +284,7 @@ export default function ScreenshotPage() {
   const selectionStartedAtRef = useRef(0);
   const selectionCompletedAtRef = useRef(0);
   const selectionDragDistanceRef = useRef(0);
+  const pendingConfirmTimerRef = useRef<number | null>(null);
   const textSourceSnapshotPromiseRef = useRef<Promise<TextSourceSnapshot | null> | null>(null);
   const ocrPrewarmPromiseRef = useRef<Promise<unknown> | null>(null);
   const isScrollFramePendingRef = useRef(false);
@@ -322,12 +324,20 @@ export default function ScreenshotPage() {
   const annotationStartRef = useRef({ x: 0, y: 0 });
   const annotationDragStartRef = useRef({ x: 0, y: 0 });
 
+  const clearPendingConfirm = () => {
+    if (pendingConfirmTimerRef.current !== null) {
+      window.clearTimeout(pendingConfirmTimerRef.current);
+      pendingConfirmTimerRef.current = null;
+    }
+  };
+
   const decodeTextPairs = (encoded: string) => {
     const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
     return JSON.parse(new TextDecoder().decode(bytes));
   };
 
   const startNewCaptureSession = (mode = "normal") => {
+    clearPendingConfirm();
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
     // Clear any residual notifications from previous session
@@ -694,6 +704,15 @@ export default function ScreenshotPage() {
     canvas.focus({ preventScroll: true });
   };
 
+  const focusScreenshotWindow = () => {
+    const focusCanvas = () => {
+      focusScreenshotCanvas();
+      requestAnimationFrame(focusScreenshotCanvas);
+    };
+    getCurrentWindow().setFocus().then(focusCanvas).catch(focusCanvas);
+    focusCanvas();
+  };
+
   const releaseCanvasPointer = (canvas: HTMLCanvasElement, pointerId = activePointerIdRef.current) => {
     if (pointerId === null) return;
     try {
@@ -972,6 +991,7 @@ export default function ScreenshotPage() {
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      clearPendingConfirm();
       stopNativePointerRecovery();
     };
   }, []);
@@ -1154,11 +1174,15 @@ export default function ScreenshotPage() {
         if (sessionId !== captureIdRef.current) return;
         overlayVisibleRef.current = true;
         setOverlayVisible(true);
-        focusScreenshotCanvas();
-        invoke("overlay_ready_to_show", { label: getCurrentWindow().label }).catch((err) => {
-          console.error("[ScreenshotPage] overlay_ready_to_show failed:", err);
-        });
-        requestAnimationFrame(focusScreenshotCanvas);
+        focusScreenshotWindow();
+        invoke("overlay_ready_to_show", { label: getCurrentWindow().label })
+          .catch((err) => {
+            console.error("[ScreenshotPage] overlay_ready_to_show failed:", err);
+          })
+          .finally(() => {
+            focusScreenshotWindow();
+            window.setTimeout(focusScreenshotWindow, 60);
+          });
         startNativePointerRecovery();
       });
     };
@@ -1242,6 +1266,7 @@ export default function ScreenshotPage() {
     translatedImgRef.current = null;
     setTranslatePairs(null);
     renderNeededRef.current = true;
+    focusScreenshotWindow();
   };
 
   const openTextEditor = (point: Point, targetIndex: number | null, value = "") => {
@@ -1280,7 +1305,7 @@ export default function ScreenshotPage() {
 
   const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!overlayVisibleRef.current) return;
-    focusScreenshotCanvas();
+    focusScreenshotWindow();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
       activePointerIdRef.current = e.pointerId;
@@ -1579,6 +1604,7 @@ export default function ScreenshotPage() {
     const explicitSelectionRelease = wasSelecting && dragDistance >= MIN_AUTO_ACTION_DRAG_PX;
     setSelection(valid);
     renderNeededRef.current = true;
+    if (valid) requestAnimationFrame(focusScreenshotWindow);
     if (valid && explicitSelectionRelease && screenshotModeRef.current === "translate") {
       setTimeout(() => handleTranslate(), 0);
     }
@@ -1619,8 +1645,8 @@ export default function ScreenshotPage() {
       draftAnnotation: draftAnnotationRef.current,
       selectedAnnotationIndex: selectedAnnotationIndexRef.current,
       detectionBorderWidth: configRef.current.detectionBorderWidth || 2,
-      selectionBorderColor: recordingStatusRef.current !== "idle" ? RECORDING_BORDER_COLOR : scrollCaptureModeRef.current !== "idle" ? SCROLL_CAPTURE_BORDER_COLOR : undefined,
-      selectionLabelColor: recordingStatusRef.current !== "idle" ? "rgba(239, 68, 68, 0.9)" : scrollCaptureModeRef.current !== "idle" ? "rgba(249, 115, 22, 0.9)" : undefined,
+      selectionBorderColor: recordingStatusRef.current === "recording" ? RECORDING_BORDER_COLOR : recordingStatusRef.current === "ready" ? RECORDING_READY_BORDER_COLOR : scrollCaptureModeRef.current !== "idle" ? SCROLL_CAPTURE_BORDER_COLOR : undefined,
+      selectionLabelColor: recordingStatusRef.current === "recording" ? "rgba(239, 68, 68, 0.9)" : recordingStatusRef.current === "ready" ? "rgba(37, 99, 235, 0.9)" : scrollCaptureModeRef.current !== "idle" ? "rgba(249, 115, 22, 0.9)" : undefined,
       selectionOnly: recordingStatusRef.current !== "idle",
     });
   }
@@ -1691,18 +1717,27 @@ export default function ScreenshotPage() {
     annotationsRef.current.length > 0 ? await renderCurrentEditedSelectionBase64() : (translatedResult || await captureRegionBase64())
   );
 
+  const getSelectionConfirmDelayMs = (minAgeMs = MIN_SELECTION_CONFIRM_AGE_MS) => {
+    if (
+      !overlayVisibleRef.current
+      || !hasSelectedRef.current
+      || rectRef.current.w <= 5
+      || rectRef.current.h <= 5
+      || isSelectingRef.current
+      || isDraggingRef.current
+      || isResizingRef.current
+      || isDrawingAnnotationRef.current
+      || isDraggingAnnotationRef.current
+      || isResizingAnnotationRef.current
+    ) {
+      return null;
+    }
+    const ageMs = performance.now() - selectionCompletedAtRef.current;
+    return Math.max(0, minAgeMs - ageMs);
+  };
+
   const canConfirmCurrentSelection = (minAgeMs = MIN_SELECTION_CONFIRM_AGE_MS) => (
-    overlayVisibleRef.current
-    && hasSelectedRef.current
-    && rectRef.current.w > 5
-    && rectRef.current.h > 5
-    && !isSelectingRef.current
-    && !isDraggingRef.current
-    && !isResizingRef.current
-    && !isDrawingAnnotationRef.current
-    && !isDraggingAnnotationRef.current
-    && !isResizingAnnotationRef.current
-    && performance.now() - selectionCompletedAtRef.current >= minAgeMs
+    getSelectionConfirmDelayMs(minAgeMs) === 0
   );
 
   const handlePin = async () => {
@@ -2065,14 +2100,19 @@ export default function ScreenshotPage() {
   const startRecording = async () => {
     if (isRecordingBusyRef.current) return;
     try {
+      const active = await invoke<boolean>('is_recording_active').catch(() => false);
+      if (active) {
+        message.error('当前已有录像正在进行，请先停止');
+        return;
+      }
       setIsRecordingBusy(true);
       const options = await buildRecordingOptions();
       const normalizedOptions = { ...options, fps: 30, resolution: "1080p", output_dir: null };
       const region = { x: normalizedOptions.region_x, y: normalizedOptions.region_y, w: normalizedOptions.region_w, h: normalizedOptions.region_h };
       recordingPickerModeRef.current = null;
       setRecordingPickerMode(null);
-      recordingStatusRef.current = "recording";
-      setRecordingStatus("recording");
+      recordingStatusRef.current = "ready";
+      setRecordingStatus("ready");
       await openRecordingWindows({
         options: normalizedOptions,
         countdownSeconds: 0,
@@ -2081,6 +2121,7 @@ export default function ScreenshotPage() {
       const win = getCurrentWindow();
       await win.setAlwaysOnTop(false).catch(() => {});
       await win.hide().catch(() => {});
+      await invoke('set_capturing_state', { state: false }).catch(() => {});
     } catch (error: any) {
       recordingStatusRef.current = "idle";
       setRecordingStatus("idle");
@@ -2104,6 +2145,7 @@ export default function ScreenshotPage() {
       const win = getCurrentWindow();
       await win.setAlwaysOnTop(false).catch(() => {});
       await win.hide().catch(() => {});
+      await invoke('set_capturing_state', { state: false }).catch(() => {});
       const savedPath = await invoke<string>("concat_recording_segments", { segmentPaths: segments });
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       recordingSegmentsRef.current = [];
@@ -2261,6 +2303,7 @@ export default function ScreenshotPage() {
   };
 
   const resetScreenshotState = () => {
+    clearPendingConfirm();
     stopNativePointerRecovery();
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
@@ -2341,7 +2384,17 @@ export default function ScreenshotPage() {
   };
 
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
-    if (!canConfirmCurrentSelection()) return;
+    const confirmDelayMs = getSelectionConfirmDelayMs();
+    if (confirmDelayMs === null) return;
+    if (confirmDelayMs > 0) {
+      clearPendingConfirm();
+      pendingConfirmTimerRef.current = window.setTimeout(() => {
+        pendingConfirmTimerRef.current = null;
+        confirmScreenshot(action);
+      }, confirmDelayMs + 16);
+      return;
+    }
+    clearPendingConfirm();
     try {
       const base64 = await getOutputBase64();
       await emit("screenshot-captured", base64);

@@ -315,7 +315,7 @@ fn app_data_dir() -> PathBuf {
 }
 
 fn cleanup_temp_files() {
-    let _ = stop_recording_internal(1500);
+    let _ = stop_recording_internal(1500, true);
     let _ = stop_rapid_ocr_worker_internal(1500);
     let mut path = app_data_dir();
     path.push("fullscreen_temp.png");
@@ -1009,11 +1009,11 @@ fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
         } else if label.starts_with("screenshot_") {
             let _ = window.set_always_on_top(false);
             let _ = window.hide();
-            let _ = window.close();
-        } else if label == "recording_border" || label.starts_with("recording_border_") {
-            let _ = window.set_always_on_top(false);
-            let _ = window.hide();
-            let _ = window.close();
+            let win_clone = window.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let _ = win_clone.close();
+            });
         }
     }
 }
@@ -1193,9 +1193,16 @@ fn get_screenshot_pointer_state(
 
 #[tauri::command]
 async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
+    let is_recording = {
+        let guard = get_recording_process().lock().map_err(|e| e.to_string())?;
+        guard.is_some()
+    };
+    if is_recording {
+        return Err("Recording is already running".to_string());
+    }
+
     // Restart cleanly on repeated hotkey presses instead of racing two overlay sessions.
     if CAPTURING.swap(true, Ordering::SeqCst) {
-        hide_recording_overlay_internal();
         close_screenshot_windows(&app, true);
     }
 
@@ -1210,9 +1217,30 @@ async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Result
 
 #[tauri::command]
 async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
-    hide_recording_overlay_internal();
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn force_close_recording_controls(app: tauri::AppHandle) -> Result<(), String> {
+    hide_recording_overlay_internal();
+    let mut recording_windows: Vec<tauri::WebviewWindow> = Vec::new();
+    for (label, window) in app.webview_windows() {
+        if label == "recording_notice" || label.starts_with("recording_control") {
+            recording_windows.push(window);
+        }
+    }
+    for window in recording_windows {
+        let _ = window.set_always_on_top(false);
+        let _ = window.hide();
+        // Delay closing to prevent the transparent window from flashing white on Windows
+        let win_clone = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = win_clone.close();
+        });
+    }
     Ok(())
 }
 
@@ -2948,7 +2976,7 @@ fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<S
     Ok(output_path.to_string_lossy().to_string())
 }
 
-fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
+fn stop_recording_internal(grace_ms: u64, kill_on_timeout: bool) -> Result<(), String> {
     let child = {
         let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
         guard.take()
@@ -2958,9 +2986,10 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
             let _ = stdin.write_all(b"q\n");
             let _ = stdin.flush();
         }
-        let attempts = (grace_ms / 100).max(1);
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_millis(grace_ms);
         let mut exited = false;
-        for attempt in 0..attempts {
+        while start.elapsed() < timeout {
             if child
                 .try_wait()
                 .map_err(|e| format!("Failed to stop recording process: {}", e))?
@@ -2969,31 +2998,82 @@ fn stop_recording_internal(grace_ms: u64) -> Result<(), String> {
                 exited = true;
                 break;
             }
-            if attempt + 1 < attempts {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         if !exited {
-            let _ = child.kill();
+            if kill_on_timeout {
+                let _ = child.kill();
+            } else {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("ffmpeg did not finalize the recording segment in time".to_string());
+            }
         }
-        let _ = child.wait();
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed to wait for recording process: {}", e))?;
+        if !status.success() {
+            eprintln!("ffmpeg recording stopped with status {}", status);
+        }
     }
     Ok(())
 }
+
 #[tauri::command]
-fn stop_recording() -> Result<(), String> {
-    stop_recording_internal(800)
+async fn stop_recording() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| stop_recording_internal(15000, false))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn cancel_recording_process() -> Result<(), String> {
-    stop_recording_internal(250)
+async fn cancel_recording_process() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| stop_recording_internal(350, true))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn escape_concat_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
-        .replace('\'', "'\\''")
+        .replace('\'', "\\'")
+}
+
+fn ffmpeg_stderr_excerpt(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let excerpt = text
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if excerpt.trim().is_empty() {
+        "(no ffmpeg stderr)".to_string()
+    } else {
+        excerpt
+    }
+}
+
+fn run_ffmpeg_merge(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
+    let output = hidden_ffmpeg_command(ffmpeg)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to start ffmpeg merge: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}\n{}",
+            output.status,
+            ffmpeg_stderr_excerpt(&output.stderr)
+        ))
+    }
 }
 
 #[tauri::command]
@@ -3004,11 +3084,20 @@ fn concat_recording_segments(
     if segment_paths.is_empty() {
         return Err("no recording segments to merge".to_string());
     }
-    let existing_segments: Vec<PathBuf> = segment_paths
-        .iter()
-        .map(|path| PathBuf::from(path.trim()))
-        .filter(|path| path.exists())
-        .collect();
+    let mut existing_segments: Vec<PathBuf> = Vec::new();
+    for raw_path in &segment_paths {
+        let path = PathBuf::from(raw_path.trim());
+        if !path.is_file() {
+            return Err(format!("recording segment does not exist: {}", raw_path));
+        }
+        let size = fs::metadata(&path)
+            .map_err(|e| format!("read recording segment metadata failed: {}", e))?
+            .len();
+        if size == 0 {
+            return Err(format!("recording segment is empty: {}", path.to_string_lossy()));
+        }
+        existing_segments.push(path);
+    }
     if existing_segments.is_empty() {
         return Err("video file does not exist".to_string());
     }
@@ -3038,32 +3127,73 @@ fn concat_recording_segments(
     fs::write(&list_path, list_body)
         .map_err(|e| format!("create recording temp directory failed: {}", e))?;
 
-    let args = vec![
+    let copy_args = vec![
         "-y".to_string(),
         "-hide_banner".to_string(),
+        "-fflags".to_string(),
+        "+genpts".to_string(),
         "-f".to_string(),
         "concat".to_string(),
         "-safe".to_string(),
         "0".to_string(),
         "-i".to_string(),
         list_path.to_string_lossy().to_string(),
+        "-map".to_string(),
+        "0".to_string(),
         "-c".to_string(),
         "copy".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
         save_path.to_string_lossy().to_string(),
     ];
-    let status = hidden_ffmpeg_command(&ffmpeg)
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| format!("failed to start ffmpeg merge: {}", e))?;
-    let _ = fs::remove_file(&list_path);
-    if !status.success() {
+    let copy_error = match run_ffmpeg_merge(&ffmpeg, &copy_args) {
+        Ok(()) => {
+            let _ = fs::remove_file(&list_path);
+            return Ok(save_path.to_string_lossy().to_string());
+        }
+        Err(error) => error,
+    };
+    let _ = fs::remove_file(&save_path);
+
+    let transcode_args = vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-fflags".to_string(),
+        "+genpts".to_string(),
+        "-f".to_string(),
+        "concat".to_string(),
+        "-safe".to_string(),
+        "0".to_string(),
+        "-i".to_string(),
+        list_path.to_string_lossy().to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        "0:a?".to_string(),
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "veryfast".to_string(),
+        "-crf".to_string(),
+        "22".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "160k".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        save_path.to_string_lossy().to_string(),
+    ];
+    if let Err(transcode_error) = run_ffmpeg_merge(&ffmpeg, &transcode_args) {
+        let _ = fs::remove_file(&list_path);
         return Err(format!(
-            "ffmpeg failed to merge recording segments: {}",
-            status
+            "ffmpeg failed to merge recording segments.\ncopy attempt:\n{}\ntranscode fallback:\n{}",
+            copy_error, transcode_error
         ));
     }
+    let _ = fs::remove_file(&list_path);
     Ok(save_path.to_string_lossy().to_string())
 }
 
@@ -4380,6 +4510,7 @@ pub fn run() {
             scroll_mouse_at,
             cancel_screenshot,
             force_close_screenshots,
+            force_close_recording_controls,
             get_window_rects,
             get_text_source_snapshot,
             overlay_ready_to_show,
@@ -4523,6 +4654,14 @@ pub fn run() {
                     event
                 {
                     let _ = window.set_always_on_top(false);
+                }
+            } else if label == "recording_notice" || label.starts_with("recording_control") {
+                // 录像控制/录像提示窗口由前端 onCloseRequested 负责处理业务逻辑。
+                // 这里只保证销毁后不触发 main 窗口的副作用：
+                // - 不调用 set_always_on_top(false)，避免 Z-order 重排让 main 被自动激活并绘制出来；
+                // - 不主动 hide() 任何其他窗口，仅在窗口被销毁时同步关闭态。
+                if let tauri::WindowEvent::Destroyed = event {
+                    CAPTURING.store(false, Ordering::SeqCst);
                 }
             } else if label == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -4782,6 +4921,26 @@ File formats:
 
         let _ = std::fs::remove_file(external_file);
         let _ = std::fs::remove_dir(external_dir);
+    }
+
+    #[test]
+    fn test_escape_concat_path_uses_ffmpeg_file_list_syntax() {
+        let path = std::path::Path::new(r"C:\Users\Alice\Videos\Bob's clip.mp4");
+        assert_eq!(
+            super::escape_concat_path(path),
+            "C:/Users/Alice/Videos/Bob\\'s clip.mp4"
+        );
+    }
+
+    #[test]
+    fn test_ffmpeg_stderr_excerpt_keeps_tail_context() {
+        let stderr = (0..20)
+            .map(|index| format!("line {}", index))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let excerpt = super::ffmpeg_stderr_excerpt(stderr.as_bytes());
+        assert!(!excerpt.contains("line 0"));
+        assert!(excerpt.contains("line 19"));
     }
 
     #[test]
