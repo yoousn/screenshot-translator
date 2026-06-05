@@ -104,6 +104,8 @@ function RecordingControlContent() {
     await setRecordingCaptureShield(false);
     await Promise.all([
       withTimeout(invoke("hide_main_window").catch(() => {}), 150),
+      // 直接隐藏截图窗口，不依赖截图窗口自己处理 recording-ended，避免白窗残留。
+      withTimeout(invoke("cancel_screenshot").catch(() => {}), 150),
       withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
       withTimeout(closeWindowIfExists("recording_notice"), 150),
       notifyParent ? withTimeout(emit("recording-ended").catch(() => {}), 150) : Promise.resolve(null),
@@ -170,7 +172,7 @@ function RecordingControlContent() {
       await startSegment();
     } catch (error: any) {
       console.log("[window-trace] startRecording catch error", error);
-      message.error(`启动录制失败：${error?.message || error}`);
+      message.error(`��动录制失败：${error?.message || error}`);
       setOverlayStatus("ready");
     } finally {
       console.log("[window-trace] startRecording finally setOverlayBusy(false)");
@@ -269,10 +271,13 @@ function RecordingControlContent() {
       segmentsRef.current = [];
     } finally {
       setOverlayBusy(false);
+      // 由本窗口（始终处于活动状态）直接隐藏 main 与 screenshot，
+      // 不依赖被隐藏/节流的截图窗口去处理 recording-ended 事件，避免关闭后残留白色窗口。
       await withTimeout(invoke("hide_main_window").catch(() => {}), 300);
+      await withTimeout(invoke("cancel_screenshot").catch(() => {}), 300);
       // 在所有异步资源停止/清理完毕后，再彻底关闭并销毁窗口。
-      // 交给 Rust 端的 force_close_recording_controls：它在窗口销毁之后会再补一次隐藏 main，
-      // 避免 owner（main）窗口在关闭后被 OS 重新激活而残留白窗。
+      // 交给 Rust 端的 force_close_recording_controls：先 hide 再延迟 close 防止透明窗闪白，
+      // 并在窗口销毁后再补一次隐藏 main，避免 owner 窗口在关闭后被 OS 重新激活而露出白窗。
       console.log("[window-trace] cancelRecording complete, closing window now");
       allowCloseRef.current = true;
       await withTimeout(invoke("force_close_recording_controls", { source: "ui-cancel" }).catch(() => {}), 300);
@@ -332,18 +337,13 @@ function RecordingControlContent() {
     const urlParams = new URLSearchParams(window.location.search);
     const key = urlParams.get('recordingSessionKey');
     console.log(`[window-trace] URL recordingSessionKey=${key}`);
-    if (key) {
-      console.log(`[window-trace] localStorage value exists: ${!!window.localStorage.getItem(key)}`);
-    }
 
-    let unlistenSession: (() => void) | null = null;
-    let unlistenClose: (() => void) | null = null;
-    listen<RecordingWindowPayload>("recording-overlay-session", (event) => {
-      console.log("[window-trace] listen('recording-overlay-session') received payload", !!event.payload);
+    const applySession = (payload: RecordingWindowPayload, source: string) => {
       if (sessionStartedRef.current) return;
       sessionStartedRef.current = true;
+      console.log(`[window-trace] applySession from ${source}`);
       cancelledRef.current = false;
-      sessionRef.current = event.payload;
+      sessionRef.current = payload;
       segmentsRef.current = [];
       activeStartedAtRef.current = null;
       accumulatedMsRef.current = 0;
@@ -352,7 +352,27 @@ function RecordingControlContent() {
       setSessionReady(true);
       setOverlayStatus("ready");
       console.log("[window-trace] sessionReady -> true");
-      if (event.payload.autoStart) window.setTimeout(() => startRecording(), 0);
+      if (payload.autoStart) window.setTimeout(() => startRecording(), 0);
+    };
+
+    // 主路径：直接从 localStorage 读取会话载荷（发起方在创建本窗口之前已写入，key 通过 URL 传入）。
+    // 这样完全不依赖被隐藏/节流的截图窗口转发事件，从根本上避免 sessionReady 永远为 false 导致按钮禁用。
+    if (key) {
+      try {
+        const raw = window.localStorage.getItem(key);
+        console.log(`[window-trace] localStorage value exists: ${!!raw}`);
+        if (raw) applySession(JSON.parse(raw) as RecordingWindowPayload, "localStorage");
+      } catch (error) {
+        console.log("[window-trace] failed to parse session from localStorage", error);
+      }
+    }
+
+    let unlistenSession: (() => void) | null = null;
+    let unlistenClose: (() => void) | null = null;
+    // 兜底路径：仍监听事件，以防 localStorage 不可用或被清空。
+    listen<RecordingWindowPayload>("recording-overlay-session", (event) => {
+      console.log("[window-trace] listen('recording-overlay-session') received payload", !!event.payload);
+      applySession(event.payload, "event");
     }).then((unsub) => {
       unlistenSession = unsub;
       emit("recording-overlay-ready").catch(() => {});
