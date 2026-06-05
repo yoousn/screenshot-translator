@@ -224,6 +224,7 @@ const getPreferredTranslationMemoryChannel = (config: LocalTranslateConfig) => (
 const requestTextTranslations = async (serverUrl: string, token: string, blocks: OcrBlock[], sourceLang: TranslationSourceLanguage, targetLang: string, timeoutMs: number) => {
   const normalizedServerUrl = normalizeTranslationServerUrl(serverUrl);
   const endpoint = `${normalizedServerUrl}/api/translate_text`;
+  console.log("[requestTextTranslations] URL:", endpoint, "Token length:", token.length, "Token:", token);
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {

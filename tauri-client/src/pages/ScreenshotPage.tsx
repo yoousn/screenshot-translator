@@ -415,6 +415,10 @@ export default function ScreenshotPage() {
     translatedImgRef,
     getTextSourceBlocksForCurrentSelection: (...args: any[]) => getTextSourceBlocksForCurrentSelection(...args),
   });
+  const handleTranslateRef = useRef(handleTranslate);
+  handleTranslateRef.current = handleTranslate;
+  const handlePinRef = useRef<(() => any) | null>(null);
+
   const windowRectsRef = useRef<Rect[]>([]);
   const screenshotModeRef = useRef("normal");
   const isSelectingRef = useRef(false);
@@ -884,11 +888,11 @@ export default function ScreenshotPage() {
       if ((e.ctrlKey || e.metaKey) && (e.key === "q" || e.key === "Q")) {
         e.preventDefault();
         if (isTranslatingRef.current || isOCRingRef.current || isScrollCapturingRef.current) return;
-        handleTranslate();
+        handleTranslateRef.current();
       }
       if (!e.ctrlKey && !e.metaKey && (e.key === "p" || e.key === "P")) {
         e.preventDefault();
-        handlePin();
+        handlePinRef.current?.();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -936,13 +940,17 @@ export default function ScreenshotPage() {
 
   const loadConfig = async () => {
     try {
-      const parsedConfig = JSON.parse(await invoke<string>("get_config"));
+      const raw = await invoke<string>("get_config");
+      console.log("[ScreenshotPage] loadConfig raw string length:", raw.length, "content:", raw);
+      const parsedConfig = JSON.parse(raw);
+      console.log("[ScreenshotPage] loadConfig parsed config:", parsedConfig);
       configRef.current = parsedConfig;
       setConfig(parsedConfig);
       prewarmLocalOcrWorker("screenshot-page-load");
       prewarmTranslationServices(parsedConfig, { reason: "screenshot-page-load" })
         .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
-    } catch {
+    } catch (e) {
+      console.error("[ScreenshotPage] loadConfig failed:", e);
       setConfig({});
     }
   };
@@ -1636,6 +1644,7 @@ export default function ScreenshotPage() {
       message.error("钉图失败");
     }
   };
+  handlePinRef.current = handlePin;
   const isLikelySystemAudioDevice = (device: string) => /wasapi:|stereo mix|立体声|混音|loopback|virtual audio|output|speaker|扬声器/i.test(device);
   const isLikelyMicrophoneDevice = (device: string) => !isLikelySystemAudioDevice(device);
 

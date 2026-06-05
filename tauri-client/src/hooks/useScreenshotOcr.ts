@@ -31,6 +31,9 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
     getTextSourceBlocksForCurrentSelection,
   } = deps;
 
+  const configRef = useRef(config);
+  configRef.current = config;
+
   const [isOCRing, setIsOCRing] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
   const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
@@ -66,7 +69,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
   }, []);
 
   const prewarmLocalOcrWorker = useCallback((reason: string) => {
-    if (config.rapidOcrWorkerEnabled === false) return null;
+    if (configRef.current.rapidOcrWorkerEnabled === false) return null;
     if (ocrPrewarmPromiseRef.current) return ocrPrewarmPromiseRef.current;
 
     const promise = invoke("prewarm_local_ocr_models")
@@ -87,7 +90,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       });
     ocrPrewarmPromiseRef.current = promise;
     return promise;
-  }, [config.rapidOcrWorkerEnabled]);
+  }, []);
 
   const handleOCR = useCallback(async () => {
     if (isOCRingRef.current || isTranslatingRef.current) return;
@@ -100,7 +103,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
         imageBase64: base64,
         executablePath: null,
-        timeoutMs: config.localOcrTimeoutMs || 15000
+        timeoutMs: configRef.current.localOcrTimeoutMs || 15000
       });
       const normalization = await buildOcrNormalizationReport(ocrBlocks || []);
       const texts = normalization.text || "\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\n\n\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
@@ -149,14 +152,14 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
         await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
       }
     }
-  }, [config.localOcrTimeoutMs, captureRegionBase64, normalizeScreenshotTranslateError, rectRef, resetScreenshotState, setIsOCRingSync]);
+  }, [captureRegionBase64, normalizeScreenshotTranslateError, rectRef, resetScreenshotState, setIsOCRingSync]);
 
   const handleTranslate = useCallback(async () => {
     if (isTranslatingRef.current || isOCRingRef.current) return;
     const startTime = performance.now();
     let base64 = "";
     prewarmLocalOcrWorker("translate-action");
-    prewarmTranslationServices(config, { reason: "translate-action" })
+    prewarmTranslationServices(configRef.current, { reason: "translate-action" })
       .catch((error) => {
         console.warn("[Translation Service Prewarm] failed", error);
         return null;
@@ -169,19 +172,19 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       const captureMs = Math.round(performance.now() - captureStarted);
 
       let resultBase64 = "";
-      let usedChannel = config.channel || config.targetLang || "auto";
+      let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
       let blocksCount = 1;
       let translationQuality: Awaited<ReturnType<typeof translateWithLocalOcr>>["translationQuality"] | null = null;
       try {
         const localFlowStarted = performance.now();
         const textSource = await getTextSourceBlocksForCurrentSelection(80);
         const result = textSource.usable
-          ? await translateOcrBlocks(base64, textSource.blocks, config, {
+          ? await translateOcrBlocks(base64, textSource.blocks, configRef.current, {
               flowStarted: localFlowStarted,
               ocrMs: textSource.elapsedMs,
               source: "text-source",
             })
-          : await translateWithLocalOcr(base64, config);
+          : await translateWithLocalOcr(base64, configRef.current);
         console.info("[Local Translate Flow] timings", {
           captureMs,
           ocrTranslateRenderMs: Math.round(performance.now() - localFlowStarted),
@@ -251,7 +254,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
           time: new Date().toLocaleString(),
           filename: "Screenshot_" + Date.now() + ".png",
           blocks: 0,
-          channel: config.channel || config.targetLang || "auto",
+          channel: configRef.current.channel || configRef.current.targetLang || "auto",
           duration: durationSec + "s",
           status: "error",
           error: msg,
@@ -264,7 +267,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
         window.dispatchEvent(new Event("ysn_translate_history_updated"));
       } catch (err) {}
     }
-  }, [config, captureRegionBase64, draw, getTextSourceBlocksForCurrentSelection, normalizeScreenshotTranslateError, prewarmLocalOcrWorker, rectRef, setIsTranslatingSync, translatedImgRef]);
+  }, [captureRegionBase64, draw, getTextSourceBlocksForCurrentSelection, normalizeScreenshotTranslateError, prewarmLocalOcrWorker, rectRef, setIsTranslatingSync, translatedImgRef]);
 
   const handleShowTranslateResult = useCallback(async () => {
     if (!translatePairs || translatePairs.length === 0) return;
