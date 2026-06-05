@@ -354,7 +354,7 @@ pub fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
             let is_visible = win.is_visible().unwrap_or(false);
             if is_visible {
                 println!("[window-trace] source=hide_all_app_windows action=hide label={} trigger={}", lbl, trigger);
-                let _ = win.hide();
+                robust_hide_window(&win);
             }
         }
     }

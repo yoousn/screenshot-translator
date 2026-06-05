@@ -16,7 +16,7 @@ pub async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) 
     // If it is visible on screen it is captured; if it is covered it is not.
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let _ = screenshot_win.set_always_on_top(false);
-        let _ = screenshot_win.hide();
+        crate::window_lifecycle::robust_hide_window(&screenshot_win);
     }
     close_screenshot_windows(&app, false);
 
@@ -241,7 +241,7 @@ pub async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> 
         if target_label == "screenshot" || target_label.starts_with("screenshot_") {
             if let Some(screenshot_win) = app.get_webview_window(&target_label) {
                 let _ = screenshot_win.set_always_on_top(false);
-                let _ = screenshot_win.hide();
+                crate::window_lifecycle::robust_hide_window(&screenshot_win);
             }
             close_screenshot_windows(&app, false);
         }
