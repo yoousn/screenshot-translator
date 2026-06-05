@@ -64,6 +64,7 @@ function RecordingControlContent() {
   const cancelledRef = useRef(false);
   const sessionStartedRef = useRef(false);
   const [status, setStatus] = useState<OverlayStatus>("ready");
+  const [sessionReady, setSessionReady] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -269,8 +270,12 @@ function RecordingControlContent() {
     } finally {
       setOverlayBusy(false);
       await withTimeout(invoke("hide_main_window").catch(() => {}), 300);
-      // 在所有异步资源停止/清理完毕后，再彻底关闭并销毁窗口
+      // 在所有异步资源停止/清理完毕后，再彻底关闭并销毁窗口。
+      // 交给 Rust 端的 force_close_recording_controls：它在窗口销毁之后会再补一次隐藏 main，
+      // 避免 owner（main）窗口在关闭后被 OS 重新激活而残留白窗。
       console.log("[window-trace] cancelRecording complete, closing window now");
+      allowCloseRef.current = true;
+      await withTimeout(invoke("force_close_recording_controls", { source: "ui-cancel" }).catch(() => {}), 300);
       await winRef.current.close().catch(() => {});
     }
   };
@@ -344,6 +349,7 @@ function RecordingControlContent() {
       accumulatedMsRef.current = 0;
       setElapsedMs(0);
       setSavedPath(null);
+      setSessionReady(true);
       setOverlayStatus("ready");
       console.log("[window-trace] sessionReady -> true");
       if (event.payload.autoStart) window.setTimeout(() => startRecording(), 0);
@@ -432,7 +438,7 @@ function RecordingControlContent() {
       elapsedText={formatRecordingTime(elapsedMs)}
       countdown={countdown}
       busy={busy}
-      sessionReady={Boolean(sessionRef.current)}
+      sessionReady={sessionReady}
       hasSavedVideo={Boolean(savedPath)}
       audioLabel={audioLabel}
       onToggleRecord={toggleRecord}
