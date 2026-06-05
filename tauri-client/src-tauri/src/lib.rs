@@ -1,7 +1,6 @@
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use crate::recording_process::*;
-use crate::window_lifecycle::*;
 
 
 pub mod app_paths;
@@ -14,7 +13,6 @@ pub mod history_commands;
 pub use history_commands::*;
 
 pub mod file_commands;
-pub use file_commands::*;
 
 pub mod hotkeys;
 pub use hotkeys::*;
@@ -29,7 +27,6 @@ pub mod window_lifecycle;
 pub use window_lifecycle::*;
 
 pub mod ffmpeg_dependency;
-pub use ffmpeg_dependency::*;
 
 pub mod rapid_ocr_commands;
 pub use rapid_ocr_commands::*;
@@ -47,7 +44,7 @@ use screenshots::Screen;
 use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, BufReader, Cursor, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{ChildStdin, ChildStdout, Command};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

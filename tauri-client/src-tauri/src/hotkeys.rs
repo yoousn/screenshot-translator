@@ -1,5 +1,4 @@
 use crate::*;
-use std::path::{Path, PathBuf};
 use std::fs;
 
 pub struct AppShortcutStatus(pub std::sync::Mutex<Result<(), String>>);

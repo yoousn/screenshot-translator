@@ -1,5 +1,5 @@
 use crate::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::fs;
 
 pub static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
