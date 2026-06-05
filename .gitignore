@@ -46,6 +46,8 @@ server/*.png
 
 # Windows Client Executables & Rust Build target
 /tauri-client.exe
+/YsnTrans.exe
+*.pdb
 /tauri-client/src-tauri/target/
 
 # Local OCR Client Binaries & DLLs & Models (Windows client bundle)

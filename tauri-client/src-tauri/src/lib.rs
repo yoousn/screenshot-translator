@@ -1223,6 +1223,14 @@ async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn force_close_recording_controls(app: tauri::AppHandle) -> Result<(), String> {
     hide_recording_overlay_internal();
     let mut recording_windows: Vec<tauri::WebviewWindow> = Vec::new();
@@ -4510,6 +4518,7 @@ pub fn run() {
             scroll_mouse_at,
             cancel_screenshot,
             force_close_screenshots,
+            hide_main_window,
             force_close_recording_controls,
             get_window_rects,
             get_text_source_snapshot,
@@ -4662,6 +4671,11 @@ pub fn run() {
                 // - 不主动 hide() 任何其他窗口，仅在窗口被销毁时同步关闭态。
                 if let tauri::WindowEvent::Destroyed = event {
                     CAPTURING.store(false, Ordering::SeqCst);
+                    // 防御：recording_control 销毁后立即 hide main，防止 Windows 焦点回退
+                    let app_handle = window.app_handle();
+                    if let Some(main) = app_handle.get_webview_window("main") {
+                        let _ = main.hide();
+                    }
                 }
             } else if label == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {

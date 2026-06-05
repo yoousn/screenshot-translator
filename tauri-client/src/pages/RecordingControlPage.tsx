@@ -53,7 +53,9 @@ const setRecordingCaptureShield = async (excluded: boolean) => {
 
 function RecordingControlContent() {
   const winRef = useRef(getCurrentWindow());
+  const winLabel = winRef.current.label;
   const allowCloseRef = useRef(false);
+  const closingRef = useRef(false);
   const sessionRef = useRef<RecordingWindowPayload | null>(null);
   const segmentsRef = useRef<string[]>([]);
   const activeStartedAtRef = useRef<number | null>(null);
@@ -85,10 +87,6 @@ function RecordingControlContent() {
     cancelledRef.current = true;
     allowCloseRef.current = true;
     await setRecordingCaptureShield(false);
-    if (sessionRef.current?.restoreMainWindow) {
-      const main = await WebviewWindow.getByLabel("main").catch(() => null);
-      await main?.show().catch(() => {});
-    }
     await Promise.all([
       withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
       withTimeout(closeWindowIfExists("recording_notice"), 150),
@@ -220,23 +218,32 @@ function RecordingControlContent() {
   };
 
   const cancelRecording = async () => {
+    if (closingRef.current) return;
     if (statusRef.current === "saved") {
       await closeOverlay();
       return;
     }
-    if (cancelledRef.current) return;
+    closingRef.current = true;
     cancelledRef.current = true;
+    allowCloseRef.current = true;
     setOverlayBusy(true);
     setOverlayStatus("saving");
     try {
-      await dismissOverlay(true);
-      await stopActiveSegment(true);
+      await setRecordingCaptureShield(false);
+      await Promise.all([
+        withTimeout(winRef.current.hide().catch(() => {}), 150),
+        withTimeout(invoke("hide_recording_overlay").catch(() => {}), 150),
+        withTimeout(closeWindowIfExists("recording_notice"), 150),
+        withTimeout(emit("recording-ended").catch(() => {}), 150),
+      ]);
+      await withTimeout(stopActiveSegment(true), 800);
       const segments = [...segmentsRef.current];
       if (segments.length > 0) await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       segmentsRef.current = [];
-      await withTimeout(winRef.current.close().catch(() => {}), 300);
     } finally {
       setOverlayBusy(false);
+      await withTimeout(winRef.current.close().catch(() => {}), 300);
+      await withTimeout(invoke("hide_main_window").catch(() => {}), 300);
     }
   };
 
@@ -282,6 +289,12 @@ function RecordingControlContent() {
   };
 
   useEffect(() => {
+    // Guard: RecordingControlPage must only render in windows whose label starts with "recording_control_"
+    if (!winLabel.startsWith("recording_control_")) {
+      invoke("hide_main_window").catch(() => {});
+      winRef.current.close().catch(() => {});
+      return;
+    }
     let unlistenSession: (() => void) | null = null;
     let unlistenClose: (() => void) | null = null;
     listen<RecordingWindowPayload>("recording-overlay-session", (event) => {
@@ -306,7 +319,7 @@ function RecordingControlContent() {
       .catch(() => {});
 
     winRef.current.onCloseRequested((event) => {
-      if (allowCloseRef.current) return;
+      if (allowCloseRef.current || closingRef.current) return;
       event.preventDefault();
       cancelRecording();
     }).then((unsub) => { unlistenClose = unsub; });

@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 import ScreenshotPage from "./pages/ScreenshotPage";
 import PinPage from "./pages/PinPage";
@@ -19,6 +20,18 @@ const resolveWindowLabel = () => {
 };
 
 const label = resolveWindowLabel();
+
+// Guard: if main window is loaded with recording parameters (routing error),
+// render nothing and force hide to prevent white-screen control panel on main.
+if (label === "main") {
+  const search = window.location.search;
+  if (search.includes("recordingSessionKey") || search.includes("recording_control")) {
+    invoke("hide_main_window").catch(() => {});
+    // Throw a bare string to stop execution — this is a fatal misroute.
+    // The window should remain invisible and the error is caught by the browser.
+    throw new Error("FATAL: recording route loaded in main window, aborting render");
+  }
+}
 
 // Set transparent background BEFORE React renders for screenshot windows
 if (label === "screenshot" || label.startsWith("recording_control") || label === "recording_notice") {
