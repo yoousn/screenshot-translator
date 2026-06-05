@@ -140,3 +140,149 @@ pub fn collect_text_elements(
 ) -> Result<Vec<TextSourceElement>, String> {
     Ok(Vec::new())
 }
+
+use std::sync::{Mutex, OnceLock};
+
+static TEXT_SOURCE_SNAPSHOT: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+
+fn get_text_source_snapshot_state() -> &'static Mutex<Option<serde_json::Value>> {
+    TEXT_SOURCE_SNAPSHOT.get_or_init(|| Mutex::new(None))
+}
+
+pub fn set_text_source_snapshot(value: serde_json::Value) {
+    if let Ok(mut guard) = get_text_source_snapshot_state().lock() {
+        *guard = Some(value);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn start_text_source_snapshot_capture(app: &tauri::AppHandle) {
+    use crate::win32;
+    use crate::window_targets::{excluded_app_hwnds, current_screen_origin, hwnd_rect, window_title, process_path_for_hwnd, exe_name_from_path};
+    use std::time::Instant;
+
+    let hwnd = unsafe { win32::GetForegroundWindow() };
+    if hwnd == 0 || excluded_app_hwnds(app).contains(&hwnd) {
+        set_text_source_snapshot(serde_json::json!({
+            "status": "empty",
+            "reason": "no-eligible-foreground-window",
+            "capturedAt": chrono::Local::now().to_rfc3339(),
+            "elements": [],
+        }));
+        return;
+    }
+
+    let screen = current_screen_origin();
+    let rect = hwnd_rect(hwnd, true);
+    let title = window_title(hwnd);
+    let process_path = process_path_for_hwnd(hwnd);
+    let exe_name = exe_name_from_path(process_path.as_ref());
+    let process_path_text = process_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let captured_at = chrono::Local::now().to_rfc3339();
+    set_text_source_snapshot(serde_json::json!({
+        "status": "pending",
+        "capturedAt": captured_at,
+        "window": {
+            "hwnd": hwnd.to_string(),
+            "title": title,
+            "exeName": exe_name,
+            "processPath": process_path_text,
+            "rect": rect.map(|value| serde_json::json!({
+                "x": value.left,
+                "y": value.top,
+                "w": value.right - value.left,
+                "h": value.bottom - value.top,
+            })),
+        },
+        "screen": {
+            "x": screen.0,
+            "y": screen.1,
+            "w": screen.2,
+            "h": screen.3,
+        },
+        "elements": [],
+    }));
+
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let result = collect_text_elements(hwnd, 240, 90);
+        match result {
+            Ok(elements) => {
+                set_text_source_snapshot(serde_json::json!({
+                    "status": "success",
+                    "capturedAt": captured_at,
+                    "window": {
+                        "hwnd": hwnd.to_string(),
+                        "title": title,
+                        "exeName": exe_name,
+                        "processPath": process_path_text,
+                        "rect": rect.map(|value| serde_json::json!({
+                            "x": value.left,
+                            "y": value.top,
+                            "w": value.right - value.left,
+                            "h": value.bottom - value.top,
+                        })),
+                    },
+                    "screen": {
+                        "x": screen.0,
+                        "y": screen.1,
+                        "w": screen.2,
+                        "h": screen.3,
+                    },
+                    "timings": {
+                        "totalMs": started.elapsed().as_millis(),
+                    },
+                    "elements": elements,
+                }));
+            }
+            Err(error) => {
+                set_text_source_snapshot(serde_json::json!({
+                    "status": "failed",
+                    "capturedAt": captured_at,
+                    "error": error,
+                    "window": {
+                        "hwnd": hwnd.to_string(),
+                        "title": title,
+                        "exeName": exe_name,
+                        "processPath": process_path_text,
+                    },
+                    "screen": {
+                        "x": screen.0,
+                        "y": screen.1,
+                        "w": screen.2,
+                        "h": screen.3,
+                    },
+                    "timings": {
+                        "totalMs": started.elapsed().as_millis(),
+                    },
+                    "elements": [],
+                }));
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn start_text_source_snapshot_capture(_app: &tauri::AppHandle) {
+    set_text_source_snapshot(serde_json::json!({
+        "status": "unsupported",
+        "capturedAt": chrono::Local::now().to_rfc3339(),
+        "elements": [],
+    }));
+}
+
+#[tauri::command]
+pub fn get_text_source_snapshot() -> Result<serde_json::Value, String> {
+    Ok(get_text_source_snapshot_state()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "status": "empty",
+                "elements": [],
+            })
+        }))
+}
