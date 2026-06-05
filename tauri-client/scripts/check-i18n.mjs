@@ -1,10 +1,8 @@
-﻿import { readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dictionaryPath = resolve(root, "src/i18n/dictionaries.ts");
-const source = readFileSync(dictionaryPath, "utf8");
 
 const LANGUAGES = ["zh-CN", "en-US"];
 const DAMAGED_PATTERNS = [
@@ -20,13 +18,15 @@ const fail = (message) => {
 };
 
 const findLanguageBlock = (language) => {
-  const marker = `  "${language}": {`;
-  const start = source.indexOf(marker);
-  if (start < 0) throw new Error(`Missing dictionary language block: ${language}`);
+  const filename = resolve(root, `src/i18n/${language}.ts`);
+  const content = readFileSync(filename, "utf8");
+  const marker = " = {";
+  const start = content.indexOf(marker);
+  if (start < 0) throw new Error(`Missing dictionary language block in: ${filename}`);
   let depth = 0;
   let end = -1;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
+  for (let index = start + marker.length - 1; index < content.length; index += 1) {
+    const char = content[index];
     if (char === "{") depth += 1;
     if (char === "}") {
       depth -= 1;
@@ -36,8 +36,8 @@ const findLanguageBlock = (language) => {
       }
     }
   }
-  if (end < 0) throw new Error(`Unclosed dictionary language block: ${language}`);
-  return source.slice(start, end);
+  if (end < 0) throw new Error(`Unclosed dictionary language block in: ${filename}`);
+  return content.slice(start + marker.length - 1, end);
 };
 
 const parseLanguage = (language) => {
