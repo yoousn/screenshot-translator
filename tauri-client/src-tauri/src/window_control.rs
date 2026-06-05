@@ -174,10 +174,17 @@ pub async fn force_close_recording_controls(app: tauri::AppHandle, source: Optio
     }
 
     // 2. force_close_recording_controls 执行后 100ms 诊断
+    // 录制控制条等被拥有的窗口在 close() 时，Windows 会把焦点/激活回交给 owner（main），
+    // 可能导致 main 在关闭后被重新激活并显示出白色窗口。
+    // 由于关闭是延迟 50ms 执行的，这里在窗口确实销毁之后再补一次隐藏 main，消除残留白窗。
     let app_clone = app.clone();
     let source_str_clone = source_str.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Some(main) = app_clone.get_webview_window("main") {
+            println!("[window-trace] source=command-force_close_recording_controls action=hide-main-after-close label=main");
+            let _ = main.hide();
+        }
         dump_all_windows_state_internal(&app_clone, format!("force_close_recording_controls-after-100ms({})", source_str_clone));
     });
 
