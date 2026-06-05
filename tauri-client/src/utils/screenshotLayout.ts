@@ -45,3 +45,7 @@ export const getActionToolbarStyle = ({
     whiteSpace: "normal",
   };
 };
+
+export const FLOATING_PANEL_MARGIN = 8;
+export const FLOATING_PANEL_GAP = 8;
+export const OCR_WINDOW_SIZE = { width: 500, height: 400 };

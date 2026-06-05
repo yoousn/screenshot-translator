@@ -1,5 +1,4 @@
 use std::time::Duration;
-use crate::set_webview_capture_excluded;
 use tauri::Manager;
 #[cfg(target_os = "windows")]
 use crate::win32;
@@ -101,12 +100,12 @@ pub fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
             let is_visible = window.is_visible().unwrap_or(false);
             println!("[screenshot-trace] close_screenshot_windows: hiding screenshot window (visible={})", is_visible);
             let _ = window.set_always_on_top(false);
-            let _ = window.hide();
+            robust_hide_window(&window);
         } else if label.starts_with("screenshot_") {
             let is_visible = window.is_visible().unwrap_or(false);
             println!("[screenshot-trace] close_screenshot_windows: hiding and closing secondary screenshot window {}, visible={}", label, is_visible);
             let _ = window.set_always_on_top(false);
-            let _ = window.hide();
+            robust_hide_window(&window);
             let win_clone = window.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -132,7 +131,7 @@ pub async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>)
 pub async fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(main) = app.get_webview_window("main") {
         println!("[window-trace] source=command-hide_main_window action=hide-main label=main");
-        let _ = main.hide();
+        robust_hide_window(&main);
     }
     Ok(())
 }
@@ -146,7 +145,7 @@ pub async fn force_close_recording_controls(app: tauri::AppHandle, source: Optio
 
     if let Some(main) = app.get_webview_window("main") {
         println!("[window-trace] source=command-force_close_recording_controls action=hide-main label=main");
-        let _ = main.hide();
+        robust_hide_window(&main);
     }
     hide_recording_overlay_internal();
     let mut recording_windows: Vec<tauri::WebviewWindow> = Vec::new();
@@ -164,7 +163,7 @@ pub async fn force_close_recording_controls(app: tauri::AppHandle, source: Optio
     for window in recording_windows {
         println!("[window-trace] action=close label={}", window.label());
         let _ = window.set_always_on_top(false);
-        let _ = window.hide();
+        robust_hide_window(&window);
         // Delay closing to prevent the transparent window from flashing white on Windows
         let win_clone = window.clone();
         tauri::async_runtime::spawn(async move {
@@ -183,7 +182,7 @@ pub async fn force_close_recording_controls(app: tauri::AppHandle, source: Optio
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Some(main) = app_clone.get_webview_window("main") {
             println!("[window-trace] source=command-force_close_recording_controls action=hide-main-after-close label=main");
-            let _ = main.hide();
+            robust_hide_window(&main);
         }
         dump_all_windows_state_internal(&app_clone, format!("force_close_recording_controls-after-100ms({})", source_str_clone));
     });
@@ -324,3 +323,112 @@ pub async fn dump_all_windows_state(app: tauri::AppHandle, source: String) -> Re
     Ok(dump_all_windows_state_internal(&app, source))
 }
 
+
+
+pub fn set_webview_capture_excluded(
+    app: &tauri::AppHandle,
+    label: &str,
+    excluded: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let window = app
+            .get_webview_window(label)
+            .ok_or_else(|| format!("window not found: {}", label))?;
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        set_hwnd_capture_excluded(hwnd, excluded)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, label, excluded);
+        Ok(())
+    }
+}
+
+/// Hide all non-overlay application windows (main, screenshot, screenshot_*) to prevent
+/// Windows OS focus-fallback from activating any of them when a recording overlay closes.
+pub fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
+    for (lbl, win) in app.webview_windows() {
+        // 只 hide main 和 screenshot 系列窗口，不 hide 正在关闭中的 recording_control 自身
+        if lbl == "main" || lbl == "screenshot" || lbl.starts_with("screenshot_") {
+            let is_visible = win.is_visible().unwrap_or(false);
+            if is_visible {
+                println!("[window-trace] source=hide_all_app_windows action=hide label={} trigger={}", lbl, trigger);
+                let _ = win.hide();
+            }
+        }
+    }
+}
+
+
+pub fn robust_hide_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
+    let _ = window.hide();
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            win32::ShowWindow(hwnd.0 as isize, 0); // SW_HIDE
+        }
+    }
+}
+
+
+pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    let label = window.label();
+    if label == "screenshot" {
+        match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                let _ = window.set_always_on_top(false);
+                let _ = window.hide();
+                #[cfg(target_os = "windows")]
+                if let Ok(hwnd) = window.hwnd() {
+                    unsafe { crate::win32::ShowWindow(hwnd.0 as isize, 0); }
+                }
+                crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
+                api.prevent_close();
+            }
+            tauri::WindowEvent::Destroyed => {
+                crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    } else if label.starts_with("screenshot_") {
+        if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
+            crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    } else if label == "recording_border" || label.starts_with("recording_border_") {
+        if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
+            let _ = window.set_always_on_top(false);
+        }
+    } else if label == "recording_notice" || label.starts_with("recording_control") {
+        match &event {
+            tauri::WindowEvent::CloseRequested { .. } => {
+                println!("[window-trace] source=window-event action=event label={} event=CloseRequested", label);
+                let app_handle = window.app_handle().clone();
+                hide_all_app_windows(&app_handle, label);
+            }
+            tauri::WindowEvent::Destroyed => {
+                println!("[window-trace] source=window-event action=destroyed label={} event=Destroyed", label);
+                crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
+                let app_handle = window.app_handle().clone();
+                hide_all_app_windows(&app_handle, label);
+                let app_handle2 = app_handle.clone();
+                let label_owned = label.to_string();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    hide_all_app_windows(&app_handle2, &label_owned);
+                    dump_all_windows_state_internal(&app_handle2, format!("recording_control-Destroyed-after-100ms({})", label_owned));
+                });
+            }
+            _ => {}
+        }
+    } else if label == "main" {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            let _ = window.hide();
+            #[cfg(target_os = "windows")]
+            if let Ok(hwnd) = window.hwnd() {
+                unsafe { crate::win32::ShowWindow(hwnd.0 as isize, 0); }
+            }
+            api.prevent_close();
+        }
+    }
+}

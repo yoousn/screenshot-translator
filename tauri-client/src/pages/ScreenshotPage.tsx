@@ -6,11 +6,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import ScreenshotToolbar from "../components/screenshot/ScreenshotToolbar";
 import TextAnnotationEditor from "../components/screenshot/TextAnnotationEditor";
 import TranslationLoadingOverlay from "../components/screenshot/TranslationLoadingOverlay";
+import type { Config } from "../types/config";
 import type { Annotation, AnnotationTool, EditingTextDraft, OcrBlock, Point, Rect, TranslatePair } from "../types/screenshot";
+import { useScreenshotOcr } from "../hooks/useScreenshotOcr";
+import { useScreenshotAnnotation, DEFAULT_ANNOTATION_COLOR, DEFAULT_ANNOTATION_TOOL, DEFAULT_ANNOTATION_SIZES } from "../hooks/useScreenshotAnnotation";
 import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, makeTextAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
 import { cropSelectionFromLoadedImage, getPhysicalSelection, loadPngImage, renderEditedSelectionBase64 } from "../utils/screenshotImage";
 import { openOcrResultWindow } from "../utils/ocrResultWindow";
-import { getActionToolbarStyle } from "../utils/screenshotLayout";
+import { getActionToolbarStyle, FLOATING_PANEL_MARGIN, FLOATING_PANEL_GAP, OCR_WINDOW_SIZE } from "../utils/screenshotLayout";
 import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { renderTranslatedBlocks } from "../utils/translatedBlocks";
 import { openPinWindow } from "../utils/pinWindows";
@@ -22,33 +25,9 @@ import { buildTextSourceBlocksForPhysicalSelection } from "../utils/textSourceSe
 import { buildOcrNormalizationReport } from "../ocr-processing";
 import RecordingTargetPicker from "../components/recording/RecordingTargetPicker";
 
-interface Config {
-  serverUrl?: string;
-  lanServerUrl?: string;
-  preferLanServer?: boolean;
-  clientToken?: string;
-  useLocalOcr?: boolean;
-  fallbackToRemoteOcr?: boolean;
-  localOcrTimeoutMs?: number;
-  translationTimeoutMs?: number;
-  rapidOcrWorkerEnabled?: boolean;
-  targetLang?: string;
-  channel?: string;
-  enableUiControlDetection?: boolean;
-  enableVisualDetection?: boolean;
-  detectionBorderWidth?: number;
-  toolbarButtonGap?: number;
-  visualDetectionSensitivity?: number;
-}
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
 const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 680, height: 86 };
-const OCR_WINDOW_SIZE = { width: 460, height: 360 };
-const FLOATING_PANEL_MARGIN = 8;
-const FLOATING_PANEL_GAP = 8;
-const DEFAULT_ANNOTATION_COLOR = "#ff4d4f";
-const DEFAULT_ANNOTATION_TOOL: AnnotationTool = "rect";
-const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circle: 4, mosaic: 16, arrow: 4, text: 4, brush: 4 };
 const RECORDING_BORDER_COLOR = "#ef4444";
 const RECORDING_READY_BORDER_COLOR = "#2563eb";
 const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
@@ -233,8 +212,6 @@ export default function ScreenshotPage() {
   const [hoverRect, setHoverRect] = useState<Rect | null>(null);
   const [hoverCandidates, setHoverCandidates] = useState<Rect[]>([]);
   const [screenshotMode, setScreenshotMode] = useState("normal");
-  const [isTranslating, setIsTranslating] = useState(false);
-  const [isOCRing, setIsOCRing] = useState(false);
   const [isScrollCapturing, setIsScrollCapturing] = useState(false);
   const [scrollCaptureMode, setScrollCaptureMode] = useState<ScrollCaptureMode>("idle");
   const [scrollPreviewBase64, setScrollPreviewBase64] = useState("");
@@ -253,25 +230,32 @@ export default function ScreenshotPage() {
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [config, setConfig] = useState<Config>({});
-  const [translatedResult, setTranslatedResult] = useState<string | null>(null);
-  const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
-  const [translateResultPreviewBase64, setTranslateResultPreviewBase64] = useState("");
   const [isEditing, setIsEditing] = useState(false);
-  const [annotationTool, setAnnotationToolState] = useState<AnnotationTool | null>(null);
-  const [annotationColor, setAnnotationColor] = useState(DEFAULT_ANNOTATION_COLOR);
-  const [annotationSize, setAnnotationSizeState] = useState(DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL]);
-  const [selectedAnnotationIndex, setSelectedAnnotationIndex] = useState<number | null>(null);
-  const [editingTextDraft, setEditingTextDraft] = useState<EditingTextDraft>(null);
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [annotationHistory, setAnnotationHistory] = useState<Annotation[][]>([]);
-  const [redoAnnotations, setRedoAnnotations] = useState<Annotation[][]>([]);
-  const [draftAnnotation, setDraftAnnotation] = useState<Annotation | null>(null);
+  const {
+    annotationTool, setAnnotationTool,
+    annotationColor, setAnnotationColor,
+    annotationSize, setAnnotationSize: setAnnotationSizeState,
+    selectedAnnotationIndex, setSelectedAnnotationIndex,
+    editingTextDraft, setEditingTextDraft,
+    annotations, setAnnotations,
+    annotationHistory, setAnnotationHistory,
+    redoAnnotations, setRedoAnnotations,
+    draftAnnotation, setAnnotationDraft,
+
+    annotationToolRef, annotationColorRef, annotationSizeRef, annotationSizesRef,
+    selectedAnnotationIndexRef, annotationsRef, annotationHistoryRef, redoAnnotationsRef,
+    draftAnnotationRef, editingTextDraftRef,
+
+    pushAnnotationHistory, undoAnnotation, redoAnnotation, commitAnnotation,
+    cancelTextDraft, commitTextDraft, deleteSelectedAnnotation, applyAnnotations,
+    replaceAnnotations, resetAnnotations
+  } = useScreenshotAnnotation(() => {
+    renderNeededRef.current = true;
+  });
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const [overlayVisible, setOverlayVisible] = useState(false);
   const overlayVisibleRef = useRef(false);
-  const isTranslatingRef = useRef(false);
-  const isOCRingRef = useRef(false);
   const isScrollCapturingRef = useRef(false);
   const scrollCaptureModeRef = useRef<ScrollCaptureMode>("idle");
   const recordingPickerModeRef = useRef<"window" | "display" | null>(null);
@@ -286,7 +270,6 @@ export default function ScreenshotPage() {
   const selectionDragDistanceRef = useRef(0);
   const pendingConfirmTimerRef = useRef<number | null>(null);
   const textSourceSnapshotPromiseRef = useRef<Promise<TextSourceSnapshot | null> | null>(null);
-  const ocrPrewarmPromiseRef = useRef<Promise<unknown> | null>(null);
   const isScrollFramePendingRef = useRef(false);
   const recordingStatusRef = useRef<RecordingStatus>("idle");
   const recordingSegmentsRef = useRef<string[]>([]);
@@ -305,18 +288,8 @@ export default function ScreenshotPage() {
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const pendingDetectionRef = useRef<Rect | null>(null);
   const analysisImageDataRef = useRef<ImageData | null>(null);
-  const annotationsRef = useRef<Annotation[]>([]);
-  const annotationHistoryRef = useRef<Annotation[][]>([]);
-  const redoAnnotationsRef = useRef<Annotation[][]>([]);
-  const draftAnnotationRef = useRef<Annotation | null>(null);
   const annotationDragSnapshotRef = useRef<Annotation[] | null>(null);
   const isEditingRef = useRef(false);
-  const annotationToolRef = useRef<AnnotationTool>(DEFAULT_ANNOTATION_TOOL);
-  const annotationColorRef = useRef(DEFAULT_ANNOTATION_COLOR);
-  const annotationSizeRef = useRef(DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL]);
-  const annotationSizesRef = useRef<Record<AnnotationTool, number>>({ ...DEFAULT_ANNOTATION_SIZES });
-  const selectedAnnotationIndexRef = useRef<number | null>(null);
-  const editingTextDraftRef = useRef<EditingTextDraft>(null);
   const isDrawingAnnotationRef = useRef(false);
   const isDraggingAnnotationRef = useRef(false);
   const isResizingAnnotationRef = useRef(false);
@@ -355,10 +328,9 @@ export default function ScreenshotPage() {
     textSourceSnapshotPromiseRef.current = null;
     setTranslatedResult(null);
     setTranslatePairs(null);
-    setTranslateResultPreviewBase64("");
     setIsEditing(false);
     annotationSizesRef.current = { ...DEFAULT_ANNOTATION_SIZES };
-    setAnnotationToolState(null);
+    setAnnotationTool(null);
     setAnnotationColor(DEFAULT_ANNOTATION_COLOR);
     setAnnotationSizeState(DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL]);
     annotationToolRef.current = DEFAULT_ANNOTATION_TOOL;
@@ -368,7 +340,7 @@ export default function ScreenshotPage() {
     setRedoAnnotations([]);
     setSelectedAnnotationIndex(null);
     setEditingTextDraft(null);
-    setDraftAnnotation(null);
+    setAnnotationDraft(null);
     if (scrollTimerRef.current) {
       window.clearInterval(scrollTimerRef.current);
       scrollTimerRef.current = null;
@@ -418,6 +390,31 @@ export default function ScreenshotPage() {
   const hasSelectedRef = useRef(false);
   const rectRef = useRef<Rect>(EMPTY_RECT);
   const configRef = useRef<Config>({});
+
+  const {
+    isOCRing,
+    isTranslating,
+    translatePairs,
+    translatedResult,
+    translateResultPreviewBase64,
+    prewarmLocalOcrWorker,
+    handleOCR,
+    handleTranslate,
+    handleShowTranslateResult,
+    resetOcrState,
+    isOCRingRef,
+    isTranslatingRef,
+    setTranslatedResult,
+    setTranslatePairs,
+  } = useScreenshotOcr({
+    config: configRef.current,
+    rectRef,
+    captureRegionBase64: () => captureRegionBase64(),
+    resetScreenshotState: () => resetScreenshotState(),
+    draw,
+    translatedImgRef,
+    getTextSourceBlocksForCurrentSelection: (...args: any[]) => getTextSourceBlocksForCurrentSelection(...args),
+  });
   const windowRectsRef = useRef<Rect[]>([]);
   const screenshotModeRef = useRef("normal");
   const isSelectingRef = useRef(false);
@@ -495,16 +492,11 @@ export default function ScreenshotPage() {
     setHoverCandidate(candidates[nextIndex] || null);
   };
 
-  const setAnnotationDraft = (annotation: Annotation | null) => {
-    draftAnnotationRef.current = annotation;
-    setDraftAnnotation(annotation);
-  };
-
   const selectAnnotationTool = (tool: AnnotationTool) => {
     const toolSize = annotationSizesRef.current[tool] ?? DEFAULT_ANNOTATION_SIZES[tool];
     annotationToolRef.current = tool;
     annotationSizeRef.current = toolSize;
-    setAnnotationToolState(tool);
+    setAnnotationTool(tool);
     setAnnotationSizeState(toolSize);
   };
 
@@ -517,74 +509,12 @@ export default function ScreenshotPage() {
 
   const selectMoveTool = () => {
     setIsEditing(false);
-    setAnnotationToolState(null);
+    setAnnotationTool(null);
     selectedAnnotationIndexRef.current = null;
     setSelectedAnnotationIndex(null);
     setEditingTextDraft(null);
     setAnnotationDraft(null);
     renderNeededRef.current = true;
-  };
-
-  const applyAnnotations = (next: Annotation[]) => {
-    annotationsRef.current = next;
-    setAnnotations(next);
-    renderNeededRef.current = true;
-  };
-
-  const pushAnnotationHistory = (snapshot = annotationsRef.current) => {
-    const nextHistory = [...annotationHistoryRef.current, snapshot];
-    annotationHistoryRef.current = nextHistory;
-    redoAnnotationsRef.current = [];
-    setAnnotationHistory(nextHistory);
-    setRedoAnnotations([]);
-  };
-
-  const commitAnnotation = (annotation: Annotation) => {
-    pushAnnotationHistory();
-    const next = [...annotationsRef.current, annotation];
-    applyAnnotations(next);
-  };
-
-  const replaceAnnotations = (next: Annotation[]) => {
-    pushAnnotationHistory();
-    applyAnnotations(next);
-  };
-
-  const deleteSelectedAnnotation = () => {
-    const selectedIndex = selectedAnnotationIndexRef.current;
-    if (selectedIndex === null) return;
-    const current = annotationsRef.current;
-    if (!current[selectedIndex]) return;
-    replaceAnnotations(current.filter((_, index) => index !== selectedIndex));
-    setSelectedAnnotationIndex(null);
-  };
-
-  const undoAnnotation = () => {
-    const history = annotationHistoryRef.current;
-    if (history.length === 0) return;
-    const next = history[history.length - 1];
-    const historyNext = history.slice(0, -1);
-    const redoNext = [...redoAnnotationsRef.current, annotationsRef.current];
-    annotationHistoryRef.current = historyNext;
-    redoAnnotationsRef.current = redoNext;
-    setAnnotationHistory(historyNext);
-    setRedoAnnotations(redoNext);
-    applyAnnotations(next);
-    setSelectedAnnotationIndex(null);
-  };
-
-  const redoAnnotation = () => {
-    const redo = redoAnnotationsRef.current;
-    if (redo.length === 0) return;
-    const restored = redo[redo.length - 1];
-    const historyNext = [...annotationHistoryRef.current, annotationsRef.current];
-    const redoNext = redo.slice(0, -1);
-    annotationHistoryRef.current = historyNext;
-    redoAnnotationsRef.current = redoNext;
-    setAnnotationHistory(historyNext);
-    setRedoAnnotations(redoNext);
-    applyAnnotations(restored);
-    setSelectedAnnotationIndex(null);
   };
 
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -619,30 +549,6 @@ export default function ScreenshotPage() {
     return promise;
   };
 
-  const prewarmLocalOcrWorker = (reason: string) => {
-    if (configRef.current.rapidOcrWorkerEnabled === false) return null;
-    if (ocrPrewarmPromiseRef.current) return ocrPrewarmPromiseRef.current;
-
-    const promise = invoke("prewarm_local_ocr_models")
-      .then((result) => {
-        console.info("[RapidOCR Worker Prewarm]", reason, result);
-        return result;
-      })
-      .catch((error) => {
-        console.warn("[RapidOCR Worker Prewarm] failed", reason, error);
-        return null;
-      })
-      .finally(() => {
-        window.setTimeout(() => {
-          if (ocrPrewarmPromiseRef.current === promise) {
-            ocrPrewarmPromiseRef.current = null;
-          }
-        }, 5000);
-      });
-    ocrPrewarmPromiseRef.current = promise;
-    return promise;
-  };
-
   const buildTextSourceBlocksForSelection = (snapshot: TextSourceSnapshot | null, selection: Rect) => {
     if (!snapshot || snapshot.status !== "success" || !snapshot.screen || !snapshot.elements?.length) {
       return buildTextSourceBlocksForPhysicalSelection([], undefined, { x: 0, y: 0, w: 0, h: 0 });
@@ -651,7 +557,7 @@ export default function ScreenshotPage() {
     try {
       physicalSelection = getPhysicalSelection({
         canvas: canvasRef.current,
-        image: imageRef.current,
+        image: imageRef.current as any,
         rect: selection,
       });
     } catch {
@@ -1278,31 +1184,6 @@ export default function ScreenshotPage() {
     setEditingTextDraft({ x, y, value, targetIndex });
   };
 
-  const commitTextDraft = () => {
-    const draft = editingTextDraftRef.current;
-    if (!draft) return;
-    const value = draft.value.trim();
-    if (!value) {
-      setEditingTextDraft(null);
-      return;
-    }
-    if (draft.targetIndex !== null) {
-      const current = annotationsRef.current[draft.targetIndex];
-      if (current) {
-        const next = [...annotationsRef.current];
-        const fontSize = current.size || Math.max(14, annotationSizeRef.current + 14);
-        next[draft.targetIndex] = { ...current, text: value, rect: { ...current.rect, w: Math.max(48, value.length * fontSize * 0.72 + 12), h: fontSize + 8 } };
-        replaceAnnotations(next);
-      }
-    } else {
-      commitAnnotation(makeTextAnnotation({ x: draft.x + 90, y: draft.y + 17 }, value, annotationColorRef.current, annotationSizeRef.current));
-    }
-    setEditingTextDraft(null);
-    renderNeededRef.current = true;
-  };
-
-  const cancelTextDraft = () => setEditingTextDraft(null);
-
   const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!overlayVisibleRef.current) return;
     focusScreenshotWindow();
@@ -1629,18 +1510,18 @@ export default function ScreenshotPage() {
     annotationResizeHandleRef.current = null;
   };
 
-  function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement) {
+  function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement | HTMLCanvasElement | null) {
     renderScreenshotCanvas({
       canvas: canvasRef.current,
-      image: imageRef.current,
+      image: imageRef.current as any,
       maskedCanvas: maskedCanvasRef.current,
       hoverRect: hoverRectRef.current,
       hoverCandidatesCount: hoverCandidatesRef.current.length,
       hoverCandidateIndex: hoverCandidateIndexRef.current,
       hasSelected: hasSelectedRef.current,
       selection: { x: rx, y: ry, w: rw, h: rh },
-      translatedImg: translatedImgRef.current,
-      overrideTranslatedImg: translatedImg,
+      translatedImg: translatedImgRef.current as any,
+      overrideTranslatedImg: translatedImg as any,
       annotations: annotationsRef.current,
       draftAnnotation: draftAnnotationRef.current,
       selectedAnnotationIndex: selectedAnnotationIndexRef.current,
@@ -1653,7 +1534,7 @@ export default function ScreenshotPage() {
 
   const getCurrentPhysicalSelection = () => getPhysicalSelection({
     canvas: canvasRef.current,
-    image: imageRef.current,
+    image: imageRef.current as any,
     rect: rectRef.current,
   });
 
@@ -1688,7 +1569,7 @@ export default function ScreenshotPage() {
 
   const cropCurrentSelectionFromLoadedImage = () => cropSelectionFromLoadedImage({
     canvas: canvasRef.current,
-    image: imageRef.current,
+    image: imageRef.current as any,
     rect: rectRef.current,
   });
 
@@ -1705,7 +1586,7 @@ export default function ScreenshotPage() {
 
   const renderCurrentEditedSelectionBase64 = async () => renderEditedSelectionBase64({
     canvas: canvasRef.current,
-    image: imageRef.current,
+    image: imageRef.current as any,
     rect: rectRef.current,
     translatedResult,
     annotations: annotationsRef.current,
@@ -1751,206 +1632,6 @@ export default function ScreenshotPage() {
     } catch (error) {
       console.error("Failed to create pin window", error);
       message.error("钉图失败");
-    }
-  };
-
-  
-
-  const normalizeScreenshotTranslateError = (error: any) => {
-    const raw = error?.message || error?.toString?.() || String(error || "");
-    if (/\u672a\u8bc6\u522b\u5230\u6587\u5b57|did not recognize text|recognized no text|no text/i.test(raw)) {
-      return "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
-    }
-    return raw
-      .replace(/YSN OCR Runtime/gi, "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1")
-      .replace(/PP-OCRv5\s*ONNX\s*OCR/gi, "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1")
-      .replace(/PP-OCRv5/gi, "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1")
-      .replace(/ONNX/gi, "\u672c\u5730\u6a21\u578b")
-      .trim() || "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u6846\u9009\u6587\u5b57\u533a\u57df\u540e\u518d\u8bd5\u3002";
-  };
-
-
-  const handleTranslate = async () => {
-    if (isTranslatingRef.current || isOCRingRef.current) return;
-    const startTime = performance.now();
-    let base64 = "";
-    prewarmLocalOcrWorker("translate-action");
-    prewarmTranslationServices(configRef.current, { reason: "translate-action" })
-      .catch((error) => {
-        console.warn("[Translation Service Prewarm] failed", error);
-        return null;
-      });
-    try {
-      setIsTranslating(true);
-      message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u5e76\u7ffb\u8bd1...", key: "translate", duration: 0 });
-      const captureStarted = performance.now();
-      base64 = await captureRegionBase64();
-      const captureMs = Math.round(performance.now() - captureStarted);
-
-      let resultBase64 = "";
-      let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
-      let blocksCount = 1;
-      let translationQuality: Awaited<ReturnType<typeof translateWithLocalOcr>>["translationQuality"] | null = null;
-      try {
-        const localFlowStarted = performance.now();
-        const textSource = await getTextSourceBlocksForCurrentSelection(80);
-        const result = textSource.usable
-          ? await translateOcrBlocks(base64, textSource.blocks, configRef.current, {
-              flowStarted: localFlowStarted,
-              ocrMs: textSource.elapsedMs,
-              source: "text-source",
-            })
-          : await translateWithLocalOcr(base64, configRef.current);
-        console.info("[Local Translate Flow] timings", {
-          captureMs,
-          ocrTranslateRenderMs: Math.round(performance.now() - localFlowStarted),
-          totalMs: Math.round(performance.now() - startTime),
-          server: result.usedServerUrl,
-          channel: result.usedChannel,
-          blocks: result.blocksCount,
-          textSource,
-          localTimings: result.localTimings,
-          serverTimings: result.translationTimings,
-        });
-        resultBase64 = result.resultBase64;
-        usedChannel = result.usedChannel;
-        blocksCount = result.blocksCount;
-        translationQuality = result.translationQuality;
-        setTranslatePairs(result.pairs);
-        setTranslateResultPreviewBase64(resultBase64);
-      } catch (localErr: any) {
-        console.warn("[Local Translate Flow] failed", localErr);
-        throw localErr;
-      }
-
-      const overlayImg = await loadPngImage(resultBase64);
-      translatedImgRef.current = overlayImg;
-      draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
-      setTranslatedResult(resultBase64);
-      if (translationQuality && translationQuality.translatableCount === 0 && translationQuality.preservedCount > 0) {
-        message.info({ content: "\u5df2\u8bc6\u522b\u5230\u6587\u5b57\uff0c\u4f46\u9009\u533a\u4e3b\u8981\u662f\u6587\u4ef6\u540d\u3001\u8def\u5f84\u6216\u6280\u672f\u6807\u8bc6\uff0c\u5df2\u6309\u89c4\u5219\u4fdd\u7559\u539f\u6587\u3002", key: "translate", duration: 3 });
-      } else if (translationQuality && translationQuality.untranslatedCount > 0) {
-        message.warning({ content: `\u7ffb\u8bd1\u5b8c\u6210\uff0c${translationQuality.untranslatedCount} \u884c\u672a\u8fd4\u56de\u6709\u6548\u8bd1\u6587\uff0c\u53ef\u5728\u7ed3\u679c\u91cc\u67e5\u770b\u3002`, key: "translate", duration: 4 });
-      } else {
-        message.success({ content: "\u7ffb\u8bd1\u5b8c\u6210", key: "translate" });
-      }
-
-      try {
-        const durationSec = ((performance.now() - startTime) / 1000).toFixed(2);
-        const record = {
-          id: "rec-" + Date.now(),
-          time: new Date().toLocaleString(),
-          filename: "Screenshot_" + Date.now() + ".png",
-          blocks: blocksCount,
-          channel: usedChannel,
-          duration: durationSec + "s",
-          status: "success",
-        };
-        await invoke("add_history", { record: JSON.stringify(record) });
-      } catch (err) {
-        console.error("Failed to save history:", err);
-      }
-      renderNeededRef.current = true;
-      setIsTranslating(false);
-    } catch (e: any) {
-      const msg = normalizeScreenshotTranslateError(e);
-      message.error({ content: `\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "translate", duration: 4 });
-      setIsTranslating(false);
-      if (base64) {
-        await openOcrResultWindow({
-          selection: rectRef.current,
-          text: `\u7ffb\u8bd1\u6682\u4e0d\u53ef\u7528\u3002\n\n${msg}\n\n\u5f53\u524d\u5df2\u4f7f\u7528\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6a21\u578b\u8bc6\u522b\uff1b\u5982\u679c\u9884\u89c8\u662f\u767d\u56fe\uff0c\u8bf7\u91cd\u65b0\u6846\u9009\u771f\u5b9e\u6587\u5b57\u533a\u57df\u3002`,
-          previewBase64: base64,
-          margin: FLOATING_PANEL_MARGIN,
-          gap: FLOATING_PANEL_GAP,
-          windowSize: OCR_WINDOW_SIZE,
-          title: "\u7ffb\u8bd1\u72b6\u6001",
-        });
-      }
-    }
-  };
-
-
-  const handleShowTranslateResult = async () => {
-    if (!translatePairs || translatePairs.length === 0) return;
-    const statusLabel = (status?: TranslatePair["status"]) => {
-      if (status === "preserved") return "\u72b6\u6001\uff1a\u5df2\u6309\u6280\u672f\u6807\u8bc6\u4fdd\u7559";
-      if (status === "untranslated") return "\u72b6\u6001\uff1a\u672a\u8fd4\u56de\u6709\u6548\u8bd1\u6587";
-      return "\u72b6\u6001\uff1a\u5df2\u7ffb\u8bd1";
-    };
-    const text = translatePairs.map((pair) => `${statusLabel(pair.status)}\n${pair.o}\n${pair.t}`).join("\n\n");
-    const previewBase64 = translateResultPreviewBase64 || translatedResult || await getOutputBase64();
-    await openOcrResultWindow({
-      selection: rectRef.current,
-      text,
-      previewBase64,
-      margin: FLOATING_PANEL_MARGIN,
-      gap: FLOATING_PANEL_GAP,
-      windowSize: OCR_WINDOW_SIZE,
-      title: "翻译结果",
-    });
-    await cancelScreenshot();
-  };
-
-  const handleOCR = async () => {
-    if (isOCRingRef.current || isTranslatingRef.current) return;
-    let base64 = "";
-    try {
-      setIsOCRing(true);
-      message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u6587\u5b57...", key: "ocr", duration: 0 });
-
-      base64 = await captureRegionBase64();
-      const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
-        imageBase64: base64,
-        executablePath: null,
-        timeoutMs: configRef.current.localOcrTimeoutMs || 15000
-      });
-      const normalization = await buildOcrNormalizationReport(ocrBlocks || []);
-      const texts = normalization.text || "\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\n\n\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
-
-      message.destroy();
-      setIsOCRing(false);
-
-      if (texts) {
-        try {
-          await navigator.clipboard.writeText(texts);
-        } catch {}
-      }
-
-      await openOcrResultWindow({
-        selection: rectRef.current,
-        text: texts,
-        previewBase64: base64,
-        margin: FLOATING_PANEL_MARGIN,
-        gap: FLOATING_PANEL_GAP,
-        windowSize: OCR_WINDOW_SIZE,
-        normalizationSummary: {
-          rawCount: normalization.rawCount,
-          usefulCount: normalization.usefulCount,
-          virtualLineCount: normalization.virtualLineCount,
-          droppedCount: normalization.droppedCount,
-          routeMissingScripts: normalization.routePlan?.missingScripts || [],
-        },
-      });
-      resetScreenshotState();
-      await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
-    } catch (e: any) {
-      const msg = normalizeScreenshotTranslateError(e);
-      message.error({ content: `\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "ocr", duration: 3 });
-      setIsOCRing(false);
-      if (base64) {
-        await openOcrResultWindow({
-          selection: rectRef.current,
-          text: `\u8bc6\u522b\u6682\u4e0d\u53ef\u7528\u3002\n\n${msg}\n\n\u5f53\u524d\u5df2\u7ecf\u68c0\u67e5\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u6a21\u578b\u3002`,
-          previewBase64: base64,
-          margin: FLOATING_PANEL_MARGIN,
-          gap: FLOATING_PANEL_GAP,
-          windowSize: OCR_WINDOW_SIZE,
-          title: "\u8bc6\u522b\u72b6\u6001",
-        });
-        resetScreenshotState();
-        await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
-      }
     }
   };
   const isLikelySystemAudioDevice = (device: string) => /wasapi:|stereo mix|立体声|混音|loopback|virtual audio|output|speaker|扬声器/i.test(device);
@@ -2317,10 +1998,9 @@ export default function ScreenshotPage() {
     setHasSelected(false);
     setTranslatedResult(null);
     setTranslatePairs(null);
-    setTranslateResultPreviewBase64("");
     setIsEditing(false);
     annotationSizesRef.current = { ...DEFAULT_ANNOTATION_SIZES };
-    setAnnotationToolState(null);
+    setAnnotationTool(null);
     setAnnotationColor(DEFAULT_ANNOTATION_COLOR);
     setAnnotationSizeState(DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL]);
     annotationToolRef.current = DEFAULT_ANNOTATION_TOOL;
@@ -2360,8 +2040,8 @@ export default function ScreenshotPage() {
     selectionStartedAtRef.current = 0;
     selectionCompletedAtRef.current = 0;
     selectionDragDistanceRef.current = 0;
-    setIsTranslating(false);
-    setIsOCRing(false);
+    isTranslatingRef.current = (false);
+    isOCRingRef.current = (false);
     setIsScrollCapturing(false);
     setScreenshotMode("normal");
     screenshotModeRef.current = "normal";

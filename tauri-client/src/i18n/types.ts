@@ -7,6 +7,35 @@ export type LanguageOption = {
 };
 
 export type AppDictionary = {
+  toolbar: {
+    rect: string;
+    circle: string;
+    arrow: string;
+    brush: string;
+    text: string;
+    mosaic: string;
+    hintText: string;
+    hintShape: string;
+    hintMosaic: string;
+    hintDefault: string;
+    move: string;
+    viewResult: string;
+    translate: string;
+    ocr: string;
+    scrollCapture: string;
+    regionRecord: string;
+    windowRecord: string;
+    displayRecord: string;
+    recordRegion: string;
+    pin: string;
+    undo: string;
+    redo: string;
+    save: string;
+    cancel: string;
+    copy: string;
+    size: string;
+    color: string;
+  };
   app: {
     name: string;
     tagline: string;

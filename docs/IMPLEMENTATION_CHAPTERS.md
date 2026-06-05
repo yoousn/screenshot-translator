@@ -2,7 +2,84 @@
 
 > 本文档是唯一施工日志，但不再逐章保留超长全文。旧的 1–97 章已压缩为里程碑摘要；后续只记录“最近章节详情 + 当前交接状态”。主方向以 `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md` 为准。
 
-## 当前交接状态（2026-06-03）
+## 当前交接状态（2026-06-05）
+
+## Chapter 151：前端巨石代码拆解：截图批注 Hooks 抽取
+
+### 目标
+
+继续响应用户指令，拆分 `ScreenshotPage.tsx` 中的巨石逻辑。本轮聚焦于独立性最强的“标注管理模块”，将其剥离出主文件，进一步减轻 React UI 组件的心智负担，同时保障编译链完全不受损。
+
+### 本章实际处理
+
+- **抽取 `useScreenshotAnnotation` Hook**：
+  - 将庞大的批注状态管理（包含 10 个以上 `useState` 与相关的 `useRef`，如 `annotationTool`, `annotationColor`, `annotations`, `annotationHistory`, `draftAnnotation` 等）和相关的核心操作函数（如 `pushAnnotationHistory`, `undoAnnotation`, `redoAnnotation`, `commitTextDraft`, `deleteSelectedAnnotation`）从 `ScreenshotPage.tsx` 提取到了纯逻辑文件 `tauri-client/src/hooks/useScreenshotAnnotation.ts`。
+  - 保留了与 Canvas 重绘生命周期的交互，通过向 Hook 传入 `onRenderNeeded` 回调来无缝触发重绘。
+  - 将与批注默认属性相关的硬编码常量（如 `DEFAULT_ANNOTATION_COLOR`, `DEFAULT_ANNOTATION_TOOL`）也一并集中封装在 Hook 文件顶部导出。
+
+- **`ScreenshotPage.tsx` 安全更新**：
+  - 成功移除了超过百行的状态定义、引用绑定以及增删改查实现函数，将其收敛至一行 Hook 的调用。
+  - 通过 `replace_file_content` 和脚本自动化精确移除了旧版的所有硬编码操作，修复了因为抽取造成的 TS 类型断层，所有旧的 refs 已平滑迁移至 Hook 管理的闭包中。
+
+### 修改文件
+
+- `tauri-client/src/hooks/useScreenshotAnnotation.ts` (新增)
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+
+### 验证
+
+- `cargo check`：通过。
+- `npm run check:i18n`：通过，564 keys match。
+- `npm run build`：通过。无 TS 类型缺失与语法错误。
+
+### 下一步建议
+
+Chapter 152：`ScreenshotPage.tsx` 中仍然含有深耦合的画图逻辑与 OCR/翻译逻辑。下一步建议提取 `useScreenshotOcr.ts`（处理翻译与 OCR 发起及结果预览窗口状态）和 `useScrollCapture.ts`（滚动截图机制），以完成对主要纯业务状态流转的全面剥离，最终将 `ScreenshotPage.tsx` 还原为存粹的事件绑定与子组件容器。
+
+
+## Chapter 150：主窗口幽灵问题闭环与前端模块化/字典拆分
+
+### 目标
+
+彻底解决录制条关闭后出现的 `YsnTrans` 白色幽灵窗口问题，实现项目的窗口生命周期边界重构；并在确保 `npm run build` 和 `cargo check` 通过的前提下，推进前端 React 巨石逻辑抽取和硬编码字典拆分。
+
+### 本章实际处理
+
+- **主窗口生命周期闭环修复：**
+  - 合并 `window_control.rs` 到 `window_lifecycle.rs`，确立唯一窗口控制源。
+  - 引入了 `robust_hide_window` 机制：直接调用 Windows 原生 `win32::ShowWindow(hwnd, 0)`。这绕过了 Tauri 内部 `is_visible` 状态缓存对操作系统焦点事件的误判，从根本上杀死了关闭录制条时导致的 YsnTrans 幽灵窗口复现。
+  - 清理了 `lib.rs` 中的冗余引用。
+
+- **前端巨石模块拆分：**
+  - 提取了 `RecordingControlPage.tsx` 中的厚重状态机与事件绑定，创建了纯逻辑的 `useRecordingControl.ts` 钩子。
+  - 页面组件现已完全隔离 UI 渲染和状态流转逻辑。
+
+- **多语言 (i18n) 字典拆分：**
+  - 将 `ScreenshotToolbar.tsx` 中零散的中文硬编码提示词（如“矩形标注”、“画笔”、“截图翻译”等）提取到 `tauri-client/src/i18n/dictionaries.ts` 的 `toolbar` 命名空间。
+  - 更新了 `types.ts` 定义，并通过 `useI18n` Hook 将这些静态字符串动态化，支持英文兜底。
+
+### 修改文件
+
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/window_lifecycle.rs`
+- `tauri-client/src/hooks/useRecordingControl.ts` (新增)
+- `tauri-client/src/pages/RecordingControlPage.tsx`
+- `tauri-client/src/components/screenshot/ScreenshotToolbar.tsx`
+- `tauri-client/src/i18n/dictionaries.ts`
+- `tauri-client/src/i18n/types.ts`
+
+### 验证
+
+- `cargo check`：通过。
+- `npm run check:i18n`：通过，564 keys match。
+- `npm run build`：通过。
+- 幽灵白窗复现条件消失：已验证 `win32::ShowWindow` 兜底控制。
+
+### 下一步建议
+
+Chapter 151：继续推进前端 `ScreenshotPage.tsx` (2500+ 行) 剩余部分的拆分。建议从不直接绑定 `Canvas` 上下文的纯逻辑配置区（如 OCR 识别模式切换、配置菜单等）开始，逐步用更细粒度的 Hooks 取代巨石结构。
+
+
 
 ### 当前阶段
 
@@ -4408,3 +4485,17 @@ Chapter 149：做真实覆盖层肉眼 smoke，重点复测用户遇到的英文
 ### 下一章建议
 
 - 真实验收三轮录制：不暂停直接保存、暂停/继续后保存、取消后再次录制；确认输出文件可播放且关闭后没有白屏主窗口或残留控制条。
+
+### 阶段 2：重构建立单一窗口生命周期控制源并彻底消灭 YsnTrans 幽灵窗口 (2026-06-05)
+- **目标**：合并重构中散落的 window_control.rs 与 window_lifecycle.rs，并在单一源中彻底修复录像控制条关闭后出现的 YsnTrans 幽灵白窗。
+- **添加文件**：无
+- **修改文件**：
+  - 	auri-client/src-tauri/src/lib.rs
+  - 	auri-client/src-tauri/src/window_lifecycle.rs
+  - 	auri-client/src-tauri/src/recording_commands.rs
+- **删除文件**：
+  - 	auri-client/src-tauri/src/window_control.rs
+- **非目标**：不修改 UI，不修改底层 FFmpeg/OCR 参数。
+- **验证状态**：cargo check 与 
+pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowWindow(hwnd, SW_HIDE)，消除 Windows 焦点回落时的不可见状态不同步问题。
+- **下一步**：阶段 3（前端模块化，抽取 React Pages 中的巨石逻辑到 Hooks 中）。
