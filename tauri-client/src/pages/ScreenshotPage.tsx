@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { Button, Space, message } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -11,7 +11,7 @@ import type { Annotation, AnnotationTool, EditingTextDraft, Point, Rect } from "
 import { useScreenshotOcr } from "../hooks/useScreenshotOcr";
 import { useScreenshotAnnotation, DEFAULT_ANNOTATION_COLOR, DEFAULT_ANNOTATION_TOOL, DEFAULT_ANNOTATION_SIZES } from "../hooks/useScreenshotAnnotation";
 import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
-import { cropSelectionFromLoadedImage, getPhysicalSelection, loadPngImage, renderEditedSelectionBase64 } from "../utils/screenshotImage";
+import { cropSelectionFromLoadedImage, getPhysicalSelection, renderEditedSelectionBase64 } from "../utils/screenshotImage";
 import { getActionToolbarStyle, FLOATING_PANEL_MARGIN, FLOATING_PANEL_GAP } from "../utils/screenshotLayout";
 import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { openPinWindow } from "../utils/pinWindows";
@@ -22,6 +22,7 @@ import RecordingTargetPicker from "../components/recording/RecordingTargetPicker
 import { useScreenshotWindowRects } from "../hooks/useScreenshotWindowRects";
 import { useScreenshotRecording } from "../hooks/useScreenshotRecording";
 import { useScrollCapture } from "../hooks/useScrollCapture";
+import { useScreenshotLoader } from "../hooks/useScreenshotLoader";
 
 const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 680, height: 86 };
 const RECORDING_TOOLBAR_FALLBACK_SIZE = { width: 980, height: 96 };
@@ -56,13 +57,6 @@ type TextSourceSnapshot = {
   elements?: TextSourceElement[];
 };
 
-const formatRecordingTime = (ms: number) => {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
-  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${seconds}`;
-};
-
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mouseTrackerRef = useRef<HTMLDivElement>(null);
@@ -76,27 +70,16 @@ export default function ScreenshotPage() {
   const [screenshotMode, setScreenshotMode] = useState("normal");
   const [config, setConfig] = useState<Config>({});
   const [isEditing, setIsEditing] = useState(false);
-  const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
-  const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
-  const [overlayVisible, setOverlayVisible] = useState(false);
 
-  const imageRef = useRef<HTMLImageElement | null>(null);
-  const translatedImgRef = useRef<HTMLImageElement | null>(null);
-  const maskedCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const requestRef = useRef<number | null>(null);
   const renderNeededRef = useRef(false);
-
-  const overlayVisibleRef = useRef(false);
+  const requestRef = useRef<number | null>(null);
   const selectionStartedAtRef = useRef(0);
   const selectionCompletedAtRef = useRef(0);
   const selectionDragDistanceRef = useRef(0);
   const pendingConfirmTimerRef = useRef<number | null>(null);
   const textSourceSnapshotPromiseRef = useRef<Promise<TextSourceSnapshot | null> | null>(null);
-  const timeoutRef = useRef<any>(null);
-  const captureIdRef = useRef<number>(0);
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const pendingDetectionRef = useRef<Rect | null>(null);
-  const analysisImageDataRef = useRef<ImageData | null>(null);
   const annotationDragSnapshotRef = useRef<Annotation[] | null>(null);
   const isEditingRef = useRef(false);
   const isDrawingAnnotationRef = useRef(false);
@@ -193,7 +176,7 @@ export default function ScreenshotPage() {
   } = useScreenshotWindowRects({
     configRef,
     lastMouseRef,
-    analysisImageDataRef,
+    analysisImageDataRef: { get current() { return analysisImageDataRef.current; } } as any, // dynamic access
     interactionStateRef,
     triggerRender,
   });
@@ -239,13 +222,13 @@ export default function ScreenshotPage() {
   } = useScreenshotRecording({
     rectRef,
     canvasRef,
-    imageRef,
+    imageRef: { get current() { return imageRef.current; } } as any,
     screenshotModeRef,
     triggerRender,
     setCurrentRect,
     setSelection,
     setHoverCandidate,
-    resetScreenshotState,
+    resetScreenshotState: () => resetScreenshotState(),
   });
 
   // 4. useScrollCapture
@@ -265,12 +248,58 @@ export default function ScreenshotPage() {
   } = useScrollCapture({
     rectRef,
     canvasRef,
-    imageRef,
+    imageRef: { get current() { return imageRef.current; } } as any,
     triggerRender,
-    resetScreenshotState,
+    resetScreenshotState: () => resetScreenshotState(),
   });
 
-  // 5. useScreenshotOcr
+  // 5. useScreenshotLoader
+  const {
+    screenshotState,
+    overlayVisible,
+    dbgStatus,
+    imageRef,
+    translatedImgRef,
+    maskedCanvasRef,
+    analysisImageDataRef,
+    overlayVisibleRef,
+    loadConfig,
+    loadFullscreen,
+    loadFullscreenFromBase64,
+    loadFullscreenFromFile,
+    resetScreenshotState,
+    cancelScreenshot,
+  } = useScreenshotLoader({
+    screenshotModeRef,
+    configRef,
+    setConfig,
+    loadWindowRects,
+    clearWindowRects,
+    clearScrollCaptureState,
+    clearRecordingState,
+    resetAnnotations,
+    setCurrentRect,
+    setSelection,
+    setHasSelected,
+    setTranslatedResult: (res) => setTranslatedResult(res),
+    setTranslatePairs: (pairs) => setTranslatePairs(pairs),
+    setIsEditing,
+    setAnnotationTool,
+    setAnnotationColor,
+    setAnnotationSizeState,
+    setAnnotations,
+    setRedoAnnotations,
+    setSelectedAnnotationIndex,
+    setEditingTextDraft,
+    setAnnotationDraft,
+    setScreenshotMode,
+    prewarmLocalOcrWorker: (reason) => prewarmLocalOcrWorker(reason),
+    draw,
+    textSourceSnapshotPromiseRef,
+    pendingConfirmTimerRef,
+  });
+
+  // 6. useScreenshotOcr
   const {
     isOCRing,
     isTranslating,
@@ -383,7 +412,7 @@ export default function ScreenshotPage() {
     ]);
     const textSourceSelection = buildTextSourceBlocksForSelection(snapshot, rectRef.current);
     const blocks = textSourceSelection.blocks;
-    const charCount = (blocks as any[]).reduce((sum: number, block: any) => sum + block.text.length, 0);
+    const charCount = blocks.reduce((sum: number, block: any) => sum + block.text.length, 0);
     const usable = blocks.length > 0 && charCount >= 2 && textSourceSelection.maxElementCoverage >= 0.55;
     return {
       usable,
@@ -842,7 +871,7 @@ export default function ScreenshotPage() {
     rect: rectRef.current,
   });
 
-  async function captureRegionBase64() {
+  const captureRegionBase64 = async () => {
     const { x, y, w, h } = getPhysicalSelection({
       canvas: canvasRef.current,
       image: imageRef.current as any,
@@ -855,7 +884,7 @@ export default function ScreenshotPage() {
       console.warn("[ScreenshotPage] client-side crop failed, falling back to Rust crop", error);
     }
     return await invoke<string>("capture_region", { x, y, w, h });
-  }
+  };
 
   const renderCurrentEditedSelectionBase64 = async () => renderEditedSelectionBase64({
     canvas: canvasRef.current,
@@ -909,273 +938,6 @@ export default function ScreenshotPage() {
   };
   handlePinRef.current = handlePin;
 
-  const clearPendingConfirm = () => {
-    if (pendingConfirmTimerRef.current !== null) {
-      window.clearTimeout(pendingConfirmTimerRef.current);
-      pendingConfirmTimerRef.current = null;
-    }
-  };
-
-  const startNewCaptureSession = (mode = "normal") => {
-    clearPendingConfirm();
-    captureIdRef.current += 1;
-    const currentId = captureIdRef.current;
-    message.destroy();
-
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-
-    imageRef.current = null;
-    translatedImgRef.current = null;
-    analysisImageDataRef.current = null;
-    textSourceSnapshotPromiseRef.current = null;
-    setTranslatedResult(null);
-    setTranslatePairs(null);
-    setIsEditing(false);
-    annotationSizesRef.current = { ...DEFAULT_ANNOTATION_SIZES };
-    setAnnotationTool(null);
-    setAnnotationColor(DEFAULT_ANNOTATION_COLOR);
-    setAnnotationSizeState(DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL]);
-    annotationToolRef.current = DEFAULT_ANNOTATION_TOOL;
-    annotationColorRef.current = DEFAULT_ANNOTATION_COLOR;
-    annotationSizeRef.current = DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL];
-    setAnnotations([]);
-    setRedoAnnotations([]);
-    setSelectedAnnotationIndex(null);
-    setEditingTextDraft(null);
-    setAnnotationDraft(null);
-
-    clearScrollCaptureState();
-    clearRecordingState();
-    clearWindowRects();
-
-    selectionStartedAtRef.current = 0;
-    selectionCompletedAtRef.current = 0;
-    selectionDragDistanceRef.current = 0;
-    pendingDetectionRef.current = null;
-    setCurrentRect(EMPTY_RECT, true);
-    setSelection(false);
-    setScreenshotMode(mode);
-    screenshotModeRef.current = mode;
-    setScreenshotState("initializing");
-    overlayVisibleRef.current = false;
-    setOverlayVisible(false);
-    setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
-
-    return currentId;
-  };
-
-  const loadConfig = async () => {
-    try {
-      const raw = await invoke<string>("get_config");
-      const parsedConfig = JSON.parse(raw);
-      configRef.current = parsedConfig;
-      setConfig(parsedConfig);
-      prewarmLocalOcrWorker("screenshot-page-load");
-      prewarmTranslationServices(parsedConfig, { reason: "screenshot-page-load" })
-        .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
-    } catch (e) {
-      console.error("[ScreenshotPage] loadConfig failed:", e);
-      setConfig({});
-    }
-  };
-
-  const loadFullscreen = async (mode = screenshotModeRef.current || "normal") => {
-    const sessionId = startNewCaptureSession(mode);
-    try {
-      loadWindowRects(true);
-      const base64 = await invoke<string>("get_fullscreen_image");
-      if (sessionId !== captureIdRef.current) return;
-      if (!base64 || base64.length < 1000) return;
-      loadImageFromBase64(base64, sessionId);
-    } catch (err: any) {
-      if (sessionId !== captureIdRef.current) return;
-      cancelScreenshot();
-    }
-  };
-
-  const loadFullscreenFromBase64 = (base64: string, mode = "normal") => {
-    const sessionId = startNewCaptureSession(mode);
-    try {
-      if (!base64 || base64.length < 1000) return;
-      loadWindowRects(true);
-      loadImageFromBase64(base64, sessionId);
-    } catch (err: any) {
-      if (sessionId !== captureIdRef.current) return;
-      cancelScreenshot();
-    }
-  };
-
-  const loadFullscreenFromFile = (path: string, bytes?: number, mode = "normal") => {
-    const sessionId = startNewCaptureSession(mode);
-    try {
-      if (!path) {
-        loadFullscreen(mode);
-        return;
-      }
-      loadWindowRects(true);
-      loadImageFromSource(`${convertFileSrc(path)}?t=${Date.now()}`, sessionId, bytes);
-    } catch (err: any) {
-      if (sessionId !== captureIdRef.current) return;
-      loadFullscreen(mode);
-    }
-  };
-
-  const loadImageFromBase64 = (base64: string, sessionId: number) => {
-    if (sessionId !== captureIdRef.current) return;
-    if (!base64 || base64.length < 1000) return;
-    const dataUrl = "data:image/png;base64," + base64;
-    loadImageFromSource(dataUrl, sessionId, Math.round(base64.length * 0.75));
-  };
-
-  const loadImageFromSource = (source: string, sessionId: number, bytes?: number) => {
-    if (sessionId !== captureIdRef.current) return;
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-
-    timeoutRef.current = setTimeout(() => {
-      if (sessionId !== captureIdRef.current) return;
-      if (imageRef.current === null) {
-        cancelScreenshot();
-      }
-    }, 1500);
-
-    img.onload = async () => {
-      if (sessionId !== captureIdRef.current) return;
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-      try {
-        await img.decode?.();
-      } catch (e) {
-        console.warn("[ScreenshotPage] img.decode failed", e);
-      }
-      if (sessionId !== captureIdRef.current) return;
-
-      imageRef.current = img;
-      setDbgStatus({ 
-        imageLoaded: true, 
-        imageWidth: img.naturalWidth, 
-        imageHeight: img.naturalHeight, 
-        screenshotBytes: bytes || 0,
-        errorMsg: "" 
-      });
-      setScreenshotState("ready");
-      await nextFrame();
-      initCanvas(img);
-
-      requestAnimationFrame(() => {
-        if (sessionId !== captureIdRef.current) return;
-        overlayVisibleRef.current = true;
-        setOverlayVisible(true);
-        focusScreenshotWindow();
-        invoke("overlay_ready_to_show", { label: getCurrentWindow().label })
-          .catch((err) => console.error("[ScreenshotPage] overlay_ready_to_show failed:", err))
-          .finally(() => {
-            focusScreenshotWindow();
-            window.setTimeout(focusScreenshotWindow, 60);
-          });
-      });
-    };
-
-    img.onerror = () => {
-      if (sessionId !== captureIdRef.current) return;
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-      cancelScreenshot();
-    };
-    img.src = source;
-  };
-
-  const initCanvas = (img: HTMLImageElement) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const width = Math.max(1, window.innerWidth);
-    const height = Math.max(1, window.innerHeight);
-    canvas.width = width;
-    canvas.height = height;
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-
-    const offscreen = document.createElement("canvas");
-    offscreen.width = width;
-    offscreen.height = height;
-    const oCtx = offscreen.getContext("2d");
-    if (oCtx) {
-      oCtx.drawImage(img, 0, 0, width, height);
-      try {
-        analysisImageDataRef.current = oCtx.getImageData(0, 0, width, height);
-      } catch {
-        analysisImageDataRef.current = null;
-      }
-      oCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
-      oCtx.fillRect(0, 0, width, height);
-    }
-    maskedCanvasRef.current = offscreen;
-    setCurrentRect(EMPTY_RECT, true);
-    setSelection(false);
-    draw(0, 0, 0, 0);
-  };
-
-  function resetScreenshotState() {
-    clearPendingConfirm();
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    setRect(EMPTY_RECT);
-    setHasSelected(false);
-    setTranslatedResult(null);
-    setTranslatePairs(null);
-    setIsEditing(false);
-    annotationSizesRef.current = { ...DEFAULT_ANNOTATION_SIZES };
-    setAnnotationTool(null);
-    setAnnotationColor(DEFAULT_ANNOTATION_COLOR);
-    setAnnotationSizeState(DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL]);
-    annotationToolRef.current = DEFAULT_ANNOTATION_TOOL;
-    annotationColorRef.current = DEFAULT_ANNOTATION_COLOR;
-    annotationSizeRef.current = DEFAULT_ANNOTATION_SIZES[DEFAULT_ANNOTATION_TOOL];
-    setAnnotations([]);
-    setAnnotationHistory([]);
-    setRedoAnnotations([]);
-    annotationsRef.current = [];
-    annotationHistoryRef.current = [];
-    redoAnnotationsRef.current = [];
-    setSelectedAnnotationIndex(null);
-    setEditingTextDraft(null);
-    setAnnotationDraft(null);
-
-    clearScrollCaptureState();
-    clearRecordingState();
-    clearWindowRects();
-
-    invoke("set_window_capture_excluded", { label: getCurrentWindow().label, excluded: false }).catch(() => {});
-    pendingDetectionRef.current = null;
-    selectionStartedAtRef.current = 0;
-    selectionCompletedAtRef.current = 0;
-    selectionDragDistanceRef.current = 0;
-    isTranslatingRef.current = false;
-    isOCRingRef.current = false;
-    setScreenshotMode("normal");
-    screenshotModeRef.current = "normal";
-    setScreenshotState("initializing");
-    setOverlayVisible(false);
-    setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
-    imageRef.current = null;
-    translatedImgRef.current = null;
-    analysisImageDataRef.current = null;
-  };
-
-  async function cancelScreenshot() {
-    resetScreenshotState();
-    await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
-  }
-
   const forceCloseScreenshots = async () => {
     message.destroy();
     const segments = [...recordingSegmentsRef.current];
@@ -1189,14 +951,19 @@ export default function ScreenshotPage() {
     const confirmDelayMs = getSelectionConfirmDelayMs();
     if (confirmDelayMs === null) return;
     if (confirmDelayMs > 0) {
-      clearPendingConfirm();
+      if (pendingConfirmTimerRef.current !== null) {
+        window.clearTimeout(pendingConfirmTimerRef.current);
+      }
       pendingConfirmTimerRef.current = window.setTimeout(() => {
         pendingConfirmTimerRef.current = null;
         confirmScreenshot(action);
       }, confirmDelayMs + 16);
       return;
     }
-    clearPendingConfirm();
+    if (pendingConfirmTimerRef.current !== null) {
+      window.clearTimeout(pendingConfirmTimerRef.current);
+      pendingConfirmTimerRef.current = null;
+    }
     try {
       const base64 = await getOutputBase64();
       await emit("screenshot-captured", base64);
@@ -1406,7 +1173,6 @@ export default function ScreenshotPage() {
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      clearPendingConfirm();
     };
   }, []);
 

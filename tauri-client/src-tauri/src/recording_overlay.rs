@@ -160,7 +160,7 @@ pub fn hide_recording_overlay() -> Result<(), String> {
     hide_recording_overlay_internal();
     Ok(())
 }
-fn recording_color_ref(status: &str) -> u32 {
+pub(crate) fn recording_color_ref(status: &str) -> u32 {
     match status {
         "recording" => RECORDING_BORDER_RED,
         "paused" => RECORDING_BORDER_YELLOW,

@@ -41,7 +41,7 @@ pub fn write_startup_diagnostics_probe(app: &tauri::AppHandle) -> Result<PathBuf
     Ok(path)
 }
 
-fn build_diagnostic_readiness_by_module(
+pub(crate) fn build_diagnostic_readiness_by_module(
     ocr_runtime: &serde_json::Value,
     recording: &serde_json::Value,
 ) -> serde_json::Value {
