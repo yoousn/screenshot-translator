@@ -28,12 +28,13 @@ pub use window_lifecycle::*;
 
 pub mod ffmpeg_dependency;
 
-pub mod rapid_ocr_commands;
-pub use rapid_ocr_commands::*;
+pub mod rapid_ocr;
+pub use rapid_ocr::*;
 
 mod text_source;
 pub mod recording_overlay;
 pub mod recording_process;
+pub use recording_process::*;
 pub mod recording_commands;
 pub use recording_overlay::*;
 
@@ -880,92 +881,7 @@ use std::time::Instant;
 
 
 
-fn rapid_ocr_worker_status_value() -> serde_json::Value {
-    let state = rapid_ocr_worker_state();
-    let Ok(mut guard) = state.lock() else {
-        return serde_json::json!({
-            "enabled": rapid_ocr_worker_enabled(),
-            "running": false,
-            "lastError": "RapidOCR worker lock failed."
-        });
-    };
-    let Some(worker) = guard.as_mut() else {
-        return serde_json::json!({
-            "enabled": rapid_ocr_worker_enabled(),
-            "running": false,
-            "lastError": null
-        });
-    };
 
-    match worker.child.try_wait() {
-        Ok(Some(status)) => {
-            *guard = None;
-            serde_json::json!({
-                "enabled": rapid_ocr_worker_enabled(),
-                "running": false,
-                "lastError": format!("RapidOCR worker exited with status {status}.")
-            })
-        }
-        Ok(None) => {
-            let pid = worker.child.id();
-            match rapid_ocr_worker_request_value(worker, "status", serde_json::json!({})) {
-                Ok(status) => serde_json::json!({
-                    "enabled": rapid_ocr_worker_enabled(),
-                    "running": true,
-                    "pid": pid,
-                    "runnerKind": worker.spec.kind.clone(),
-                    "runnerPath": worker.spec.program.to_string_lossy().to_string(),
-                    "lastError": worker.last_error,
-                    "status": status,
-                    "cachedEngines": status.get("cachedEngines").cloned().unwrap_or_else(|| serde_json::json!([]))
-                }),
-                Err(error) => {
-                    worker.last_error = Some(error.clone());
-                    serde_json::json!({
-                        "enabled": rapid_ocr_worker_enabled(),
-                        "running": true,
-                        "pid": pid,
-                        "runnerKind": worker.spec.kind.clone(),
-                        "runnerPath": worker.spec.program.to_string_lossy().to_string(),
-                        "lastError": error
-                    })
-                }
-            }
-        }
-        Err(error) => serde_json::json!({
-            "enabled": rapid_ocr_worker_enabled(),
-            "running": false,
-            "lastError": format!("RapidOCR worker status check failed: {error}")
-        }),
-    }
-}
-
-#[tauri::command]
-async fn start_rapid_ocr_worker(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    tokio::task::spawn_blocking(move || start_rapid_ocr_worker_sync(&app, true))
-        .await
-        .map_err(|error| format!("RapidOCR worker start task failed: {error}"))?
-}
-
-
-
-
-fn run_rapidocr_probe(
-    app: &tauri::AppHandle,
-    model_version: &str,
-) -> Result<RapidOcrRunnerOutput, String> {
-    let model_root = rapid_ocr_model_root(app);
-    run_rapidocr_json(
-        app,
-        vec![
-            "--probe".to_string(),
-            "--model-version".to_string(),
-            model_version.to_string(),
-            "--model-root".to_string(),
-            model_root.to_string_lossy().to_string(),
-        ],
-    )
-}
 
 
 

@@ -1,281 +1,48 @@
 use std::sync::{Mutex, OnceLock};
-use std::process::Command;
+use std::process::{Command, Child, Stdio};
 use std::path::{Path, PathBuf};
 use std::fs;
-use tauri::Manager;
-use tauri::Emitter;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::io::Write;
 use crate::*;
 
-#[derive(Debug, Deserialize)]
-pub struct RecordingOptions {
-    fps: Option<u32>,
-    resolution: Option<String>,
-    audio_mode: Option<String>,
-    mic_device: Option<String>,
-    system_audio_device: Option<String>,
-    output_dir: Option<String>,
-    region_x: Option<i32>,
-    region_y: Option<i32>,
-    region_w: Option<i32>,
-    region_h: Option<i32>,
-}
-pub fn ffmpeg_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
-    use tauri::path::BaseDirectory;
-    let mut candidates = Vec::new();
+use super::ffmpeg_installer::find_ffmpeg_executable;
+use super::device_detector::{hidden_ffmpeg_command, collect_ffmpeg_audio_devices};
 
-    if let Some(path) = config_value_string("recordingFfmpegPath") {
-        candidates.push(PathBuf::from(path));
-    }
-
-    if let Ok(path) = std::env::var("FFMPEG_PATH") {
-        if !path.trim().is_empty() {
-            candidates.push(PathBuf::from(path.trim()));
-        }
-    }
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            candidates.push(dir.join("ffmpeg").join("ffmpeg.exe"));
-            candidates.push(dir.join("tools").join("ffmpeg").join("ffmpeg.exe"));
-            candidates.push(dir.join("plugins").join("ffmpeg").join("ffmpeg.exe"));
-        }
-    }
-
-    if let Ok(path) = app
-        .path()
-        .resolve("resources/ffmpeg/ffmpeg.exe", BaseDirectory::Resource)
-    {
-        candidates.push(path);
-    }
-
-    let mut app_ffmpeg = app_data_dir();
-    app_ffmpeg.push("ffmpeg");
-    app_ffmpeg.push("ffmpeg.exe");
-    candidates.push(app_ffmpeg);
-    candidates.push(PathBuf::from("ffmpeg"));
-    candidates
-}
-pub fn emit_ffmpeg_progress(
-    app: &tauri::AppHandle,
-    phase: &str,
-    downloaded: u64,
-    total: Option<u64>,
-    percent: u8,
-) {
-    let _ = app.emit(
-        "ffmpeg-download-progress",
-        serde_json::json!({
-            "phase": phase,
-            "downloaded": downloaded,
-            "total": total,
-            "percent": percent,
-        }),
-    );
-}
-pub fn default_ffmpeg_install_dir() -> PathBuf {
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            return dir.join("ffmpeg");
-        }
-    }
-    let mut dir = app_data_dir();
-    dir.push("ffmpeg");
-    dir
-}
-pub fn extract_ffmpeg_exe_from_zip(
-    bytes: &[u8],
-    install_dir: &std::path::Path,
-) -> Result<PathBuf, String> {
-    let reader = Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|e| format!("Read ffmpeg archive failed: {}", e))?;
-    fs::create_dir_all(install_dir)
-        .map_err(|e| format!("Create ffmpeg directory failed: {}", e))?;
-    let target = install_dir.join("ffmpeg.exe");
-    let mut found = false;
-    for index in 0..archive.len() {
-        let mut file = archive
-            .by_index(index)
-            .map_err(|e| format!("Read ffmpeg archive entry failed: {}", e))?;
-        if !file
-            .name()
-            .replace('\\', "/")
-            .to_ascii_lowercase()
-            .ends_with("/bin/ffmpeg.exe")
-            && !file.name().eq_ignore_ascii_case("ffmpeg.exe")
-        {
-            continue;
-        }
-        let mut out =
-            fs::File::create(&target).map_err(|e| format!("Create ffmpeg.exe failed: {}", e))?;
-        std::io::copy(&mut file, &mut out)
-            .map_err(|e| format!("Extract ffmpeg.exe failed: {}", e))?;
-        found = true;
-        break;
-    }
-    if !found {
-        return Err("ffmpeg.exe was not found in the archive".to_string());
-    }
-    Ok(target)
-}
-pub fn find_ffmpeg_executable(app: &tauri::AppHandle) -> Option<PathBuf> {
-    for candidate in ffmpeg_candidates(app) {
-        if candidate.to_string_lossy().eq_ignore_ascii_case("ffmpeg") {
-            if hidden_ffmpeg_command(Path::new("ffmpeg"))
-                .arg("-version")
-                .output()
-                .is_ok()
-            {
-                return Some(candidate);
-            }
-        } else if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-pub fn parse_quoted_audio_devices(
-    output: &str,
-    audio_marker_required: bool,
-    prefix: Option<&str>,
-) -> Vec<String> {
-    let mut devices = Vec::new();
-    for line in output.lines() {
-        if audio_marker_required && !line.contains("(audio)") {
-            continue;
-        }
-        if let Some(first_quote) = line.find('"') {
-            if let Some(second_quote) = line[first_quote + 1..].find('"') {
-                let name = line[first_quote + 1..first_quote + 1 + second_quote].trim();
-                if !name.is_empty() {
-                    let value = match prefix {
-                        Some(prefix) => format!("{}{}", prefix, name),
-                        None => name.to_string(),
-                    };
-                    if !devices.contains(&value) {
-                        devices.push(value);
-                    }
-                }
-            }
-        }
-    }
-    devices
-}
-pub fn ffmpeg_supports_input_format(formats_output: &str, format_name: &str) -> bool {
-    formats_output.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("D") && trimmed.split_whitespace().nth(1) == Some(format_name)
-    })
-}
-pub fn hidden_ffmpeg_command(ffmpeg_path: &Path) -> Command {
-    let mut cmd = Command::new(ffmpeg_path);
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
-}
-pub fn ffmpeg_input_formats(ffmpeg_path: &Path) -> String {
-    hidden_ffmpeg_command(ffmpeg_path)
-        .args(["-hide_banner", "-formats"])
-        .output()
-        .map(|out| {
-            format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        })
-        .unwrap_or_default()
-}
-pub fn collect_ffmpeg_audio_devices(ffmpeg_path: &Path) -> Vec<String> {
-    let mut devices = Vec::new();
-    let input_formats = ffmpeg_input_formats(ffmpeg_path);
-    if let Ok(out) = hidden_ffmpeg_command(ffmpeg_path)
-        .args([
-            "-hide_banner",
-            "-list_devices",
-            "true",
-            "-f",
-            "dshow",
-            "-i",
-            "dummy",
-        ])
-        .output()
-    {
-        let combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        devices.extend(parse_quoted_audio_devices(&combined, true, None));
-    }
-    if ffmpeg_supports_input_format(&input_formats, "wasapi") {
-        if let Ok(out) = hidden_ffmpeg_command(ffmpeg_path)
-            .args([
-                "-hide_banner",
-                "-list_devices",
-                "true",
-                "-f",
-                "wasapi",
-                "-i",
-                "dummy",
-            ])
-            .output()
-        {
-            let combined = format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            devices.extend(parse_quoted_audio_devices(
-                &combined,
-                false,
-                Some("wasapi:"),
-            ));
-        }
-        if !devices.contains(&"wasapi:default".to_string()) {
-            devices.push("wasapi:default".to_string());
-        }
-    }
-    devices
-}
-#[tauri::command]
-pub fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let _ = cleanup_finished_recording_process()?;
-    let ffmpeg = find_ffmpeg_executable(&app);
-    let is_recording = get_recording_process()
-        .lock()
-        .map_err(|e| e.to_string())?
-        .is_some();
-    let audio_devices = if let Some(ffmpeg_path) = &ffmpeg {
-        collect_ffmpeg_audio_devices(ffmpeg_path)
-    } else {
-        Vec::new()
-    };
-
-    Ok(serde_json::json!({
-        "ffmpegFound": ffmpeg.is_some(),
-        "ffmpegPath": ffmpeg.map(|path| path.to_string_lossy().to_string()),
-        "isRecording": is_recording,
-        "audioDevices": audio_devices,
-    }))
-}
 pub fn recording_temp_dir() -> PathBuf {
     let mut dir = app_data_dir();
     dir.push("recordings");
     dir
 }
+
 pub fn default_recording_output_dir() -> PathBuf {
     dirs::video_dir().unwrap_or_else(app_data_dir).join("YSN")
 }
+
+#[derive(Debug, Deserialize)]
+pub struct RecordingOptions {
+    pub fps: Option<u32>,
+    pub resolution: Option<String>,
+    pub audio_mode: Option<String>,
+    pub mic_device: Option<String>,
+    pub system_audio_device: Option<String>,
+    pub output_dir: Option<String>,
+    pub region_x: Option<i32>,
+    pub region_y: Option<i32>,
+    pub region_w: Option<i32>,
+    pub region_h: Option<i32>,
+}
+
+pub static RECORDING_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+pub fn get_recording_process() -> &'static Mutex<Option<Child>> {
+    RECORDING_PROCESS.get_or_init(|| Mutex::new(None))
+}
+
 pub fn timestamped_recording_file_name() -> String {
     let now = chrono::Local::now();
     format!("YSN_{}.mp4", now.format("%Y%m%d_%H%M%S"))
 }
+
 pub fn unique_recording_output_path() -> Result<PathBuf, String> {
     let dir = default_recording_output_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create recording directory failed: {}", e))?;
@@ -293,6 +60,7 @@ pub fn unique_recording_output_path() -> Result<PathBuf, String> {
     }
     Err("failed to create unique recording filename".to_string())
 }
+
 pub fn recording_output_path(output_dir: Option<String>) -> Result<PathBuf, String> {
     let dir = output_dir
         .filter(|value| !value.trim().is_empty())
@@ -306,6 +74,7 @@ pub fn recording_output_path(output_dir: Option<String>) -> Result<PathBuf, Stri
         .as_millis();
     Ok(dir.join(format!("recording_{}.mp4", millis)))
 }
+
 #[tauri::command]
 pub fn open_path_in_file_manager(path: String) -> Result<(), String> {
     let trimmed = path.trim();
@@ -353,6 +122,7 @@ pub fn open_path_in_file_manager(path: String) -> Result<(), String> {
         Ok(())
     }
 }
+
 pub fn resolution_scale_filter(resolution: &str) -> Option<&'static str> {
     match resolution {
         "480p" => Some("scale=-2:480"),
@@ -362,6 +132,7 @@ pub fn resolution_scale_filter(resolution: &str) -> Option<&'static str> {
         _ => Some("scale=-2:1080"),
     }
 }
+
 pub fn push_recording_audio_input(
     device: Option<&str>,
     label: &str,
@@ -389,6 +160,7 @@ pub fn push_recording_audio_input(
     }
     Ok(())
 }
+
 pub fn build_recording_args(
     options: &RecordingOptions,
     output_path: &Path,
@@ -434,7 +206,7 @@ pub fn build_recording_args(
         "system" => {
             push_recording_audio_input(
                 options.system_audio_device.as_deref(),
-                "绯荤粺澹伴煶",
+                "\u{7cfb}\u{7edf}\u{5ca9}\u{97f3}",
                 &mut args,
             )?;
             1
@@ -442,7 +214,7 @@ pub fn build_recording_args(
         "system_mic" => {
             push_recording_audio_input(
                 options.system_audio_device.as_deref(),
-                "绯荤粺澹伴煶",
+                "\u{7cfb}\u{7edf}\u{5ca9}\u{97f3}",
                 &mut args,
             )?;
             push_recording_audio_input(options.mic_device.as_deref(), "microphone", &mut args)?;
@@ -494,154 +266,7 @@ pub fn build_recording_args(
     args.push(output_path.to_string_lossy().to_string());
     Ok(args)
 }
-#[tauri::command]
-pub async fn get_ffmpeg_release_info() -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("ScreenshotTranslator/1.0")
-        .build()
-        .map_err(|e| format!("Create request client failed: {}", e))?;
-    let release = client
-        .get("https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest")
-        .send()
-        .await
-        .map_err(|e| format!("Check ffmpeg release failed: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Read ffmpeg release response failed: {}", e))?
-        .json::<GithubReleaseInfo>()
-        .await
-        .map_err(|e| format!("Parse ffmpeg release failed: {}", e))?;
 
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| {
-            let name = asset.name.to_ascii_lowercase();
-            name.ends_with(".zip")
-                && name.contains("win64")
-                && name.contains("gpl")
-                && !name.contains("shared")
-        })
-        .or_else(|| {
-            release.assets.iter().find(|asset| {
-                let name = asset.name.to_ascii_lowercase();
-                name.ends_with(".zip") && name.contains("win64") && !name.contains("shared")
-            })
-        })
-        .ok_or_else(|| {
-            "No Windows x64 ffmpeg zip asset found in the official release".to_string()
-        })?;
-
-    Ok(serde_json::json!({
-        "tag": release.tag_name,
-        "pageUrl": release.html_url,
-        "assetName": asset.name,
-        "downloadUrl": asset.browser_download_url,
-        "size": asset.size,
-        "installDir": default_ffmpeg_install_dir().to_string_lossy().to_string(),
-    }))
-}
-#[tauri::command]
-pub async fn download_ffmpeg_release(
-    app: tauri::AppHandle,
-    url: String,
-    tag: String,
-) -> Result<serde_json::Value, String> {
-    let allowed = [
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/",
-        "https://objects.githubusercontent.com/github-production-release-asset-",
-    ];
-    if !allowed.iter().any(|prefix| url.starts_with(prefix))
-        || !url.to_ascii_lowercase().ends_with(".zip")
-    {
-        return Err(
-            "Please choose an official Windows zip from BtbN/FFmpeg-Builds GitHub Releases"
-                .to_string(),
-        );
-    }
-
-    emit_ffmpeg_progress(&app, "Preparing", 0, None, 1);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .user_agent("ScreenshotTranslator/1.0")
-        .build()
-        .map_err(|e| format!("Create download client failed: {}", e))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Download ffmpeg failed: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("Download ffmpeg failed: HTTP {}", resp.status()));
-    }
-
-    let total = resp.content_length();
-    let mut stream = resp.bytes_stream();
-    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
-    let mut downloaded: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Read ffmpeg download stream failed: {}", e))?;
-        downloaded += chunk.len() as u64;
-        bytes.extend_from_slice(&chunk);
-        let percent = total
-            .map(|value| ((downloaded as f64 / value.max(1) as f64) * 80.0).round() as u8)
-            .unwrap_or(10)
-            .clamp(1, 80);
-        emit_ffmpeg_progress(&app, "Downloading", downloaded, total, percent);
-    }
-
-    let safe_tag = sanitize_tag(&tag);
-    let mut download_dir = app_data_dir();
-    download_dir.push("ffmpeg");
-    download_dir.push("downloads");
-    fs::create_dir_all(&download_dir)
-        .map_err(|e| format!("Create ffmpeg download directory failed: {}", e))?;
-    let archive_path = download_dir.join(format!("ffmpeg-{}.zip", safe_tag));
-    fs::write(&archive_path, &bytes).map_err(|e| format!("Save ffmpeg archive failed: {}", e))?;
-
-    emit_ffmpeg_progress(&app, "Installing", downloaded, total, 85);
-    let install_dir = ensure_writable_dir(default_ffmpeg_install_dir());
-    let exe_path = extract_ffmpeg_exe_from_zip(&bytes, &install_dir)?;
-    let _ = fs::remove_file(&archive_path);
-    emit_ffmpeg_progress(&app, "瀹屾垚", downloaded, total, 100);
-
-    Ok(serde_json::json!({
-        "path": exe_path.to_string_lossy().to_string(),
-        "installDir": install_dir.to_string_lossy().to_string(),
-        "bytes": bytes.len(),
-    }))
-}
-#[tauri::command]
-pub fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new()
-        .set_title("Choose ffmpeg.exe")
-        .add_filter("ffmpeg", &["exe"]);
-    if let Some(path) = current_path {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            let path_buf = PathBuf::from(trimmed);
-            if let Some(parent) = path_buf.parent() {
-                dialog = dialog.set_directory(parent);
-            }
-        }
-    }
-    Ok(dialog
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string()))
-}
-#[tauri::command]
-pub fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new().set_title("Choose recording output directory");
-    if let Some(dir) = current_dir {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            dialog = dialog.set_directory(trimmed);
-        }
-    }
-    Ok(dialog
-        .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
-}
 #[tauri::command]
 pub fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<String, String> {
     println!("[window-trace] enter start_recording");
@@ -690,6 +315,7 @@ pub fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Resu
     println!("[window-trace] start_recording RECORDING_PROCESS set Some");
     Ok(output_path.to_string_lossy().to_string())
 }
+
 pub fn stop_recording_internal(grace_ms: u64, kill_on_timeout: bool) -> Result<(), String> {
     let child = {
         let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
@@ -732,23 +358,27 @@ pub fn stop_recording_internal(grace_ms: u64, kill_on_timeout: bool) -> Result<(
     }
     Ok(())
 }
+
 #[tauri::command]
 pub async fn stop_recording() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| stop_recording_internal(15000, false))
         .await
         .map_err(|e| e.to_string())?
 }
+
 #[tauri::command]
 pub async fn cancel_recording_process() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| stop_recording_internal(350, true))
         .await
         .map_err(|e| e.to_string())?
 }
+
 pub fn escape_concat_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
         .replace('\'', "\\'")
 }
+
 pub fn ffmpeg_stderr_excerpt(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let excerpt = text
@@ -767,6 +397,7 @@ pub fn ffmpeg_stderr_excerpt(stderr: &[u8]) -> String {
         excerpt
     }
 }
+
 pub fn run_ffmpeg_merge(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
     let output = hidden_ffmpeg_command(ffmpeg)
         .args(args)
@@ -784,6 +415,7 @@ pub fn run_ffmpeg_merge(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
         ))
     }
 }
+
 #[tauri::command]
 pub fn concat_recording_segments(
     app: tauri::AppHandle,
@@ -904,6 +536,7 @@ pub fn concat_recording_segments(
     let _ = fs::remove_file(&list_path);
     Ok(save_path.to_string_lossy().to_string())
 }
+
 #[tauri::command]
 pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
     let file_path = PathBuf::from(path.trim());
@@ -939,9 +572,11 @@ pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
         Err("copying video files is not supported on this platform".to_string())
     }
 }
+
 pub fn shell_escape_powershell_single(value: &str) -> String {
     format!("'{}'", value.replace("'", "''"))
 }
+
 pub fn is_recording_temp_file(path: &Path, temp_dir: &Path) -> bool {
     let Ok(canonical_path) = fs::canonicalize(path) else {
         return false;
@@ -956,6 +591,7 @@ pub fn is_recording_temp_file(path: &Path, temp_dir: &Path) -> bool {
             .map(|value| value.eq_ignore_ascii_case("mp4"))
             .unwrap_or(false)
 }
+
 #[tauri::command]
 pub fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
     let temp_dir = recording_temp_dir();
@@ -971,7 +607,58 @@ pub fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
     }
     Ok(())
 }
-pub static RECORDING_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
-pub fn get_recording_process() -> &'static Mutex<Option<Child>> {
-    RECORDING_PROCESS.get_or_init(|| Mutex::new(None))
+
+#[tauri::command]
+pub fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Choose ffmpeg.exe")
+        .add_filter("ffmpeg", &["exe"]);
+    if let Some(path) = current_path {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            let path_buf = PathBuf::from(trimmed);
+            if let Some(parent) = path_buf.parent() {
+                dialog = dialog.set_directory(parent);
+            }
+        }
+    }
+    Ok(dialog
+        .pick_file()
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("Choose recording output directory");
+    if let Some(dir) = current_dir {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            dialog = dialog.set_directory(trimmed);
+        }
+    }
+    Ok(dialog
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let _ = cleanup_finished_recording_process()?;
+    let ffmpeg = find_ffmpeg_executable(&app);
+    let is_recording = get_recording_process()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .is_some();
+    let audio_devices = if let Some(ffmpeg_path) = &ffmpeg {
+        collect_ffmpeg_audio_devices(ffmpeg_path)
+    } else {
+        Vec::new()
+    };
+
+    Ok(serde_json::json!({
+        "ffmpegFound": ffmpeg.is_some(),
+        "ffmpegPath": ffmpeg.map(|path| path.to_string_lossy().to_string()),
+        "isRecording": is_recording,
+        "audioDevices": audio_devices,
+    }))
 }
