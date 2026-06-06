@@ -43,6 +43,9 @@ export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mouseTrackerRef = useRef<HTMLDivElement>(null);
   const actionToolbarRef = useRef<HTMLDivElement>(null);
+  const actionToolbarSizeRef = useRef(ACTION_TOOLBAR_FALLBACK_SIZE);
+  const liveToolbarFrameRef = useRef<number | null>(null);
+  const liveToolbarRectRef = useRef<Rect | null>(null);
   
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
@@ -80,6 +83,7 @@ export default function ScreenshotPage() {
   isSelectingRef.current = isSelecting;
   screenshotModeRef.current = screenshotMode;
   drawRef.current = draw;
+  actionToolbarSizeRef.current = actionToolbarSize;
 
   const interactionStateRef = useRef({
     get hasSelected() { return hasSelectedRef.current; },
@@ -359,6 +363,40 @@ export default function ScreenshotPage() {
   // Set the Ref to complete the circle
   captureRegionBase64Ref.current = captureRegionBase64;
 
+  const syncActionToolbarPosition = (nextRect: Rect) => {
+    if (!actionToolbarRef.current || !overlayVisibleRef.current || !hasSelectedRef.current) return;
+    liveToolbarRectRef.current = nextRect;
+    if (liveToolbarFrameRef.current !== null) return;
+    liveToolbarFrameRef.current = requestAnimationFrame(() => {
+      liveToolbarFrameRef.current = null;
+      const toolbar = actionToolbarRef.current;
+      const liveRect = liveToolbarRectRef.current;
+      if (!toolbar || !liveRect || !overlayVisibleRef.current || !hasSelectedRef.current) return;
+
+      const bounds = toolbar.getBoundingClientRect();
+      const measuredSize = {
+        width: Math.ceil(bounds.width) || actionToolbarSizeRef.current.width,
+        height: Math.ceil(bounds.height) || actionToolbarSizeRef.current.height,
+      };
+      const fallbackSize = recordingStatusRef.current !== "idle" || recordingPickerModeRef.current || scrollCaptureModeRef.current !== "idle"
+        ? RECORDING_TOOLBAR_FALLBACK_SIZE
+        : ACTION_TOOLBAR_FALLBACK_SIZE;
+      const style = getActionToolbarStyle({
+        rect: liveRect,
+        toolbarSize: measuredSize,
+        fallbackSize,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        margin: FLOATING_PANEL_MARGIN,
+        gap: FLOATING_PANEL_GAP,
+      });
+      const nextTop = typeof style.top === "number" ? style.top : Number.parseFloat(String(style.top));
+      const nextLeft = typeof style.left === "number" ? style.left : Number.parseFloat(String(style.left));
+      if (Number.isFinite(nextTop)) toolbar.style.top = `${nextTop}px`;
+      if (Number.isFinite(nextLeft)) toolbar.style.left = `${nextLeft}px`;
+    });
+  };
+
   // 9. useScreenshotInteraction
   const {
     handleMouseDown,
@@ -464,6 +502,7 @@ export default function ScreenshotPage() {
     pendingConfirmTimerRef,
 
     draw: (...args) => drawRef.current(...args),
+    syncToolbarPosition: syncActionToolbarPosition,
   });
 
   isOCRingRef.current = isOCRing;
@@ -588,6 +627,7 @@ export default function ScreenshotPage() {
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      if (liveToolbarFrameRef.current !== null) cancelAnimationFrame(liveToolbarFrameRef.current);
     };
   }, []);
 

@@ -32,8 +32,8 @@ app.add_middleware(
 
 # 🔑 启动时打印当前 client_token，供运维人员在客户端配置
 _startup_cfg = load_server_config()
-_token_val = _startup_cfg['client_token']
-logger.warning(f"[Security] 当前 client_token: {_token_val}")
+_token_val = "<redacted>"
+logger.warning("[Security] client_token is configured: <redacted>")
 logger.warning("[Security] 请将此 token 填入客户端「系统设置 → 令牌」中，或通过环境变量 SS_TRANSLATOR_TOKEN 覆盖。")
 del _startup_cfg, _token_val
 
@@ -53,23 +53,28 @@ def get_config():
 def verify_token(x_api_key: str):
     cfg = get_config()
     if not x_api_key or x_api_key != cfg["client_token"]:
-        logger.error(f"[verify_token] Failed! Received: '{x_api_key}', Expected: '{cfg.get('client_token')}'")
+        logger.error("[verify_token] Unauthorized client token request.")
         raise HTTPException(status_code=401, detail="Unauthorized client token.")
 
 # Translator instance cache to avoid re-creating per request (fix 4.3)
 _translator_cache = {"key": None, "instance": None}
+def _secret_fingerprint(value: str) -> str:
+    if not value:
+        return ""
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
 def _translator_cache_key(cfg: dict) -> str:
     channel = cfg.get("active_channel", "google")
     if channel == "new-api":
         c = cfg.get("channels", {}).get("new-api", {})
         prompt_hash = hashlib.sha256(f"{c.get('prompt', '')}\n{c.get('domain', '')}".encode("utf-8")).hexdigest()[:12]
-        return f"new-api:{c.get('base_url', '')}:{c.get('api_key', '')[:8]}:{c.get('model', '')}:{prompt_hash}"
+        return f"new-api:{c.get('base_url', '')}:{_secret_fingerprint(c.get('api_key', ''))}:{c.get('model', '')}:{prompt_hash}"
     elif channel == "baidu":
         c = cfg.get("channels", {}).get("baidu", {})
         return f"baidu:{c.get('app_id', '')}"
     elif channel == "deepl":
         c = cfg.get("channels", {}).get("deepl", {})
-        return f"deepl:{c.get('endpoint', '')}:{c.get('api_key', '')[:8]}:{c.get('formality', '')}"
+        return f"deepl:{c.get('endpoint', '')}:{_secret_fingerprint(c.get('api_key', ''))}:{c.get('formality', '')}"
     return "google"
 
 def get_active_translator():

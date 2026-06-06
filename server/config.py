@@ -57,9 +57,11 @@ def load_server_config():
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         default = _default_config()
         save_server_config(default)
+        default_for_return = default
+        default = {**default, "client_token": "<redacted>"}
         logger.info("[Security] 首次启动，已自动生成随机 client_token 并写入配置文件。")
         logger.info("[Security] 请在客户端填入此 token: %s", default["client_token"])
-        return _apply_env_overrides(default)
+        return _apply_env_overrides(default_for_return)
     
     try:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:

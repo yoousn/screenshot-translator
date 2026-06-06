@@ -2,6 +2,11 @@ import ipaddress
 import socket
 import urllib.parse
 
+TRUSTED_PUBLIC_DNS_BYPASS_HOSTS = {
+    "api-free.deepl.com",
+    "api.deepl.com",
+}
+
 
 def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
     base_url = (url or "").strip().rstrip("/")
@@ -11,6 +16,11 @@ def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
         base_url = "https://" + base_url
 
     parsed = urllib.parse.urlparse(base_url)
+    trusted_public_host = (
+        not allow_private
+        and parsed.hostname is not None
+        and parsed.hostname.lower() in TRUSTED_PUBLIC_DNS_BYPASS_HOSTS
+    )
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("请求地址不合法")
 
@@ -30,7 +40,7 @@ def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
             or ip.is_unspecified
             or ip.is_multicast
         )
-        if blocked_private_ip and not allow_private:
+        if blocked_private_ip and not allow_private and not trusted_public_host:
             raise ValueError("请求地址不合法 (IP 为私有、回环或保留地址)")
 
     return base_url

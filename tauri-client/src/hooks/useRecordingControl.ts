@@ -4,7 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { App as AntdApp } from "antd";
-import type { RecordingWindowPayload } from "../utils/recordingWindows";
+import { closeWindowIfExists, type RecordingWindowPayload } from "../utils/recordingWindows";
 
 export type OverlayStatus = "ready" | "countdown" | "recording" | "paused" | "saving" | "saved";
 
@@ -22,23 +22,14 @@ const withTimeout = async <T,>(task: Promise<T>, ms: number): Promise<T | null> 
   }
 };
 
-const closeWindowIfExists = async (label: string) => {
-  const win = await WebviewWindow.getByLabel(label).catch(() => null);
-  if (!win) return;
-  await win.hide().catch(() => {});
-  await win.close().catch(() => {});
-};
-
 const setWindowCaptureExcludedIfExists = async (label: string, excluded: boolean) => {
   await invoke("set_window_capture_excluded", { label, excluded }).catch(() => {});
 };
 
-const setRecordingCaptureShield = async (excluded: boolean) => {
+const setRecordingCaptureShield = async (excluded: boolean, controlLabel = getCurrentWindow().label) => {
+  const labels = Array.from(new Set(["main", "screenshot", controlLabel, "recording_notice"]));
   await Promise.all([
-    setWindowCaptureExcludedIfExists("main", excluded),
-    setWindowCaptureExcludedIfExists("screenshot", excluded),
-    setWindowCaptureExcludedIfExists("recording_control", excluded),
-    setWindowCaptureExcludedIfExists("recording_notice", excluded),
+    ...labels.map((label) => setWindowCaptureExcludedIfExists(label, excluded)),
   ]);
 };
 
@@ -91,7 +82,7 @@ export function useRecordingControl() {
     console.log(`[window-trace] dismissOverlay start notifyParent=${notifyParent}`);
     cancelledRef.current = true;
     allowCloseRef.current = true;
-    await setRecordingCaptureShield(false);
+    await setRecordingCaptureShield(false, winLabel);
     await Promise.all([
       withTimeout(invoke("hide_main_window").catch(() => {}), 150),
       withTimeout(invoke("cancel_screenshot").catch(() => {}), 150),
@@ -157,7 +148,7 @@ export function useRecordingControl() {
         console.log("[window-trace] countdown end");
       }
       setCountdown(null);
-      await setRecordingCaptureShield(true);
+      await setRecordingCaptureShield(true, winLabel);
       await startSegment();
     } catch (error: any) {
       console.log("[window-trace] startRecording catch error", error);
@@ -249,7 +240,7 @@ export function useRecordingControl() {
     setOverlayBusy(true);
     setOverlayStatus("saving");
     try {
-      await setRecordingCaptureShield(false);
+      await setRecordingCaptureShield(false, winLabel);
       await withTimeout(emit("recording-ended").catch(() => {}), 150);
       await withTimeout(stopActiveSegment(true), 800);
       const segments = [...segmentsRef.current];

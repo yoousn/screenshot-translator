@@ -95,6 +95,7 @@ interface UseScreenshotInteractionProps {
   pendingConfirmTimerRef: React.RefObject<number | null>;
 
   draw: (rx: number, ry: number, rw: number, rh: number) => void;
+  syncToolbarPosition?: (next: Rect) => void;
 }
 
 export function useScreenshotInteraction({
@@ -179,6 +180,7 @@ export function useScreenshotInteraction({
   pendingConfirmTimerRef,
 
   draw,
+  syncToolbarPosition,
 }: UseScreenshotInteractionProps) {
 
   const activePointerIdRef = useRef<number | null>(null);
@@ -219,6 +221,11 @@ export function useScreenshotInteraction({
     focusCanvas();
   };
 
+  const updateCurrentRect = (next: Rect, syncState = false) => {
+    setCurrentRect(next, syncState);
+    syncToolbarPosition?.(next);
+  };
+
   const releaseCanvasPointer = (canvas: HTMLCanvasElement, pointerId = activePointerIdRef.current) => {
     if (pointerId === null) return;
     try {
@@ -243,7 +250,7 @@ export function useScreenshotInteraction({
     setIsSelecting(true);
     isSelectingRef.current = true;
     setHoverCandidate(null);
-    setCurrentRect({ x: cx, y: cy, w: 0, h: 0 }, true);
+    updateCurrentRect({ x: cx, y: cy, w: 0, h: 0 }, true);
     setSelection(false);
     return true;
   };
@@ -271,7 +278,7 @@ export function useScreenshotInteraction({
       h: Math.max(1, Math.min(Math.round(candidate.h), maxH - Math.round(candidate.y))),
       kind: candidate.kind,
     };
-    setCurrentRect(next, true);
+    updateCurrentRect(next, true);
     setSelection(true);
     setHoverCandidate(null);
     focusScreenshotWindow();
@@ -298,7 +305,7 @@ export function useScreenshotInteraction({
     if (e.button === 2) {
       e.preventDefault();
       if (hasSelectedRef.current) {
-        setCurrentRect(EMPTY_RECT(), true);
+        updateCurrentRect(EMPTY_RECT(), true);
         setSelection(false);
       } else {
         cancelScreenshot();
@@ -464,7 +471,7 @@ export function useScreenshotInteraction({
         isSelectingRef.current = true;
         setSelection(false);
         const next = { x: Math.min(startPosRef.current.x, cx), y: Math.min(startPosRef.current.y, cy), w: Math.abs(startPosRef.current.x - cx), h: Math.abs(startPosRef.current.y - cy) };
-        setCurrentRect(next, false);
+        updateCurrentRect(next, false);
         draw(next.x, next.y, next.w, next.h);
       }
       return;
@@ -483,7 +490,7 @@ export function useScreenshotInteraction({
         w: rectRef.current.w,
         h: rectRef.current.h,
       };
-      setCurrentRect(next, false);
+      updateCurrentRect(next, false);
       draw(next.x, next.y, next.w, next.h);
       return;
     }
@@ -502,7 +509,7 @@ export function useScreenshotInteraction({
       if (handle.includes("s")) y2 = r.y + r.h + dy;
       if (handle.includes("n")) y1 = r.y + dy;
       const next = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
-      setCurrentRect(next, false);
+      updateCurrentRect(next, false);
       draw(next.x, next.y, next.w, next.h);
       return;
     }
@@ -523,7 +530,7 @@ export function useScreenshotInteraction({
       const snapCy = snap(cy, snapY);
       selectionDragDistanceRef.current = Math.max(selectionDragDistanceRef.current, Math.hypot(snapCx - startPosRef.current.x, snapCy - startPosRef.current.y));
       const next = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
-      setCurrentRect(next, false);
+      updateCurrentRect(next, false);
       draw(next.x, next.y, next.w, next.h);
       return;
     }
@@ -577,7 +584,7 @@ export function useScreenshotInteraction({
     annotationResizeHandleRef.current = null;
     isDraggingRef.current = false;
     isResizingRef.current = null;
-    setCurrentRect({ ...rectRef.current }, true);
+    updateCurrentRect({ ...rectRef.current }, true);
     if (pendingDetection && !wasSelecting && !isDraggingRef.current && !isResizingRef.current) {
       selectDetectedRect(pendingDetection);
       return;

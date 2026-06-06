@@ -33,18 +33,25 @@ const RECORDING_SESSION_STORAGE_PREFIX = "ysn-recording-session:";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
+const getExistingWindows = async () => WebviewWindow.getAll().catch(() => []);
+
+export const getWindowByLabelIfExists = async (label: string) => {
+  const windows = await getExistingWindows();
+  return windows.find((win) => win.label === label) || null;
+};
+
 const waitForWindowGone = async (label: string, timeoutMs = 1200) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
-    const existing = await WebviewWindow.getByLabel(label).catch(() => null);
+    const existing = await getWindowByLabelIfExists(label);
     if (!existing) return true;
     await sleep(40);
   }
-  return !(await WebviewWindow.getByLabel(label).catch(() => null));
+  return !(await getWindowByLabelIfExists(label));
 };
 
-const closeWindowIfExists = async (label: string, timeoutMs = 1200) => {
-  const win = await WebviewWindow.getByLabel(label).catch(() => null);
+export const closeWindowIfExists = async (label: string, timeoutMs = 1200) => {
+  const win = await getWindowByLabelIfExists(label);
   if (!win) return;
   await win.hide().catch(() => {});
   await win.close().catch(() => {});

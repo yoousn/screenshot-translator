@@ -4,6 +4,82 @@
 
 ## 当前交接状态（2026-06-05）
 
+## Chapter 157：录制工具栏实时跟随、窗口清理门禁与安全审查
+
+### 目标
+
+- 修复截图选区拖拽/缩放时，包含录制按钮的截图工具栏不随选区实时移动的问题。
+- 修复 `Alt+A` 初始化截图时清理不存在的录制窗口可能唤醒空白 `recording_notice` 窗口的问题。
+- 按用户要求做一轮源码级全量审查，确认是否仍存在超过 800 行且需要拆分的源文件，并修复审查中发现的真实安全/兼容 BUG。
+
+### 实际完成
+
+- `ScreenshotPage.tsx` 增加基于 `requestAnimationFrame` 的工具栏 DOM 位置同步器：
+  - 复用 `getActionToolbarStyle` 计算位置。
+  - 在拖拽、缩放和实时绘制选区时直接写入 toolbar DOM 的 `top/left`，绕开 React 状态重绘延迟。
+  - 页面卸载时清理未完成 RAF，避免截图窗口关闭后的延迟 DOM 写入。
+- `useScreenshotInteraction.ts` 增加 `syncToolbarPosition` 回调，并把所有实时 rect 更新路径统一接入。
+- `recordingWindows.ts` 重写窗口关闭前的存在性门禁：
+  - 新增 `getWindowByLabelIfExists`，先用 `WebviewWindow.getAll()` 枚举真实存活窗口。
+  - `closeWindowIfExists` 与 `waitForWindowGone` 不再调用 `WebviewWindow.getByLabel()`。
+  - 不存在的 `recording_notice` / `recording_overlay` 会直接跳过，避免意外唤醒空白窗口。
+- `useRecordingControl.ts` 复用安全 `closeWindowIfExists`，移除本地 `getByLabel` 清理逻辑；录屏排除改为使用当前动态控制条 label。
+- 安全审查修复：
+  - `server/app.py` 不再明文打印 `client_token`，认证失败不再输出 received/expected token。
+  - 翻译器缓存 key 不再保存 API key 前缀，改为不可逆 SHA256 指纹。
+  - `server/config.py` 首次生成配置时日志只打印 redacted token，返回值仍保留真实 token。
+  - `localOcrTranslate.ts` 请求日志不再打印翻译服务 token。
+  - `server/security.py` 修复 DeepL 官方域名在代理 DNS 下解析到 `198.18.*` 时被误判为私网 SSRF 的问题，同时保持非白名单公网 URL 解析到私网时继续拒绝。
+- 新增 `server/tests/test_security.py` 覆盖 DeepL 官方域名代理 DNS 豁免与普通私网 DNS 拒绝。
+- 源码行数复查：
+  - 源码/脚本范围内没有超过 800 行的 `.ts/.tsx/.rs/.py/.ps1/.mjs/.js` 文件。
+  - 当前最大源码文件为 `useScreenshotInteraction.ts` 744 行、`ScreenshotPage.tsx` 716 行、`rapidocr_runner.py` 715 行，均低于 800 行。
+  - 超过 800 行的仅有 `package-lock.json`、`docs/IMPLEMENTATION_CHAPTERS.md`、OCR 模型/runner 二进制和 release 产物，不按业务源码模块拆分。
+
+### 新增文件
+
+- `server/tests/test_security.py`
+
+### 修改文件
+
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `tauri-client/src/utils/recordingWindows.ts`
+- `tauri-client/src/hooks/useRecordingControl.ts`
+- `tauri-client/src/utils/localOcrTranslate.ts`
+- `server/app.py`
+- `server/config.py`
+- `server/security.py`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### 删除文件
+
+- 无。
+
+### 本章不做
+
+- 不提交、不推送、不打 tag。
+- 不拆分锁文件、模型文件、图标、runner 二进制或 release 产物。
+- 不改变 OCR 主线、FFmpeg 参数、翻译通道业务语义或用户本机配置。
+
+### 验证
+
+- `npm run check:i18n`：通过，566 keys match。
+- `npm run check:ocr-processing`：通过。
+- `npm run build`：通过，仍只有既有 Vite 动态导入/chunk size warning。
+- `cargo test`：通过，19 passed。
+- `python -m py_compile server\app.py server\config.py server\security.py server\translator.py`：通过。
+- `python -m pytest server\tests`：通过，33 passed / 1 skipped。
+- `git diff --check`：通过，仅有工作区 LF 将被 Git 转 CRLF 的提示。
+
+### 当前风险
+
+- 已通过构建、Rust 测试、Python 测试和静态门禁；真实 `Alt+A -> 框选 -> 拖动/缩放选区 -> 工具栏跟随` 与 `Alt+A` 不弹空白录制窗口仍建议在 Windows 桌面人工 smoke。
+
+### 下一章建议
+
+- 继续做真实 Windows 录制流程 smoke：连续三次 `Alt+A -> 框选 -> 录制准备 -> 关闭`，并验证开始、暂停、继续、停止保存、取消清理后没有白屏窗口或残留控制条。
+
 ## Chapter 151：前端巨石代码拆解：截图批注 Hooks 抽取
 
 ### 目标
