@@ -25,6 +25,7 @@ interface OcrResultWindowProps {
   onClose: () => void;
   onCopyAndClose: () => void;
   normalizationSummary?: OcrResultNormalizationSummary | null;
+  diagnostics?: any;
 }
 
 export default function OcrResultWindow({
@@ -39,6 +40,7 @@ export default function OcrResultWindow({
   onClose,
   onCopyAndClose,
   normalizationSummary,
+  diagnostics,
 }: OcrResultWindowProps) {
   const { text: dictionary } = useI18n();
   const labels = dictionary.ocrResult;
@@ -112,6 +114,51 @@ export default function OcrResultWindow({
           <span>{labels.virtualLines || "Lines"} {normalizationSummary.virtualLineCount}</span>
           {normalizationSummary.droppedCount > 0 && <span>{labels.droppedBlocks || "Dropped"} {normalizationSummary.droppedCount}</span>}
           {(normalizationSummary.routeMissingScripts?.length || 0) > 0 && <span>{labels.missingScripts || "Missing scripts"} {normalizationSummary.routeMissingScripts?.join(", ")}</span>}
+        </div>
+      )}
+      {diagnostics && (
+        <div
+          data-no-drag="true"
+          style={{
+            padding: "6px 10px",
+            borderBottom: "1px solid #eef2f7",
+            background: "#fbfdff",
+            fontSize: 11,
+            color: "#64748b",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <details style={{ cursor: "pointer" }}>
+            <summary style={{ outline: "none", color: "#475569", fontWeight: 600, userSelect: "none" }}>
+              耗时时延诊断 (总耗时: {diagnostics.totalMs}ms)
+            </summary>
+            <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", fontFamily: "Consolas, monospace" }} onMouseDown={(e) => e.stopPropagation()}>
+              <div>总耗时: {diagnostics.totalMs}ms</div>
+              <div>截图加载: {diagnostics.captureMs}ms</div>
+              {diagnostics.textSource?.usable ? (
+                <div>文本源 (UIA): 命中 ({diagnostics.textSource.elapsedMs}ms) - {diagnostics.textSource.matchedRawCount}匹配</div>
+              ) : (
+                <div>文本源 (UIA): 未命中 ({diagnostics.textSource?.status || "empty"})</div>
+              )}
+              {diagnostics.localTimings?.ocrMs > 0 && (
+                <div>OCR 识别: {diagnostics.localTimings.ocrMs}ms ({diagnostics.localTimings.source})</div>
+              )}
+              {diagnostics.localTimings?.translationMs > 0 && (
+                <div>网络翻译: {diagnostics.localTimings.translationMs}ms ({diagnostics.usedChannel})</div>
+              )}
+              {diagnostics.serverTimings?.provider_ms > 0 && (
+                <div>- 服务端 RTT: {diagnostics.serverTimings.provider_ms}ms</div>
+              )}
+              {diagnostics.localTimings?.renderMs > 0 && (
+                <div>渲染回填: {diagnostics.localTimings.renderMs}ms</div>
+              )}
+              {diagnostics.usedServerUrl && (
+                <div style={{ gridColumn: "span 2", fontSize: 10, color: "#94a3b8", wordBreak: "break-all" }}>服务 URL: {diagnostics.usedServerUrl}</div>
+              )}
+            </div>
+          </details>
         </div>
       )}
       <Input.TextArea

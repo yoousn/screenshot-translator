@@ -226,6 +226,8 @@ export function useScreenshotLoader({
         if (sessionId !== captureIdRef.current) return;
         overlayVisibleRef.current = true;
         setOverlayVisible(true);
+        // 通知后端显示并激活截图窗口（窗口创建时是 hidden 的）
+        invoke("overlay_ready_to_show").catch(() => {});
         const focusWindow = () => {
           const canvasEl = document.querySelector("canvas");
           if (canvasEl) canvasEl.focus({ preventScroll: true });

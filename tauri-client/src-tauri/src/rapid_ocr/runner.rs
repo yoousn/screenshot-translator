@@ -2,7 +2,7 @@ use crate::*;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::process::Command;
-use std::time::{Instant, Duration};
+use std::time::Instant;
 use base64::prelude::*;
 
 use super::worker::{run_rapidocr_worker_ocr, rapid_ocr_worker_enabled};
@@ -41,8 +41,9 @@ pub fn run_local_ocr_sync(
     app: tauri::AppHandle,
     image_base64: String,
     _executable_path: Option<String>,
+    small_text_retry: Option<bool>,
 ) -> Result<Vec<OcrBlock>, String> {
-    match run_rapidocr_sync(&app, &image_base64) {
+    match run_rapidocr_sync(&app, &image_base64, small_text_retry) {
         Ok(blocks) if !blocks.is_empty() => Ok(blocks),
         Ok(_) => {
             Err(
@@ -53,7 +54,11 @@ pub fn run_local_ocr_sync(
     }
 }
 
-pub fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<Vec<OcrBlock>, String> {
+pub fn run_rapidocr_sync(
+    app: &tauri::AppHandle,
+    image_base64: &str,
+    small_text_retry: Option<bool>,
+) -> Result<Vec<OcrBlock>, String> {
     let total_started = Instant::now();
     let image_bytes = BASE64_STANDARD
         .decode(image_base64)
@@ -71,7 +76,12 @@ pub fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<V
             missing_models.join(", ")
         ));
     }
-    let args = vec![
+    
+    let final_small_text_retry = small_text_retry
+        .or_else(|| config_value_bool("rapidOcrSmallTextRetry"))
+        .unwrap_or(true);
+
+    let mut args = vec![
         "--image".to_string(),
         temp_path.to_string_lossy().to_string(),
         "--model-version".to_string(),
@@ -81,8 +91,12 @@ pub fn run_rapidocr_sync(app: &tauri::AppHandle, image_base64: &str) -> Result<V
         "--model-root".to_string(),
         model_root.to_string_lossy().to_string(),
     ];
+    if !final_small_text_retry {
+        args.push("--no-small-text-retry".to_string());
+    }
+
     let result = if rapid_ocr_worker_enabled() {
-        match run_rapidocr_worker_ocr(app, &temp_path, &model_version, &mode, &model_root) {
+        match run_rapidocr_worker_ocr(app, &temp_path, &model_version, &mode, &model_root, final_small_text_retry) {
             Ok(output) => Ok(output),
             Err(error) => {
                 eprintln!(

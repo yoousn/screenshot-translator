@@ -21,6 +21,7 @@ type OcrResultWindowOptions = {
   windowSize: { width: number; height: number };
   title?: string;
   normalizationSummary?: OcrResultNormalizationSummary;
+  diagnostics?: any;
 };
 
 const getOcrWindowPosition = async (
@@ -57,9 +58,9 @@ const getOcrWindowPosition = async (
   };
 };
 
-export const openOcrResultWindow = async ({ selection, text, previewBase64, margin, gap, windowSize, title, normalizationSummary }: OcrResultWindowOptions) => {
+export const openOcrResultWindow = async ({ selection, text, previewBase64, margin, gap, windowSize, title, normalizationSummary, diagnostics }: OcrResultWindowOptions) => {
   const label = `ocr_${Date.now()}`;
-  const payload = JSON.stringify({ text, previewBase64, title, normalizationSummary });
+  const payload = JSON.stringify({ text, previewBase64, title, normalizationSummary, diagnostics });
   const payloadKey = `ysn-ocr-result-${label}`;
   window.localStorage.setItem(payloadKey, payload);
   const position = await getOcrWindowPosition(selection, margin, gap, windowSize);

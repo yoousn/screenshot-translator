@@ -441,11 +441,60 @@ def _run_candidate(
     scale: float = 1.0,
     pad_x: int = 0,
     pad_y: int = 0,
+    det_cache: dict | None = None,
 ) -> dict:
+    import copy
+
     engine, init_ms, cache_hit = _get_engine(lang, version, model_root)
     infer_started = time.perf_counter()
-    result = engine(str(image_path), use_cls=False)
-    infer_ms = int(round((time.perf_counter() - infer_started) * 1000))
+
+    reused_det = False
+    if det_cache is not None and variant in det_cache:
+        det_res, cls_res, cropped_img_list, op_record, ori_img = det_cache[variant]
+        reused_det = True
+        
+        if det_res.boxes is None or len(det_res.boxes) == 0:
+            return {
+                "lang": lang,
+                "variant": variant,
+                "blocks": [],
+                "quality": -1000.0,
+                "timings": {
+                    "init_ms": init_ms,
+                    "engine_ms": 0,
+                    "rapidocr_ms": 0,
+                    "cache_hit": cache_hit,
+                    "reused_det": True,
+                },
+            }
+
+        det_res_copy = copy.deepcopy(det_res)
+        cropped_img_list_copy = copy.deepcopy(cropped_img_list)
+
+        rec_res = engine.recognize_txt(cropped_img_list_copy)
+        result = engine.build_final_output(
+            ori_img, det_res_copy, cls_res, rec_res, cropped_img_list_copy, op_record
+        )
+        infer_ms = int(round((time.perf_counter() - infer_started) * 1000))
+    else:
+        ori_img = engine.load_img(str(image_path))
+        img, op_record = engine.preprocess_img(ori_img)
+        det_res, cls_res, rec_res, cropped_img_list = engine.run_ocr_steps(img, op_record)
+
+        if det_cache is not None:
+            det_cache[variant] = (
+                copy.deepcopy(det_res),
+                copy.deepcopy(cls_res),
+                copy.deepcopy(cropped_img_list),
+                copy.deepcopy(op_record),
+                ori_img,
+            )
+
+        result = engine.build_final_output(
+            ori_img, det_res, cls_res, rec_res, cropped_img_list, op_record
+        )
+        infer_ms = int(round((time.perf_counter() - infer_started) * 1000))
+
     blocks = _scale_block_coords(_blocks_from_result(result), scale, pad_x, pad_y)
     return {
         "lang": lang,
@@ -457,6 +506,7 @@ def _run_candidate(
             "engine_ms": infer_ms,
             "rapidocr_ms": int(round(float(getattr(result, "elapse", 0.0)) * 1000)),
             "cache_hit": cache_hit,
+            "reused_det": reused_det,
         },
     }
 
@@ -480,6 +530,7 @@ def _append_candidate(
     scale: float = 1.0,
     pad_x: int = 0,
     pad_y: int = 0,
+    det_cache: dict | None = None,
 ) -> None:
     try:
         candidates.append(
@@ -492,6 +543,7 @@ def _append_candidate(
                 scale=scale,
                 pad_x=pad_x,
                 pad_y=pad_y,
+                det_cache=det_cache,
             )
         )
     except Exception as exc:
@@ -499,6 +551,8 @@ def _append_candidate(
 
 
 def _best_candidate(candidates: list[dict]) -> dict:
+    if not candidates:
+        return {"blocks": [], "quality": -1000.0, "lang": "ch", "variant": "original"}
     return max(candidates, key=lambda item: float(item.get("quality", -1000.0)))
 
 
@@ -512,15 +566,25 @@ def run_ocr(
 ) -> dict:
     total_started = time.perf_counter()
     candidates: list[dict] = []
+    det_cache = {}
 
     for lang in _select_candidates(mode):
-        _append_candidate(candidates, image_path, lang, version, model_root)
-
-    if mode == "auto" and _should_try_fallback(_best_candidate(candidates)["blocks"]):
-        _append_candidate(candidates, image_path, "latin", version, model_root)
+        _append_candidate(candidates, image_path, lang, version, model_root, det_cache=det_cache)
+        # 候选早停：如果当前识别的质量极高，且不需要 fallback，立刻早停
+        best = _best_candidate(candidates)
+        if best and not _should_try_fallback(best.get("blocks", [])) and float(best.get("quality", -1000.0)) >= 65.0:
+            break
 
     best = _best_candidate(candidates)
-    if small_text_retry and _should_try_small_text_retry(best.get("blocks", []), float(best.get("quality", -1000.0))):
+    # 若 mode 为 auto 且需要 fallback，则跑 latin
+    if mode == "auto" and _should_try_fallback(best.get("blocks", [])):
+        _append_candidate(candidates, image_path, "latin", version, model_root, det_cache=det_cache)
+        best = _best_candidate(candidates)
+
+    # 候选早停判断：如果质量已足够高，不再进行后续的高耗时 fallback 和 small_text_retry
+    can_early_exit = best and not _should_try_fallback(best.get("blocks", [])) and float(best.get("quality", -1000.0)) >= 65.0
+
+    if not can_early_exit and small_text_retry and _should_try_small_text_retry(best.get("blocks", []), float(best.get("quality", -1000.0))):
         enhanced_variants = _enhanced_image_variants(image_path)
         try:
             for variant in enhanced_variants:
@@ -536,6 +600,7 @@ def run_ocr(
                         scale=float(variant["scale"]),
                         pad_x=int(variant["pad_x"]),
                         pad_y=int(variant["pad_y"]),
+                        det_cache=det_cache,
                     )
         finally:
             for variant in enhanced_variants:
@@ -545,17 +610,24 @@ def run_ocr(
                     pass
 
     best = _best_candidate(candidates)
+    can_early_exit = best and not _should_try_fallback(best.get("blocks", [])) and float(best.get("quality", -1000.0)) >= 65.0
+
     fallback_langs: list[str] = []
-    if mode == "full":
-        fallback_langs = ["latin", "korean", "arabic", "cyrillic", "th"]
-    elif mode == "auto" and _should_try_fallback(best.get("blocks", [])):
-        fallback_langs = ["korean", "arabic", "cyrillic", "th"]
+    if not can_early_exit:
+        if mode == "full":
+            fallback_langs = ["latin", "korean", "arabic", "cyrillic", "th"]
+        elif mode == "auto" and _should_try_fallback(best.get("blocks", [])):
+            fallback_langs = ["korean", "arabic", "cyrillic", "th"]
 
     if fallback_langs:
         already_run = {(item.get("lang"), item.get("variant", "original")) for item in candidates}
         for lang in fallback_langs:
             if (lang, "original") not in already_run:
-                _append_candidate(candidates, image_path, lang, version, model_root)
+                _append_candidate(candidates, image_path, lang, version, model_root, det_cache=det_cache)
+                best = _best_candidate(candidates)
+                # Fallback 早停：如果 fallback 的语言得到了非常好的结果且有该语种字符，可以早停
+                if best and best.get("lang") == lang and float(best.get("quality", -1000.0)) >= 65.0:
+                    break
 
     best = _best_candidate(candidates)
     return {

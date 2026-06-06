@@ -1,8 +1,3 @@
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-use crate::recording_process::*;
-
-
 pub mod app_paths;
 pub use app_paths::*;
 
@@ -44,13 +39,10 @@ pub use recording_overlay::*;
 
 use arboard::{Clipboard, ImageData};
 use base64::{prelude::BASE64_STANDARD, Engine};
-use futures_util::StreamExt;
 use screenshots::Screen;
 use std::borrow::Cow;
 use std::fs;
-use std::io::{BufRead, BufReader, Cursor, Write};
-use std::path::PathBuf;
-use std::process::{ChildStdin, ChildStdout, Command};
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -58,7 +50,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use tokio::time::Duration;
 
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
@@ -430,8 +421,7 @@ fn get_default_recording_output_dir() -> Result<String, String> {
 
 
 use serde::{Deserialize, Serialize};
-use std::process::{Child, Stdio};
-use std::time::Instant;
+
 
 
 
@@ -542,6 +532,7 @@ pub fn run() {
             prewarm_local_ocr_models,
             re_register_shortcut,
             get_diagnostics_report,
+            set_last_translation_diagnostics,
             get_startup_diagnostics_probe_path,
             get_startup_readiness_snapshot,
             run_startup_readiness_probe,

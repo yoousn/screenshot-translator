@@ -18,6 +18,7 @@ interface OcrWindowPayload {
   previewBase64: string;
   title?: string;
   normalizationSummary?: OcrResultNormalizationSummary;
+  diagnostics?: any;
 }
 
 export default function OcrPage() {
@@ -32,6 +33,7 @@ export default function OcrPage() {
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
   const [contextMenu, setContextMenu] = useState<OcrResultContextMenu>(null);
   const [normalizationSummary, setNormalizationSummary] = useState<OcrResultNormalizationSummary | null>(null);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
 
   useEffect(() => {
     setTitle((current) => current || labels.defaultTitle);
@@ -50,6 +52,7 @@ export default function OcrPage() {
       setPreviewBase64(payload.previewBase64 || "");
       setTitle(payload.title || labels.defaultTitle);
       setNormalizationSummary(payload.normalizationSummary || null);
+      setDiagnostics(payload.diagnostics || null);
     };
 
     const applyPayloadJson = (payloadJson: string | null) => {
@@ -173,6 +176,7 @@ export default function OcrPage() {
       onClose={closeWindow}
       onCopyAndClose={copyAndClose}
       normalizationSummary={normalizationSummary}
+      diagnostics={diagnostics}
     />
   );
 }

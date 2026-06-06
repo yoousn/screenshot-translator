@@ -6,6 +6,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$env:PYTHONIOENCODING = "utf-8"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $clientRoot = Join-Path $repoRoot "tauri-client"
 $tauriRoot = Join-Path $clientRoot "src-tauri"
@@ -98,7 +102,7 @@ if ($TauriBuild) {
 
 if ($SmokeLaunch) {
   Run-Step "release exe smoke launch" {
-    $exePath = Join-Path $tauriRoot "target\release\tauri-client.exe"
+    $exePath = Join-Path $tauriRoot "target\release\YsnTrans.exe"
     if (-not (Test-Path -LiteralPath $exePath)) {
       throw "Release executable not found at $exePath. Run with -TauriBuild first."
     }

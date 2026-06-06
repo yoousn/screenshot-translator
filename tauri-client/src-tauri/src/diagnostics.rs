@@ -15,6 +15,20 @@ pub fn cache_startup_readiness_snapshot(snapshot: serde_json::Value) {
     }
 }
 
+pub static LAST_TRANSLATION_DIAGNOSTICS: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+
+pub fn get_last_translation_diagnostics() -> &'static Mutex<Option<serde_json::Value>> {
+    LAST_TRANSLATION_DIAGNOSTICS.get_or_init(|| Mutex::new(None))
+}
+
+#[tauri::command]
+pub fn set_last_translation_diagnostics(payload: serde_json::Value) -> Result<(), String> {
+    if let Ok(mut guard) = get_last_translation_diagnostics().lock() {
+        *guard = Some(payload);
+    }
+    Ok(())
+}
+
 pub fn startup_diagnostics_probe_path() -> PathBuf {
     std::env::temp_dir()
         .join("ysn_screenshot_translator")
@@ -175,6 +189,12 @@ pub fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value
         "note": "Shortcut registration errors are surfaced during app startup; detailed shortcut state is managed in AppShortcutStatus."
     });
 
+    let last_translation = get_last_translation_diagnostics()
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or(None)
+        .unwrap_or_else(|| serde_json::json!(null));
+
     let mut issues = Vec::new();
     if !ocr_runtime["ready"].as_bool().unwrap_or(false) {
         issues.push(serde_json::json!({
@@ -258,6 +278,7 @@ pub fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value
         "ocrRuntime": ocr_runtime,
         "recording": recording,
         "shortcuts": shortcut_status,
+        "lastTranslation": last_translation,
         "recovery": {
             "ocr": "Open the text recognition panel, choose Rapid OCR V5 or V4, then run self-test.",
             "recording": "Install or choose ffmpeg.exe, then re-check video recording dependency.",

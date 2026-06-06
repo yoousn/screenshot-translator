@@ -2,6 +2,8 @@ use std::time::Duration;
 use tauri::Manager;
 #[cfg(target_os = "windows")]
 use crate::win32;
+#[cfg(target_os = "windows")]
+use crate::window_targets::window_title;
 use crate::recording_overlay::*;
 
 #[cfg(target_os = "windows")]
@@ -226,22 +228,6 @@ unsafe extern "system" fn enum_windows_dump_callback(hwnd: isize, lparam: isize)
         }));
     }
     1
-}
-
-#[cfg(target_os = "windows")]
-fn window_title(hwnd: isize) -> String {
-    let len = unsafe { win32::GetWindowTextLengthW(hwnd) };
-    if len <= 0 {
-        return String::new();
-    }
-    let mut buffer = vec![0u16; (len + 1) as usize];
-    let copied = unsafe { win32::GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
-    if copied <= 0 {
-        return String::new();
-    }
-    String::from_utf16_lossy(&buffer[..copied as usize])
-        .trim()
-        .to_string()
 }
 
 #[cfg(target_os = "windows")]

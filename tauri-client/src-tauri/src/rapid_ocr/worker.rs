@@ -3,7 +3,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, Duration};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::runner::{
     rapid_ocr_model_version, rapid_ocr_model_root, rapid_ocr_missing_model_files,
@@ -180,6 +180,7 @@ pub fn run_rapidocr_worker_ocr(
     model_version: &str,
     mode: &str,
     model_root: &Path,
+    small_text_retry: bool,
 ) -> Result<RapidOcrRunnerOutput, String> {
     let result = with_rapid_ocr_worker(app, |worker| {
         rapid_ocr_worker_request_value(
@@ -190,7 +191,7 @@ pub fn run_rapidocr_worker_ocr(
                 "modelVersion": model_version,
                 "mode": mode,
                 "modelRoot": model_root.to_string_lossy().to_string(),
-                "smallTextRetry": true
+                "smallTextRetry": small_text_retry
             }),
         )
     })?;

@@ -17,7 +17,18 @@ export interface ScreenshotOcrDeps {
   resetScreenshotState: () => void;
   draw: (x: number, y: number, w: number, h: number, img: HTMLImageElement | HTMLCanvasElement | null) => void;
   translatedImgRef: React.MutableRefObject<HTMLImageElement | null>;
-  getTextSourceBlocksForCurrentSelection: (maxWaitMs?: number) => Promise<{ usable: boolean; blocks: OcrBlock[]; elapsedMs: number }>;
+  getTextSourceBlocksForCurrentSelection: (maxWaitMs?: number) => Promise<{
+    usable: boolean;
+    blocks: OcrBlock[];
+    elapsedMs: number;
+    status?: string;
+    rawCount?: number;
+    matchedRawCount?: number;
+    rejectedRawCount?: number;
+    rejectedAggregateCount?: number;
+    maxElementCoverage?: number;
+    maxSelectionCoverage?: number;
+  }>;
 }
 
 export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
@@ -39,6 +50,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
   const [translatePairs, setTranslatePairs] = useState<TranslatePair[] | null>(null);
   const [translatedResult, setTranslatedResult] = useState<string | null>(null);
   const [translateResultPreviewBase64, setTranslateResultPreviewBase64] = useState<string | null>(null);
+  const [lastTranslationDiagnostics, setLastTranslationDiagnostics] = useState<any>(null);
 
   const isOCRingRef = useRef(false);
   const isTranslatingRef = useRef(false);
@@ -185,6 +197,33 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
               source: "text-source",
             })
           : await translateWithLocalOcr(base64, configRef.current);
+        const diagPayload = {
+          timestamp: new Date().toLocaleString(),
+          totalMs: Math.round(performance.now() - startTime),
+          captureMs,
+          ocrTranslateRenderMs: Math.round(performance.now() - localFlowStarted),
+          usedServerUrl: result.usedServerUrl,
+          usedChannel: result.usedChannel,
+          blocksCount: result.blocksCount,
+          textSource: textSource ? {
+            usable: textSource.usable,
+            status: textSource.status,
+            elapsedMs: textSource.elapsedMs,
+            rawCount: textSource.rawCount,
+            matchedRawCount: textSource.matchedRawCount,
+            rejectedRawCount: textSource.rejectedRawCount,
+            rejectedAggregateCount: textSource.rejectedAggregateCount,
+            maxElementCoverage: textSource.maxElementCoverage,
+            maxSelectionCoverage: textSource.maxSelectionCoverage,
+          } : null,
+          localTimings: result.localTimings,
+          serverTimings: result.translationTimings,
+        };
+        setLastTranslationDiagnostics(diagPayload);
+        invoke("set_last_translation_diagnostics", { payload: diagPayload }).catch((err) => {
+          console.warn("Failed to set last translation diagnostics in Rust backend", err);
+        });
+
         console.info("[Local Translate Flow] timings", {
           captureMs,
           ocrTranslateRenderMs: Math.round(performance.now() - localFlowStarted),
@@ -285,10 +324,11 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       gap: FLOATING_PANEL_GAP,
       windowSize: OCR_WINDOW_SIZE,
       title: "\u7ffb\u8bd1\u7ed3\u679c\u660e\u7ec6",
+      diagnostics: lastTranslationDiagnostics,
     });
     resetScreenshotState();
     await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
-  }, [rectRef, resetScreenshotState, translatePairs, translateResultPreviewBase64]);
+  }, [rectRef, resetScreenshotState, translatePairs, translateResultPreviewBase64, lastTranslationDiagnostics]);
 
   const resetOcrState = useCallback(() => {
     setIsOCRingSync(false);
@@ -296,6 +336,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
     setTranslatePairs(null);
     setTranslatedResult(null);
     setTranslateResultPreviewBase64(null);
+    setLastTranslationDiagnostics(null);
   }, [setIsOCRingSync, setIsTranslatingSync]);
 
   return {
@@ -304,6 +345,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
     translatePairs,
     translatedResult,
     translateResultPreviewBase64,
+    lastTranslationDiagnostics,
     prewarmLocalOcrWorker,
     handleOCR,
     handleTranslate,
