@@ -10,7 +10,7 @@ import time
 import hashlib
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata
-from security import normalize_relay_base_url, request_relay_url
+from security import normalize_relay_base_url, normalize_public_base_url, request_relay_url
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ _CONFIG_TTL = 5.0
 
 def get_config():
     global _config_cache, _config_cache_time
-    now = time.time()
+    now = time.perf_counter()
     if _config_cache is None or (now - _config_cache_time) > _CONFIG_TTL:
         _config_cache = load_server_config()
         _config_cache_time = now
@@ -117,7 +117,8 @@ def _server_config_payload(payload: dict) -> tuple[str, dict]:
         c["base_url"] = normalize_relay_base_url(c.get("base_url"))
     if channel == "deepl":
         c = dict(c)
-        c["endpoint"] = c.get("endpoint") or "https://api-free.deepl.com"
+        endpoint = c.get("endpoint") or "https://api-free.deepl.com"
+        c["endpoint"] = normalize_public_base_url(endpoint)
     return channel, c
 
 
@@ -332,7 +333,12 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
         headers = {"Authorization": f"Bearer {api_key}"}
         res = request_relay_url(requests, "GET", f"{base_url}/v1/models", headers=headers, timeout=5)
         if res.status_code == 200:
-            m_list = [item["id"] for item in res.json().get("data", [])]
+            data = res.json().get("data", [])
+            m_list = [
+                str(item.get("id")).strip()
+                for item in data
+                if isinstance(item, dict) and item.get("id")
+            ]
             return {"status": "success", "models": m_list}
         return {"status": "failed", "error": f"中转服务返回状态码 {res.status_code}"}
     except Exception as e:

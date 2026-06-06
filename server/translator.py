@@ -199,7 +199,7 @@ class TranslationCache:
             if key not in self.cache:
                 return None
             val, expire = self.cache[key]
-            if time.time() > expire:
+            if time.perf_counter() > expire:
                 # Expired
                 self.cache.pop(key, None)
                 return None
@@ -213,7 +213,7 @@ class TranslationCache:
             if len(self.cache) >= self.maxsize and key not in self.cache:
                 self.cache.popitem(last=False)
 
-            expire = time.time() + self.ttl_seconds
+            expire = time.perf_counter() + self.ttl_seconds
             self.cache[key] = (value, expire)
             self.cache.move_to_end(key)
 
