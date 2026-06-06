@@ -599,7 +599,7 @@ export function useScreenshotInteraction({
       setTimeout(() => handleTranslate(), 0);
     }
     if (valid && explicitSelectionRelease && screenshotModeRef.current === "record") {
-      setTimeout(() => enterRecordingMode("region"), 0);
+      // setTimeout(() => enterRecordingMode("region"), 0);
     }
   };
 

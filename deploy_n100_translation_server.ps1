@@ -58,6 +58,7 @@ echo deploy-backups/`$ts
 "@
 
 Write-Host "[1/6] Backing up remote service files..."
+$remoteBackup = $remoteBackup -replace "`r", ""
 Invoke-Remote $remoteBackup
 
 Write-Host "[2/6] Uploading server app, config, security, translator, prompt, and glossary..."
@@ -83,6 +84,7 @@ done
 ps -ef | awk '/[u]vicorn app:app/ && /--port $Port/ {print}'
 exit 1
 "@
+$stopCommand = $stopCommand -replace "`r", ""
 Invoke-Remote $stopCommand
 Start-Sleep -Seconds 1
 $startCommand = "cd '$RemoteDir' && setsid -f .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port $Port > uvicorn.log 2>&1 < /dev/null"
