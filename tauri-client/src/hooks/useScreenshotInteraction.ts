@@ -464,7 +464,8 @@ export function useScreenshotInteraction({
         isSelectingRef.current = true;
         setSelection(false);
         const next = { x: Math.min(startPosRef.current.x, cx), y: Math.min(startPosRef.current.y, cy), w: Math.abs(startPosRef.current.x - cx), h: Math.abs(startPosRef.current.y - cy) };
-        setCurrentRect(next, true);
+        setCurrentRect(next, false);
+        draw(next.x, next.y, next.w, next.h);
       }
       return;
     }
@@ -482,7 +483,8 @@ export function useScreenshotInteraction({
         w: rectRef.current.w,
         h: rectRef.current.h,
       };
-      setCurrentRect(next, true);
+      setCurrentRect(next, false);
+      draw(next.x, next.y, next.w, next.h);
       return;
     }
 
@@ -500,7 +502,8 @@ export function useScreenshotInteraction({
       if (handle.includes("s")) y2 = r.y + r.h + dy;
       if (handle.includes("n")) y1 = r.y + dy;
       const next = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
-      setCurrentRect(next, true);
+      setCurrentRect(next, false);
+      draw(next.x, next.y, next.w, next.h);
       return;
     }
 
@@ -520,7 +523,8 @@ export function useScreenshotInteraction({
       const snapCy = snap(cy, snapY);
       selectionDragDistanceRef.current = Math.max(selectionDragDistanceRef.current, Math.hypot(snapCx - startPosRef.current.x, snapCy - startPosRef.current.y));
       const next = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
-      setCurrentRect(next, true);
+      setCurrentRect(next, false);
+      draw(next.x, next.y, next.w, next.h);
       return;
     }
 

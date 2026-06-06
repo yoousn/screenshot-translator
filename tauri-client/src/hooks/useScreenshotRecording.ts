@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "antd";
 import type { Rect } from "../types/screenshot";
 import { getPhysicalSelection } from "../utils/screenshotImage";
-import { openRecordingWindows } from "../utils/recordingWindows";
+import { openRecordingWindows, closeRecordingBorderWindows } from "../utils/recordingWindows";
 
 export type RecordingStatus = "idle" | "ready" | "recording";
 export type RecordingMode = "region" | "window" | "display";
@@ -340,6 +340,9 @@ export function useScreenshotRecording({
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
       message.success(`录屏已保存：${savedPath}`);
       triggerRender();
+      setTimeout(() => {
+        closeRecordingBorderWindows().catch(console.error);
+      }, 100);
     } catch (error: any) {
       message.error("完成录屏失败：" + (error?.message || error));
       setRecordingStatus("recording");
@@ -366,6 +369,9 @@ export function useScreenshotRecording({
       resetScreenshotState();
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
       triggerRender();
+      setTimeout(() => {
+        closeRecordingBorderWindows().catch(console.error);
+      }, 100);
     }
   };
 
@@ -377,6 +383,9 @@ export function useScreenshotRecording({
     setRecordingStartedAt(null);
     setRecordingElapsedMs(0);
     setRecordingPickerMode(null);
+    setTimeout(() => {
+      closeRecordingBorderWindows().catch(console.error);
+    }, 100);
   };
 
   return {
