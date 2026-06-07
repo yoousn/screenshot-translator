@@ -1,4 +1,4 @@
-﻿use crate::recording_overlay::*;
+use crate::recording_overlay::*;
 #[cfg(target_os = "windows")]
 use crate::win32;
 #[cfg(target_os = "windows")]
@@ -92,6 +92,33 @@ pub fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWind
             );
         }
     }
+}
+
+fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
+    let _ = window.set_skip_taskbar(true);
+    let _ = window.show();
+    let _ = window.set_always_on_top(true);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        let hwnd = hwnd.0 as isize;
+        unsafe {
+            let _ = win32::SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            let _ = win32::BringWindowToTop(hwnd);
+            let _ = win32::SetForegroundWindow(hwnd);
+            let _ = win32::SetActiveWindow(hwnd);
+            let _ = win32::SetFocus(hwnd);
+        }
+        return;
+    }
+    let _ = window.set_focus();
 }
 pub fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
     if window.label() == "main" {
@@ -204,7 +231,7 @@ pub async fn wait_for_hidden_main_capture_settle() {
         unsafe {
             let _ = win32::DwmFlush();
         }
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(16)).await;
         unsafe {
             let _ = win32::DwmFlush();
         }
@@ -492,8 +519,7 @@ pub async fn overlay_ready_to_show(
             target_label
         ));
     };
-    let _ = screenshot_win.set_skip_taskbar(true);
-    activate_webview_window(&screenshot_win);
+    show_screenshot_overlay_window(&screenshot_win);
     Ok(())
 }
 #[tauri::command]

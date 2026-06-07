@@ -1,88 +1,121 @@
-# YSN 截图翻译 v1.0
+﻿# YsnTrans Screenshot Translator
 
-YSN 截图翻译是一个面向 Windows 的轻量截图、OCR、翻译和标注工具。当前版本以 **本地 OCR + 本地桌面交互** 为主，支持快速截图、二次截图、区域 OCR、截图翻译重绘、贴图、标注、复制与保存。
+**YsnTrans Screenshot Translator** is a Windows desktop productivity app for fast screenshots, OCR, translation, annotation, pinning, scrolling capture, and screen recording. It is built for users who need to capture information quickly, translate text in context, and keep visual notes without leaving their workflow.
 
----
+> Default language: English. 中文文档请见 [README.zh-CN.md](README.zh-CN.md).
 
-## 核心功能
+## Release Status
 
-- **快速截图**：支持托盘菜单、双击托盘图标和全局快捷键 `Alt+A` 启动截图。
-- **二次截图**：截图层可见时再次 `Alt+A`，会把当前蓝色选框、工具栏和标注一起截入新截图，同时仍复用单个安全截图窗口。
-- **强制退出**：截图状态下 `Esc` / `Alt+F4` 会强制退出截图层，避免全屏遮罩残留或卡死。
-- **本地 OCR**：使用本地 `PaddleOCR-json.exe` 进行文字识别，减少对远端 OCR 服务的依赖。
-- **截图翻译**：识别文字后翻译并在原图区域重绘；窄框和竖向截图会优先横向排版，减少一字一行的问题。
-- **截图编辑**：支持方框、圆形、箭头、画笔、马赛克、文字、撤销/重做等标注能力。
-- **贴图与导出**：截图结果可置顶贴图，也可复制到剪贴板或保存为图片。
-- **OCR 结果窗口**：OCR/翻译结果可在独立窗口查看与复制。
-- **录屏**：支持 30/60 FPS、480P/720P/1080P/原画、麦克风、系统声音设备（WASAPI / Stereo Mix / 虚拟声卡，取决于系统与 FFmpeg 支持）和 ffmpeg 官方下载更新。
-- **滚动截图**：选区后可自动滚动采集并拼接长图，适合浏览器和普通滚动窗口。
+- Current release target: **v1.2.5**
+- Platform: **Windows**
+- App name: **YsnTrans**
+- Core stack: **Tauri 2 + React + TypeScript + Rust**
+- OCR direction: bundled, product-owned **RapidOCR / ONNXRuntime** workflow with local/offline-first behavior
 
----
+## Highlights
 
-## 快捷键
+- **Fast screenshot workflow**: start capture from tray actions or the global `Alt+A` hotkey.
+- **Screenshot translation**: select a region, run OCR, translate the result, and redraw translated text over the original image.
+- **Local OCR pipeline**: designed around bundled local OCR assets so core capture and recognition flows do not depend on a cloud OCR service.
+- **Smart window selection**: detects windows, controls, monitor work areas, and avoids common taskbar/system-window false positives.
+- **Annotation tools**: rectangle, ellipse, arrow, brush, mosaic, text, undo, and redo.
+- **Pin screenshots**: keep selected regions floating on top for comparison or note-taking.
+- **Scrolling capture**: capture long pages or scrollable windows by selecting a region and collecting stitched content.
+- **Screen recording**: record selected regions with frame-rate, resolution, microphone, system audio, and FFmpeg configuration options.
+- **Result windows**: view and copy OCR/translation results in dedicated windows.
+- **Commercial-grade recovery paths**: cancel, force-close, local fallback, and explicit status feedback for critical flows.
 
-| 快捷键 | 功能 |
-| --- | --- |
-| `Alt+A` | 启动截图 / 二次截图 |
-| `Alt+T` | 启动截图翻译 |
-| `Esc` | 退出当前截图状态 |
-| `Alt+F4` | 强制退出所有截图状态 |
-| `Ctrl+C` | 复制当前截图结果 |
-| `Ctrl+S` | 保存当前截图结果 |
-| `Ctrl+Q` | 对当前选区执行翻译 |
-| `1` | 切换方框工具 |
-| `2` | 切换圆形工具 |
-| `3` | 切换箭头工具 |
-| `4` | 切换画笔工具 |
-| `5` / `T` | 切换文字工具 |
-| `6` | 切换马赛克工具 |
-| `P` | 将当前选区贴图 |
-| `Ctrl+Z` | 撤销标注 |
-| `Ctrl+Y` / `Ctrl+Shift+Z` | 恢复标注 |
+## Download And Install
 
----
-
-## 项目结构
+For a packaged release, use one of the generated installers:
 
 ```text
-zzjt/
-├── build.bat                     # Windows 一键构建脚本
-├── app.ico                       # 应用图标源文件
-├── docs/                         # 设计文档与优化计划
-├── ocr/                          # 本地 OCR 运行文件目录，不提交 Git
-├── server/                       # 翻译服务相关代码
-└── tauri-client/
-    ├── src/                      # React 前端
-    │   ├── components/           # 通用/页面组件
-    │   ├── hooks/                # 页面逻辑 Hook
-    │   ├── pages/                # 页面入口
-    │   ├── types/                # 共享类型
-    │   └── utils/                # 纯工具函数
-    └── src-tauri/                # Tauri/Rust 后端
-        ├── icons/                # 打包图标
-        └── src/lib.rs            # 系统能力、截图、OCR、托盘与快捷键
+tauri-client/src-tauri/target/release/bundle/nsis/YsnTrans_1.2.5_x64-setup.exe
+tauri-client/src-tauri/target/release/bundle/msi/YsnTrans_1.2.5_x64_en-US.msi
 ```
 
----
+If Windows SmartScreen appears, choose the standard Windows confirmation path for unsigned desktop software. Code signing should be added before broad public distribution.
 
-## 开发规范
+## Quick Start
 
-### 组件拆分原则
+1. Install and launch **YsnTrans**.
+2. Press `Alt+A` to enter screenshot mode.
+3. Drag a region, then choose copy, save, pin, OCR, translate, annotate, or record actions from the toolbar.
+4. Press `Esc` to leave screenshot mode at any time.
 
-为了避免 `tsx` 文件越来越大、逻辑肿胀，后续新增或改造功能时遵循以下规则：
+## Hotkeys
 
-- **组件单独写**：凡是可复用或有独立职责的 UI，都放到 `tauri-client/src/components/` 下独立文件。
-- **页面只做编排**：`pages/` 里的文件尽量只负责页面组合、状态串联和事件入口，不堆大量 JSX 细节。
-- **逻辑抽 Hook**：复杂状态、表单、配置、异步流程优先放到 `tauri-client/src/hooks/`。
-- **工具函数抽 utils**：纯计算、图片处理、布局计算、OCR/翻译辅助逻辑放到 `tauri-client/src/utils/`。
-- **类型集中管理**：跨组件使用的类型放到 `tauri-client/src/types/`，避免到处重复定义。
-- **单文件控制体积**：如果一个文件持续变长，优先按“UI 组件 / Hook 逻辑 / 工具函数 / 类型”拆分。
+| Hotkey | Action |
+| --- | --- |
+| `Alt+A` | Start screenshot / repeat screenshot |
+| `Alt+T` | Start screenshot translation |
+| `Esc` | Exit the current screenshot state |
+| `Alt+F4` | Force-close screenshot overlays |
+| `Ctrl+C` | Copy current screenshot result |
+| `Ctrl+S` | Save current screenshot result |
+| `Ctrl+Q` | Translate the current selected region |
+| `1` | Rectangle tool |
+| `2` | Ellipse tool |
+| `3` | Arrow tool |
+| `4` | Brush tool |
+| `5` / `T` | Text tool |
+| `6` | Mosaic tool |
+| `P` | Pin the current selected region |
+| `Ctrl+Z` | Undo annotation |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo annotation |
 
-当前的拆分方向就是这个结构：页面入口保留，截图工具栏、渲染函数、OCR/翻译辅助、设置/仪表盘组件逐步迁移到独立模块中。这样后续修改按钮、调整布局、优化 OCR 或翻译重绘时，只需要改对应小文件，不容易牵连整页。
+## Feature Notes
 
----
+### Screenshot And Window Capture
 
-## 开发运行
+YsnTrans uses a dedicated screenshot overlay window and local image buffers to reduce startup delay. The window target detector combines Windows window bounds, DWM frame bounds, monitor work areas, and system-window filtering to improve selection around browser edges, monitor borders, and the Windows taskbar.
+
+### OCR And Translation
+
+The product direction is a bundled RapidOCR / ONNXRuntime pipeline with PP-OCR model assets. The app is designed to support automatic source-language handling and user-selectable target languages, with Simplified Chinese as the default target language.
+
+### Recording
+
+Recording uses FFmpeg. The app can use a bundled `ffmpeg/ffmpeg.exe` next to the application, a manually selected FFmpeg path, or a downloaded FFmpeg runtime depending on user configuration.
+
+### Scrolling Capture
+
+After selecting a region, use scrolling capture to collect long content such as web pages or document views. For best results, keep the target window visible and avoid changing scale or layout during capture.
+
+## Repository Layout
+
+```text
+.
+├─ build.bat                         # Windows convenience build script
+├─ docs/                             # Product direction and implementation history
+├─ ffmpeg/                           # Optional FFmpeg runtime location
+├─ models/                           # OCR model assets used by packaged builds
+├─ release/                          # Local assembled release artifacts
+├─ scripts/                          # Build/release helper scripts
+├─ server/                           # Translation service components
+└─ tauri-client/
+   ├─ src/                           # React frontend
+   │  ├─ components/                 # UI components
+   │  ├─ hooks/                      # Screenshot, OCR, recording, and UI hooks
+   │  ├─ pages/                      # App pages
+   │  ├─ types/                      # Shared TypeScript types
+   │  └─ utils/                      # Frontend utilities
+   └─ src-tauri/                     # Tauri/Rust backend
+      ├─ resources/                  # Bundled runtime resources
+      ├─ icons/                      # App icons
+      └─ src/                        # Commands, hotkeys, OCR, recording, windows
+```
+
+## Development
+
+Prerequisites:
+
+- Windows
+- Node.js and npm
+- Rust stable toolchain
+- Tauri 2 prerequisites for Windows
+
+Run the development app:
 
 ```bash
 cd tauri-client
@@ -90,79 +123,56 @@ npm install
 npm run tauri dev
 ```
 
----
-
-## 构建
-
-根目录提供一键构建脚本：
-
-```bat
-build.bat
-```
-
-构建脚本会自动执行：
-
-1. 强制关闭正在运行的 `tauri-client.exe`。
-2. 删除根目录旧的 `tauri-client.exe`。
-3. 执行 `npx tauri build --no-bundle`。
-4. 将 `tauri-client/src-tauri/target/release/tauri-client.exe` 复制到项目根目录。
-
-如果只是自己使用或快速发给别人，直接发布根目录生成的 `tauri-client.exe` 即可。
-
-### 正式发布软件
-
-如果要发布成更标准的软件包，建议使用 Tauri 的完整打包命令：
+Run checks:
 
 ```bash
 cd tauri-client
-npx tauri build
+npm run build
+cd src-tauri
+cargo check
 ```
 
-构建完成后，安装包通常位于：
+## Build A Release
+
+Update versions in:
+
+- `tauri-client/package.json`
+- `tauri-client/package-lock.json`
+- `tauri-client/src-tauri/Cargo.toml`
+- `tauri-client/src-tauri/tauri.conf.json`
+
+Build installers:
+
+```bash
+cd tauri-client
+npm run tauri build
+```
+
+Generated installers are written to:
 
 ```text
 tauri-client/src-tauri/target/release/bundle/
 ```
 
-发布到网上时建议：
+## Quality Expectations
 
-1. 在 GitHub 创建 Release，例如 `v1.0`。
-2. 上传 `bundle/` 目录里生成的安装包，或上传根目录的便携版 `tauri-client.exe`。
-3. 在 Release 说明里写清楚系统要求、快捷键、本地 OCR 使用方式和更新内容。
-4. 如果要让用户开箱即用，可以额外上传 OCR 运行包；源码仓库不建议直接提交 OCR 模型和 DLL。
-5. 后续如果面向更多用户分发，再考虑代码签名证书，减少 Windows 安全提示。
+YsnTrans is maintained as a commercial-grade desktop productivity product. Release changes should be verified for:
 
-当前仓库会忽略根目录 `ocr/` 和 `tauri-client/src-tauri/resources/ocr/` 下的大体积 OCR 文件，避免把模型和 DLL 直接提交到 Git。
+- screenshot startup latency and overlay recovery
+- OCR correctness and fallback behavior
+- translation output quality and identifier preservation
+- recording start/stop reliability
+- FFmpeg and model asset packaging
+- Windows taskbar, DPI, multi-monitor, and browser-edge behavior
+- clean build artifacts and reproducible installers
 
----
+## Known Distribution Notes
 
-## 版本说明
+- Large OCR model/runtime files should not be committed casually unless the release plan explicitly requires it.
+- Unsigned installers may trigger Windows SmartScreen warnings.
+- FFmpeg can remain an external runtime unless recording becomes a product-owned runtime target.
+- The long-term execution source of truth is `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`; implementation history is tracked in `docs/IMPLEMENTATION_CHAPTERS.md`.
 
-当前版本建议作为 **v1.0 全新升级版** 发布，重点包含：
+## License And Ownership
 
-- 本地 OCR 优先的截图翻译流程。
-- 截图层稳定性修复，避免多全屏窗口残留导致卡死。
-- 二次截图体验优化。
-- 截图编辑层组件化拆分。
-- 窄框/竖向截图翻译排版优化。
-- 构建脚本自动关闭旧进程并清理旧产物。
-
----
-
-## OCR 体积优化说明
-
-- OCR 体积主要由识别模型、推理引擎 DLL 和运行时依赖决定；换成 RapidOCR / ONNX 等轻量运行包通常能减少发布包大小。
-- 体积变小不一定等于翻译更快：翻译速度主要取决于 OCR 推理耗时、截图区域大小、文本数量和翻译接口响应。
-- 轻量模型可能启动更快、占用更低，但识别精度和复杂版面效果可能下降；因此 v1.1 采用“可替换运行包”而不是强制替换。
-
----
-
-## 注意事项
-
-- 当前版本不建议恢复多个交互式全屏截图窗口叠加方案；二次截图通过单窗口可见重截实现。
-- 本地 OCR 默认优先查找软件同级 `ocr\PaddleOCR-json.exe`；也可以在模型/视频配置中选择 exe 或其所在目录。
-- OCR 下载/更新默认优先安装到软件同级 `ocr` 目录；如果目录不可写，会回退到应用数据目录。
-- OCR 运行包支持 `ocr-runtime.json` 清单；默认适配 PaddleOCR-json，也支持 `cli-json-file` 协议接 RapidOCR / ONNX 包装器。
-- 截图工具栏按钮间隔可在系统设置 → 截图识别 → 按钮间隔中调整。
-- 构建前如果程序正在运行，`build.bat` 会自动强制关闭它。
-- 录屏功能默认查找软件同级 `ffmpeg\ffmpeg.exe`；也可以在录屏页或模型/视频配置页手动选择，并支持从官方 GitHub 下载/更新。
+This repository is maintained by the YsnTrans publisher. Add final license, code-signing, support, and privacy statements before broad public distribution.

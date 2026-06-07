@@ -572,14 +572,13 @@ export default function ScreenshotPage() {
     document.body.style.setProperty("overflow", "hidden", "important");
     document.body.style.setProperty("background", "transparent", "important");
     document.documentElement.style.setProperty("background", "transparent", "important");
-    loadWindowRects();
+    window.setTimeout(() => loadWindowRects(), 120);
 
     let unlistenMode: (() => void) | null = null;
     let unlistenEvent: (() => void) | null = null;
     let unlistenRecordingEnded: (() => void) | null = null;
 
-    listen<string>("screenshot-mode", async (event) => {
-      await loadConfig();
+    listen<string>("screenshot-mode", (event) => {
       const nextMode = event.payload || "normal";
       setScreenshotMode(nextMode);
       if (nextMode === "translate") {
@@ -602,8 +601,7 @@ export default function ScreenshotPage() {
       .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
-    listen<ScreenshotUpdatedPayload>("screenshot-updated", async (event) => {
-      await loadConfig();
+    listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => {
       primeTextSourceSnapshot("screenshot-updated", 160);
       const payload = event.payload;
       if (typeof payload === "string") {
@@ -671,10 +669,10 @@ export default function ScreenshotPage() {
   const currentOverlayToolbarStyle: React.CSSProperties = { ...currentToolbarStyle, padding: 0, border: "none", boxShadow: "none", background: "transparent" };
   const currentRecordingDevices = getRecordingDevices();
   const audioOptions = [
-    { label: "静音", value: "none" },
-    { label: currentRecordingDevices.mic ? `麦克风：${formatAudioDeviceLabel(currentRecordingDevices.mic)}` : "麦克风（未检测到）", value: "mic", disabled: !currentRecordingDevices.mic },
-    { label: currentRecordingDevices.system ? formatAudioDeviceLabel(currentRecordingDevices.system) : "系统声音（未检测到）", value: "system", disabled: !currentRecordingDevices.system },
-    { label: "系统声音 + 麦克风", value: "system_mic", disabled: !currentRecordingDevices.system || !currentRecordingDevices.mic },
+    { label: "Silent", value: "none" },
+    { label: currentRecordingDevices.mic ? `Mic: ${formatAudioDeviceLabel(currentRecordingDevices.mic)}` : "Mic (not detected)", value: "mic", disabled: !currentRecordingDevices.mic },
+    { label: currentRecordingDevices.system ? formatAudioDeviceLabel(currentRecordingDevices.system) : "System audio (not detected)", value: "system", disabled: !currentRecordingDevices.system },
+    { label: "System audio + Mic", value: "system_mic", disabled: !currentRecordingDevices.system || !currentRecordingDevices.mic },
   ];
 
   return (
@@ -723,7 +721,7 @@ export default function ScreenshotPage() {
 
       {overlayVisible && scrollCaptureMode === "capturing" && scrollPreviewBase64 && (
         <div style={{ position: "absolute", top: Math.max(12, rect.y), left: Math.min(window.innerWidth - 190, rect.x + rect.w + 12), zIndex: 19, width: 176, maxHeight: Math.min(420, window.innerHeight - 24), borderRadius: 12, overflow: "hidden", border: "1px solid rgba(226,232,240,0.95)", background: "rgba(255,255,255,0.96)", boxShadow: "0 16px 42px rgba(15,23,42,0.18)" }}>
-          <div style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: "#0f172a", borderBottom: "1px solid #e2e8f0" }}>滚动预览</div>
+          <div style={{ padding: "6px 8px", fontSize: 12, fontWeight: 800, color: "#0f172a", borderBottom: "1px solid #e2e8f0" }}>Scroll Preview</div>
           <img src={`data:image/png;base64,${scrollPreviewBase64}`} alt="" style={{ display: "block", width: "100%", height: "auto", maxHeight: 380, objectFit: "contain", background: "#fff" }} />
         </div>
       )}
@@ -731,11 +729,11 @@ export default function ScreenshotPage() {
       {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && !recordingPickerMode && scrollCaptureMode !== "idle" && (
         <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>
           <Space size={[8, 8]} wrap style={{ maxWidth: "100%", padding: "8px 10px", borderRadius: 16, background: "rgba(255,255,255,0.96)", border: "1px solid rgba(226,232,240,0.95)", boxShadow: "0 12px 32px rgba(15,23,42,0.18)", color: "#111827", boxSizing: "border-box" }}>
-            <span style={{ color: SCROLL_CAPTURE_BORDER_COLOR, fontWeight: 800 }}>手动滚动截图</span>
-            <span style={{ fontSize: 12, color: "#475569" }}>点击开始后自己滚动目标窗口，完成后自动拼接并复制</span>
-            {scrollCaptureMode === "ready" && <Button size="small" type="primary" onClick={startManualScrollCapture}>开始采集</Button>}
-            {scrollCaptureMode === "capturing" && <Button size="small" type="primary" onClick={finishManualScrollCapture}>完成</Button>}
-            <Button size="small" onClick={cancelManualScrollCapture}>取消</Button>
+            <span style={{ color: SCROLL_CAPTURE_BORDER_COLOR, fontWeight: 800 }}>Manual Scroll Capture</span>
+            <span style={{ fontSize: 12, color: "#475569" }}>Click start, scroll the target window, then finish to stitch and copy.</span>
+            {scrollCaptureMode === "ready" && <Button size="small" type="primary" onClick={startManualScrollCapture}>Start</Button>}
+            {scrollCaptureMode === "capturing" && <Button size="small" type="primary" onClick={finishManualScrollCapture}>Finish</Button>}
+            <Button size="small" onClick={cancelManualScrollCapture}>Cancel</Button>
           </Space>
         </div>
       )}

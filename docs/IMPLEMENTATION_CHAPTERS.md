@@ -1,4 +1,4 @@
-﻿# 商业级改造执行记录
+# 商业级改造执行记录
 
 > 本文档是唯一施工日志，但不再逐章保留超长全文。旧的 1–97 章已压缩为里程碑摘要；后续只记录“最近章节详情 + 当前交接状态”。主方向以 `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md` 为准。
 
@@ -4989,3 +4989,131 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 ### Next Recommended Chapter
 
 - Restart the app and manually test `Alt+A` after startup prewarm, repeated `Alt+A`, hidden-main `Alt+A`, and taskbar flash behavior.
+
+## Chapter 165 - Faster Screenshot First Paint And Work-Area Window Detection (2026-06-07)
+
+### Goal
+
+- Further reduce perceived `Alt+A` delay by moving non-essential frontend work out of the first visible screenshot frame.
+- Reduce taskbar flash by using a screenshot-specific native show path instead of the generic heavy WebView activation path.
+- Prevent browser/window UI detection from including the Windows taskbar strip when detecting the current window.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `tauri-client/src-tauri/src/window_targets.rs`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not change OCR, translation, recording process, FFmpeg parameters, save/copy, pin-window, or release packaging behavior.
+- Did not replace the current screenshot backend with WGC or another capture backend.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- Moved fullscreen `getImageData()` analysis capture out of the first visible screenshot frame; first paint now only initializes the visible image/mask, then computes analysis image data asynchronously.
+- Deferred `loadWindowRects(true)` until after the screenshot overlay has been shown, avoiding window enumeration competing with the first visible frame.
+- Removed blocking config reload from `screenshot-mode` and `screenshot-updated` event handlers, using cached config for hot-path prewarm.
+- Added `show_screenshot_overlay_window(...)` for screenshot overlays so `overlay_ready_to_show` avoids the generic `activate_webview_window` path with duplicate `show` / `ShowWindow` / `SWP_SHOWWINDOW` calls.
+- Added Win32 `MONITORINFO`, `MonitorFromPoint`, and `GetMonitorInfoW` FFI and clipped hover window candidates to the monitor work area (`rcWork`) so auto window selection does not include the taskbar strip.
+- Repaired encoding-damaged JSX labels in the recording audio options and scroll-capture toolbar after PowerShell rewrites exposed previously mojibaked strings as syntax errors.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- `npm run build`: passed. Existing Vite warnings remain: mixed static/dynamic import for `@tauri-apps/api/window.js` and chunk size over `1200 kB`.
+- `git diff --check`: passed.
+
+### Current Risks
+
+- Requires real desktop smoke after restarting the running app; the current process will not include the new first-paint and native-show paths.
+- The screenshot overlay now shows via a screenshot-specific Win32 path; if focus/canvas keyboard handling regresses, add a lighter post-show focus retry rather than returning to the generic heavy activation path.
+- Work-area clipping is correct for excluding taskbar on normal desktop windows, but full-display capture should continue to use the explicit display targets rather than window hover candidates.
+
+### Next Recommended Chapter
+
+- Restart the app and test repeated `Alt+A`, taskbar flash, webpage-window hover selection, taskbar-edge selection, maximized browser selection, and 1K/2K/DPI machines.
+
+### Post-Review Updates
+
+- Delayed the screenshot page mount-time `loadWindowRects()` probe by `120ms`, reducing cold-start contention before the first hotkey capture.
+- Removed UTF-8 BOM from touched Rust/TS files after sub-agent review flagged BOM headers.
+- Re-ran `cargo check`, `npm run build`, and `git diff --check` after BOM cleanup and delayed mount-time window probing: passed.
+
+- Removed screenshot-overlay foreground activation from the native show path and from the first frontend frame; the overlay is shown topmost/no-activate to avoid taskbar button flicker before screenshot mode appears.
+- Reduced hidden-main DWM settle wait from `80ms` to one frame (`16ms`) while keeping `DwmFlush()` before and after the wait.
+- Added class-name filtering for taskbar/desktop/system windows (`Shell_TrayWnd`, `Shell_SecondaryTrayWnd`, `Progman`, `WorkerW`, etc.) before hover candidate hit-testing, so taskbar-edge movement is less likely to produce a false window candidate.
+- Re-ran `cargo check` after the no-activate and system-window filtering changes: passed.
+- Fixed a post-build screenshot regression caused by making the overlay show path too passive: restored reliable screenshot-window activation while keeping the first-paint and window-detection optimizations.
+- Restored frontend screenshot-window focus retry after `overlay_ready_to_show`, so the canvas can receive pointer/keyboard input after `Alt+A`.
+- Re-ran `cargo check`, `npm run build`, `git diff --check`, and `npm run tauri build`; passed. The Tauri build exceeded the command timeout but its background build completed and produced fresh MSI/NSIS installers.
+
+## Chapter 166 - v1.2.5 Release Documentation And Packaging (2026-06-07)
+
+### Goal
+
+- Prepare the project for the `v1.2.5` release.
+- Rewrite README documentation in a publisher voice with English as the default and Chinese as a supported language.
+- Build release installers and prepare Git commit/tag/push.
+
+### Added Files
+
+- `README.zh-CN.md`
+
+### Modified Files
+
+- `README.md`
+- `tauri-client/README.md`
+- `tauri-client/package.json`
+- `tauri-client/package-lock.json`
+- `tauri-client/src-tauri/Cargo.toml`
+- `tauri-client/src-tauri/tauri.conf.json`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not change OCR, translation, recording, screenshot behavior, or installer signing.
+- Did not add a public privacy policy, license, or support SLA.
+
+### Actual Changes
+
+- Replaced the previously mojibaked root README with a clean English publisher-facing document.
+- Added `README.zh-CN.md` as the Chinese documentation counterpart.
+- Simplified `tauri-client/README.md` into a client-specific pointer to the main bilingual docs.
+- Updated npm, Tauri, and Cargo package versions to `1.2.5`.
+- Built MSI and NSIS release installers for `v1.2.5`.
+
+### Validation
+
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain: mixed static/dynamic import for `@tauri-apps/api/window.js` and chunk size over `1200 kB`.
+- `cargo check --manifest-path src-tauri/Cargo.toml` from `tauri-client`: passed.
+- `npm run tauri build` from `tauri-client`: passed.
+- Generated installers:
+  - `tauri-client/src-tauri/target/release/bundle/msi/YsnTrans_1.2.5_x64_en-US.msi`
+  - `tauri-client/src-tauri/target/release/bundle/nsis/YsnTrans_1.2.5_x64-setup.exe`
+
+### Current Risks
+
+- Installers are not code-signed, so Windows SmartScreen may warn users.
+- README states the intended product direction for RapidOCR / ONNXRuntime; release validation should still verify the bundled model assets on target machines.
+- Large build artifacts remain untracked unless release workflow explicitly uploads them outside Git.
+
+### Next Recommended Chapter
+
+- Add a release checklist for code signing, installer smoke testing, and GitHub Release asset upload once the release process is formalized.

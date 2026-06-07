@@ -23,6 +23,33 @@ pub fn get_cursor_position() -> Option<(i32, i32)> {
 }
 
 #[cfg(target_os = "windows")]
+pub fn current_screen_work_area() -> Option<(i32, i32, i32, i32)> {
+    let (cx, cy) = get_cursor_position()?;
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+    let point = win32::POINT { x: cx, y: cy };
+    let monitor = unsafe { win32::MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    if monitor == 0 {
+        return None;
+    }
+    let mut info = win32::MONITORINFO {
+        cbSize: std::mem::size_of::<win32::MONITORINFO>() as u32,
+        rcMonitor: win32::RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        rcWork: win32::RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        dwFlags: 0,
+    };
+    let ok = unsafe { win32::GetMonitorInfoW(monitor, &mut info as *mut win32::MONITORINFO) };
+    if ok == 0 || info.rcWork.right <= info.rcWork.left || info.rcWork.bottom <= info.rcWork.top {
+        return None;
+    }
+    Some((
+        info.rcWork.left,
+        info.rcWork.top,
+        info.rcWork.right - info.rcWork.left,
+        info.rcWork.bottom - info.rcWork.top,
+    ))
+}
+
+#[cfg(target_os = "windows")]
 pub fn current_screen_origin() -> (i32, i32, i32, i32) {
     if let Some((cx, cy)) = get_cursor_position() {
         if let Ok(screen) = Screen::from_point(cx, cy) {
@@ -156,18 +183,45 @@ pub fn hwnd_contains_cursor(hwnd: isize, cursor_x: i32, cursor_y: i32, min_size:
 }
 
 #[cfg(target_os = "windows")]
+pub fn window_class_name(hwnd: isize) -> String {
+    let mut buffer = vec![0u16; 256];
+    let copied = unsafe { win32::GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if copied <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..copied as usize])
+        .trim()
+        .to_string()
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_system_capture_window(hwnd: isize) -> bool {
+    matches!(
+        window_class_name(hwnd).as_str(),
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "Button"
+            | "Progman"
+            | "WorkerW"
+            | "Windows.UI.Core.CoreWindow"
+    )
+}
+
+#[cfg(target_os = "windows")]
 pub fn push_rect_candidate(
     rects: &mut Vec<serde_json::Value>,
     rect: win32::RECT,
     kind: &str,
     screen: (i32, i32, i32, i32),
+    clip: (i32, i32, i32, i32),
     min_size: i32,
 ) {
-    let (screen_x, screen_y, screen_w, screen_h) = screen;
-    let left = rect.left.max(screen_x);
-    let top = rect.top.max(screen_y);
-    let right = rect.right.min(screen_x + screen_w);
-    let bottom = rect.bottom.min(screen_y + screen_h);
+    let (screen_x, screen_y, _, _) = screen;
+    let (clip_x, clip_y, clip_w, clip_h) = clip;
+    let left = rect.left.max(clip_x);
+    let top = rect.top.max(clip_y);
+    let right = rect.right.min(clip_x + clip_w);
+    let bottom = rect.bottom.min(clip_y + clip_h);
     let w = right - left;
     let h = bottom - top;
     if w < min_size || h < min_size {
@@ -265,6 +319,7 @@ pub fn get_window_rects(
     {
         let mut rects: Vec<serde_json::Value> = Vec::new();
         let screen = current_screen_origin();
+        let window_clip = current_screen_work_area().unwrap_or(screen);
         let include_controls = include_controls.unwrap_or(false);
         if let Some((cx, cy)) = get_cursor_position() {
             let excluded_hwnds = excluded_app_hwnds(&app);
@@ -277,12 +332,12 @@ pub fn get_window_rects(
                         .take(1)
                     {
                         if let Some(rect) = hwnd_rect(child, false) {
-                            push_rect_candidate(&mut rects, rect, "control", screen, 12);
+                            push_rect_candidate(&mut rects, rect, "control", screen, window_clip, 12);
                         }
                     }
                 }
                 if let Some(rect) = hwnd_rect(hwnd, true) {
-                    push_rect_candidate(&mut rects, rect, "window", screen, 50);
+                    push_rect_candidate(&mut rects, rect, "window", screen, window_clip, 50);
                 }
             }
         }

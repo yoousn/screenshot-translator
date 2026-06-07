@@ -157,6 +157,25 @@ export function useScreenshotLoader({
     await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
   };
 
+  const captureAnalysisImageData = (img: HTMLImageElement, sessionId: number) => {
+    window.setTimeout(() => {
+      if (sessionId !== captureIdRef.current) return;
+      const width = Math.max(1, window.innerWidth);
+      const height = Math.max(1, window.innerHeight);
+      const analysisCanvas = document.createElement("canvas");
+      analysisCanvas.width = width;
+      analysisCanvas.height = height;
+      const ctx = analysisCanvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, width, height);
+      try {
+        analysisImageDataRef.current = ctx.getImageData(0, 0, width, height);
+      } catch {
+        analysisImageDataRef.current = null;
+      }
+    }, 0);
+  };
+
   const initCanvas = (img: HTMLImageElement) => {
     const width = Math.max(1, window.innerWidth);
     const height = Math.max(1, window.innerHeight);
@@ -167,11 +186,6 @@ export function useScreenshotLoader({
     const oCtx = offscreen.getContext("2d");
     if (oCtx) {
       oCtx.drawImage(img, 0, 0, width, height);
-      try {
-        analysisImageDataRef.current = oCtx.getImageData(0, 0, width, height);
-      } catch {
-        analysisImageDataRef.current = null;
-      }
       oCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
       oCtx.fillRect(0, 0, width, height);
     }
@@ -180,7 +194,6 @@ export function useScreenshotLoader({
     setSelection(false);
     draw(0, 0, 0, 0);
   };
-
   const loadImageFromSource = (source: string, sessionId: number, bytes?: number) => {
     if (sessionId !== captureIdRef.current) return;
     const img = new Image();
@@ -215,7 +228,6 @@ export function useScreenshotLoader({
         errorMsg: "" 
       });
       setScreenshotState("ready");
-      await nextFrame();
       
       const canvas = document.querySelector("canvas");
       if (canvas) {
@@ -228,14 +240,11 @@ export function useScreenshotLoader({
       }
 
       initCanvas(img);
+      overlayVisibleRef.current = true;
+      setOverlayVisible(true);
 
       requestAnimationFrame(() => {
         void (async () => {
-          if (sessionId !== captureIdRef.current) return;
-          overlayVisibleRef.current = true;
-          setOverlayVisible(true);
-          await nextFrame();
-          await nextFrame();
           if (sessionId !== captureIdRef.current) return;
           try {
             await invoke("overlay_ready_to_show", { label: getCurrentWindow().label });
@@ -249,6 +258,10 @@ export function useScreenshotLoader({
           };
           focusWindow();
           window.setTimeout(focusWindow, 60);
+          captureAnalysisImageData(img, sessionId);
+          window.setTimeout(() => {
+            if (sessionId === captureIdRef.current) loadWindowRects(true);
+          }, 0);
         })().catch((error) => {
           if (sessionId !== captureIdRef.current) return;
           cancelScreenshot(error?.message || "Screenshot overlay failed");
@@ -280,7 +293,6 @@ export function useScreenshotLoader({
   const loadFullscreen = async (mode = screenshotModeRef.current || "normal") => {
     const sessionId = startNewCaptureSession(mode);
     try {
-      loadWindowRects(true);
       const base64 = await invoke<string>("get_fullscreen_image");
       if (sessionId !== captureIdRef.current) return;
       if (!base64 || base64.length < 1000) {
@@ -301,7 +313,6 @@ export function useScreenshotLoader({
         cancelScreenshot("Screenshot overlay failed");
         return;
       }
-      loadWindowRects(true);
       loadImageFromBase64(base64, sessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
@@ -316,7 +327,6 @@ export function useScreenshotLoader({
         loadFullscreen(mode);
         return;
       }
-      loadWindowRects(true);
       loadImageFromSource(`${convertFileSrc(path)}?t=${Date.now()}`, sessionId, bytes);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;

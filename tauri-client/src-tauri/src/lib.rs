@@ -1,4 +1,4 @@
-﻿pub mod app_paths;
+pub mod app_paths;
 pub use app_paths::*;
 
 pub mod config_store;
@@ -95,6 +95,15 @@ pub(crate) mod win32 {
     }
     #[repr(C)]
     #[derive(Clone, Copy)]
+    #[allow(non_snake_case)]
+    pub struct MONITORINFO {
+        pub cbSize: u32,
+        pub rcMonitor: RECT,
+        pub rcWork: RECT,
+        pub dwFlags: u32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
     pub struct PAINTSTRUCT {
         pub hdc: isize,
         pub f_erase: i32,
@@ -185,6 +194,8 @@ pub(crate) mod win32 {
         pub fn SetWindowDisplayAffinity(hWnd: isize, dwAffinity: u32) -> i32;
         pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
+        pub fn MonitorFromPoint(pt: POINT, dwFlags: u32) -> isize;
+        pub fn GetMonitorInfoW(hMonitor: isize, lpmi: *mut MONITORINFO) -> i32;
         pub fn GetWindowTextLengthW(hWnd: isize) -> i32;
         pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
         pub fn GetClassNameW(hWnd: isize, lpClassName: *mut u16, nMaxCount: i32) -> i32;
@@ -254,6 +265,9 @@ pub(crate) mod win32 {
 unsafe extern "system" fn enum_windows_for_cursor(hwnd: isize, lparam: isize) -> i32 {
     let ctx = &mut *(lparam as *mut WindowSearchContext);
     if hwnd == 0 || ctx.excluded_hwnds.contains(&hwnd) || win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    if is_system_capture_window(hwnd) {
         return 1;
     }
     if hwnd_contains_cursor(hwnd, ctx.cursor_x, ctx.cursor_y, ctx.min_size) {

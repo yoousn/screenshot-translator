@@ -1,7 +1,20 @@
-# Tauri + React + Typescript
+﻿# YsnTrans Client
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+This directory contains the Tauri 2 + React + TypeScript desktop client for YsnTrans Screenshot Translator.
 
-## Recommended IDE Setup
+- Main project README: [../README.md](../README.md)
+- 中文文档: [../README.zh-CN.md](../README.zh-CN.md)
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Development
+
+```bash
+npm install
+npm run tauri dev
+```
+
+## Build
+
+```bash
+npm run build
+npm run tauri build
+```
