@@ -32,7 +32,7 @@ const RECORDING_BORDER_YELLOW = "#f59e0b";
 const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
 
 type ScreenshotUpdatedPayload = string | {
-  kind?: "file" | "base64";
+  kind?: "file" | "base64" | "memory";
   path?: string;
   base64?: string;
   bytes?: number;
@@ -46,6 +46,7 @@ export default function ScreenshotPage() {
   const actionToolbarSizeRef = useRef(ACTION_TOOLBAR_FALLBACK_SIZE);
   const liveToolbarFrameRef = useRef<number | null>(null);
   const liveToolbarRectRef = useRef<Rect | null>(null);
+  const lastMouseRef = useRef({ x: 0, y: 0 });
   
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
@@ -159,7 +160,7 @@ export default function ScreenshotPage() {
     clearWindowRects,
   } = useScreenshotWindowRects({
     configRef,
-    lastMouseRef: { get current() { return { x: 0, y: 0 }; } },
+    lastMouseRef,
     analysisImageDataRef: { get current() { return analysisImageDataRef.current; } } as any,
     interactionStateRef: {
       get current() {
@@ -491,6 +492,7 @@ export default function ScreenshotPage() {
     cancelScreenshot,
     handlePin,
     forceCloseScreenshots,
+    lastMouseRef,
 
     selectionStartedAtRef,
     selectionCompletedAtRef,
@@ -611,6 +613,10 @@ export default function ScreenshotPage() {
       }
       if (payload?.kind === "file" && payload.path) {
         loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal");
+        return;
+      }
+      if (payload?.kind === "memory") {
+        loadFullscreen(payload.mode || screenshotModeRef.current || "normal");
         return;
       }
       if (payload?.base64) {

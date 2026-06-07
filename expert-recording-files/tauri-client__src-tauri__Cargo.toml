@@ -1,0 +1,47 @@
+[package]
+name = "YsnTrans"
+version = "1.0.0"
+description = "YSN Screenshot Translator"
+authors = ["ysn"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "ysntrans_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+screenshots = "0.8.10"
+arboard = "3.4.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22.1"
+rfd = "0.14.1"
+tauri-plugin-global-shortcut = "2.0.1"
+tokio = { version = "1", features = ["time", "rt-multi-thread"] }
+dirs = "6"
+reqwest = { version = "0.12", features = ["multipart", "json", "stream"] }
+sevenz-rust = "0.6"
+futures-util = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Accessibility",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+sha2 = "0.10"
+xcap = "0.9.6"

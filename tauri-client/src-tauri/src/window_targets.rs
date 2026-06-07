@@ -2,6 +2,9 @@ use crate::*;
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]
+const WINDOW_EDGE_HIT_SLOP_PX: i32 = 10;
+
+#[cfg(target_os = "windows")]
 pub fn get_cursor_position() -> Option<(i32, i32)> {
     let mut point = win32::POINT { x: 0, y: 0 };
     // SAFETY: Calling Win32 API GetCursorPos with a valid mutable pointer to a POINT struct.
@@ -26,6 +29,12 @@ pub fn current_screen_origin() -> (i32, i32, i32, i32) {
             let info = screen.display_info;
             return (info.x, info.y, info.width as i32, info.height as i32);
         }
+        if let Ok(screens) = Screen::all() {
+            if let Some(screen) = nearest_screen_for_point(&screens, cx, cy) {
+                let info = screen.display_info;
+                return (info.x, info.y, info.width as i32, info.height as i32);
+            }
+        }
     }
     if let Ok(screens) = Screen::all() {
         if let Some(screen) = screens.first() {
@@ -34,6 +43,35 @@ pub fn current_screen_origin() -> (i32, i32, i32, i32) {
         }
     }
     (0, 0, i32::MAX, i32::MAX)
+}
+
+#[cfg(target_os = "windows")]
+fn nearest_screen_for_point(screens: &[Screen], x: i32, y: i32) -> Option<Screen> {
+    screens
+        .iter()
+        .min_by_key(|screen| {
+            let info = screen.display_info;
+            let left = info.x;
+            let top = info.y;
+            let right = info.x + info.width as i32;
+            let bottom = info.y + info.height as i32;
+            let dx = if x < left {
+                left - x
+            } else if x > right {
+                x - right
+            } else {
+                0
+            };
+            let dy = if y < top {
+                top - y
+            } else if y > bottom {
+                y - bottom
+            } else {
+                0
+            };
+            dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+        })
+        .copied()
 }
 
 #[cfg(target_os = "windows")]
@@ -74,6 +112,47 @@ pub fn hwnd_rect(hwnd: isize, prefer_dwm_bounds: bool) -> Option<win32::RECT> {
     } else {
         None
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn rect_size(rect: win32::RECT) -> (i32, i32) {
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+#[cfg(target_os = "windows")]
+pub fn rect_contains_point(rect: win32::RECT, x: i32, y: i32, slop: i32) -> bool {
+    x >= rect.left.saturating_sub(slop)
+        && x <= rect.right.saturating_add(slop)
+        && y >= rect.top.saturating_sub(slop)
+        && y <= rect.bottom.saturating_add(slop)
+}
+
+#[cfg(target_os = "windows")]
+pub fn hwnd_hit_test_rect(hwnd: isize) -> Option<win32::RECT> {
+    let dwm_rect = hwnd_rect(hwnd, true);
+    let window_rect = hwnd_rect(hwnd, false);
+    match (dwm_rect, window_rect) {
+        (Some(mut visible), Some(outer)) => {
+            visible.left = visible.left.min(outer.left);
+            visible.top = visible.top.min(outer.top);
+            visible.right = visible.right.max(outer.right);
+            visible.bottom = visible.bottom.max(outer.bottom);
+            Some(visible)
+        }
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (None, None) => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn hwnd_contains_cursor(hwnd: isize, cursor_x: i32, cursor_y: i32, min_size: i32) -> bool {
+    let Some(rect) = hwnd_hit_test_rect(hwnd) else {
+        return false;
+    };
+    let (w, h) = rect_size(rect);
+    w >= min_size
+        && h >= min_size
+        && rect_contains_point(rect, cursor_x, cursor_y, WINDOW_EDGE_HIT_SLOP_PX)
 }
 
 #[cfg(target_os = "windows")]

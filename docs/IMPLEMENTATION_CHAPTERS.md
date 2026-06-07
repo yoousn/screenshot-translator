@@ -4829,3 +4829,163 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 ### Next Recommended Chapter
 
 - Repeat the five-scenario smoke against a packaged/release build after the next release build is produced, then continue broader screenshot lifecycle smoke on multi-monitor/DPI setups.
+
+
+## Chapter 162 - Alt+A Screenshot Startup Latency Fix (2026-06-07)
+
+### Goal
+
+- Reduce the delay between pressing `Alt+A` and entering screenshot mode without regressing the recent hidden-main ghost-window fixes.
+- Keep the fullscreen image path lossless and compatible with OCR/cropping while avoiding unnecessary startup-path I/O.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not change OCR, translation, recording, annotation, copy/save, pin-window, or release packaging behavior.
+- Did not change the Windows hidden-main parking/focus handoff strategy from Chapter 161.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- Removed the pre-overlay blocking wait on `fullscreen_temp.png` writes in `start_screenshot_impl`.
+- Kept the captured PNG bytes in memory as the primary screenshot source, then wrote `fullscreen_temp.png` in a background blocking task only as a recovery/debug backup.
+- Added a `memory` screenshot update payload so the screenshot page loads through the existing `get_fullscreen_image` command instead of waiting for file output or sending a large base64 event.
+- Switched fullscreen PNG encoding to explicit fast compression with no PNG filtering for both the `xcap` main path and legacy `screenshots` fallback.
+- Reduced the fixed hidden-main DWM settle wait from three `120ms` sleeps to a single short `80ms` settle with DWM flushes before and after.
+
+### Validation
+
+- `npm run build`: passed. Existing Vite warnings remain: mixed static/dynamic import for `@tauri-apps/api/window.js` and chunk size over `1200 kB`.
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- Re-ran `cargo check` after fast PNG / DWM wait tuning: passed.
+- Re-ran `npm run build` after fast PNG / DWM wait tuning: passed with the same existing Vite warnings.
+- `git diff --check`: passed with only existing CRLF conversion warnings.
+
+### Current Risks
+
+- Real `Alt+A` latency should still be smoke-tested in the running desktop app because the visible improvement depends on machine I/O, antivirus, monitor size, and WebView startup state.
+- The screenshot temp file is now eventually consistent; code that needs the current capture immediately should continue using in-memory `get_fullscreen_image` or `SCREENSHOT_IMAGE`.
+- The shorter DWM settle wait should be rechecked against the hidden-main ghost-window smoke scenarios from Chapter 161.
+
+### Next Recommended Chapter
+
+- Run the five-scenario screenshot lifecycle smoke again on the running app, with special attention to `Alt+A` perceived startup latency and hidden-main ghost-window regression.
+
+
+## Chapter 163 - Window Capture Edge Hit Reliability (2026-06-07)
+
+### Goal
+
+- Fix unreliable window/display capture detection when the pointer is on a window border, resize edge, shadow edge, or monitor boundary.
+- Preserve the existing screenshot selection, recording target picker, annotation, OCR, translation, and pin-window behaviors.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/window_targets.rs`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not change FFmpeg recording parameters, OCR, translation, save/copy, or release packaging behavior.
+- Did not change the Chapter 161 hidden-main screenshot lifecycle strategy.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- Added Windows hit-test helpers that merge DWM extended frame bounds with `GetWindowRect` outer bounds and apply a small `10px` edge slop.
+- Replaced strict cursor-in-DWM-rect matching for top-level and child windows with the new tolerant hit-test path.
+- Added nearest-screen fallback when `Screen::from_point` fails around monitor boundaries, keeping clipping stable instead of dropping candidates.
+- Shared the real screenshot overlay mouse position between `useScreenshotInteraction` and `useScreenshotWindowRects`; the previous wiring passed a fixed `{ x: 0, y: 0 }` into candidate filtering.
+- Kept backend-returned window candidates instead of immediately re-filtering them out in the frontend when the pointer sits on a border outside the visible DWM rect.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- `npm run build`: passed. Existing Vite warnings remain: mixed static/dynamic import for `@tauri-apps/api/window.js` and chunk size over `1200 kB`.
+- `git diff --check`: passed with only existing CRLF conversion warnings.
+
+### Current Risks
+
+- Needs real desktop smoke on window resize borders, maximized-window borders, monitor boundaries, and multi-monitor/DPI setups.
+- The `10px` slop is intentionally conservative; if users still miss very thick custom shadows, tune this constant with visual evidence.
+
+### Next Recommended Chapter
+
+- Run manual screenshot hover smoke over several apps: normal window body, title bar, left/right/top/bottom resize borders, corners, maximized edges, and display boundaries.
+
+## Chapter 164 - Screenshot Overlay Prewarm And Taskbar Flash Reduction (2026-06-07)
+
+### Goal
+
+- Reduce the remaining perceived delay between pressing `Alt+A` and seeing screenshot mode.
+- Avoid the taskbar flash caused by screenshot overlay cold creation or repeated activation.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not change OCR, translation, recording, annotation, copy/save, pin-window, or release packaging behavior.
+- Did not change FFmpeg recording parameters.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- Added `ensure_screenshot_window(...)` so screenshot window creation is owned by one reusable helper.
+- Added startup background prewarm for the hidden `screenshot` WebView window, delayed by `350ms` after setup so first `Alt+A` no longer has to cold-create the overlay window.
+- Forced `skip_taskbar(true)` when creating, reusing, and showing the screenshot overlay.
+- Removed the fixed `35ms` delay and second activation inside `overlay_ready_to_show`; the overlay now activates once after frontend content is ready.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- `npm run build`: passed. Existing Vite warnings remain: mixed static/dynamic import for `@tauri-apps/api/window.js` and chunk size over `1200 kB`.
+- `git diff --check`: passed with only existing CRLF conversion warnings.
+
+### Current Risks
+
+- Needs real desktop smoke after restarting the app because the current running app will not include the new prewarm path.
+- If a user presses `Alt+A` within the first few hundred milliseconds after app startup, the cold-create fallback can still run once.
+- If taskbar flashing persists, the next likely source is the generic `activate_webview_window` focus path and should be replaced with a screenshot-specific non-taskbar foreground path.
+
+### Next Recommended Chapter
+
+- Restart the app and manually test `Alt+A` after startup prewarm, repeated `Alt+A`, hidden-main `Alt+A`, and taskbar flash behavior.

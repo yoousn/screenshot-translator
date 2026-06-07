@@ -48,9 +48,19 @@ fn capture_current_monitor_png_xcap() -> Result<(Vec<u8>, (i32, i32, u32, u32)),
         .capture_image()
         .map_err(|error| format!("xcap screenshot failed: {error}"))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
-    xcap::image::DynamicImage::ImageRgba8(image)
-        .write_to(&mut buffer, xcap::image::ImageFormat::Png)
-        .map_err(|error| format!("xcap encode PNG failed: {error}"))?;
+    let encoder = xcap::image::codecs::png::PngEncoder::new_with_quality(
+        &mut buffer,
+        xcap::image::codecs::png::CompressionType::Fast,
+        xcap::image::codecs::png::FilterType::NoFilter,
+    );
+    xcap::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        width,
+        height,
+        xcap::image::ColorType::Rgba8.into(),
+    )
+    .map_err(|error| format!("xcap encode PNG failed: {error}"))?;
     Ok((buffer.into_inner(), (x, y, width, height)))
 }
 
@@ -71,10 +81,90 @@ fn capture_current_monitor_png_legacy() -> Result<(Vec<u8>, (i32, i32, u32, u32)
         .capture()
         .map_err(|error| format!("Screenshot failed: {error}"))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
-    image
-        .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
-        .map_err(|error| format!("Encode PNG failed: {error}"))?;
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        &mut buffer,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::NoFilter,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        info.width,
+        info.height,
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|error| format!("Encode PNG failed: {error}"))?;
     Ok((buffer.into_inner(), screen_info))
+}
+
+fn write_fullscreen_capture_backup(png_bytes: Vec<u8>) -> Result<PathBuf, String> {
+    let write_dir = app_data_dir();
+    let write_path = write_dir.join("fullscreen_temp.png");
+    let legacy_write_path = write_dir.join("fullscreen_temp.jpg");
+    if let Some(parent) = write_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Create screenshot temp directory failed: {}", e))?;
+        }
+    }
+    fs::write(&write_path, &png_bytes)
+        .map_err(|e| format!("Write screenshot temp image failed: {}", e))?;
+    let _ = fs::remove_file(&legacy_write_path);
+    Ok(write_path)
+}
+
+fn persist_fullscreen_capture_backup(png_bytes: Vec<u8>) {
+    tauri::async_runtime::spawn(async move {
+        match tokio::task::spawn_blocking(move || write_fullscreen_capture_backup(png_bytes)).await {
+            Ok(Ok(path)) => println!(
+                "[screenshot-trace] fullscreen backup written path={}",
+                path.to_string_lossy()
+            ),
+            Ok(Err(error)) => eprintln!("[screenshot] failed to write fullscreen backup: {error}"),
+            Err(error) => eprintln!("[screenshot] fullscreen backup task failed: {error}"),
+        }
+    });
+}
+
+pub fn ensure_screenshot_window(
+    app: &tauri::AppHandle,
+    reason: &str,
+) -> Result<tauri::WebviewWindow, String> {
+    if let Some(win) = app.get_webview_window("screenshot") {
+        let _ = win.set_skip_taskbar(true);
+        return Ok(win);
+    }
+
+    println!("[screenshot-trace] ensure_screenshot_window: creating hidden window reason={reason}");
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        "screenshot",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("YSN Screenshot Helper")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(false)
+    .visible(false)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("Create screenshot window failed: {}", e))?;
+    let _ = win.set_skip_taskbar(true);
+    disable_windows_transition(&win);
+    hide_window_without_activation(&win);
+    Ok(win)
+}
+
+pub fn prewarm_screenshot_window(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        if let Err(error) = ensure_screenshot_window(&app, "startup-prewarm") {
+            eprintln!("[screenshot] failed to prewarm screenshot window: {error}");
+        }
+    });
 }
 
 pub async fn start_screenshot_impl(
@@ -119,52 +209,20 @@ pub async fn start_screenshot_impl(
     }
 
     // Write to disk asynchronously (non-blocking) 鈥?only needed as a backup
-    let write_dir = app_data_dir();
-    let write_path = write_dir.join("fullscreen_temp.png");
-    let legacy_write_path = write_dir.join("fullscreen_temp.jpg");
-    let png_for_write = png_bytes.clone();
-    let write_result = tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
-        if let Some(parent) = write_path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Create screenshot temp directory failed: {}", e))?;
-            }
-        }
-        fs::write(&write_path, &png_for_write)
-            .map_err(|e| format!("Write screenshot temp image failed: {}", e))?;
-        let _ = fs::remove_file(&legacy_write_path);
-        Ok(write_path)
-    })
-    .await
-    .map_err(|e| format!("Screenshot file write task failed: {}", e))?;
+    persist_fullscreen_capture_backup(png_bytes.clone());
 
     let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
         let is_visible = win.is_visible().unwrap_or(false);
         println!("[screenshot-trace] start_screenshot_impl: reusing screenshot window, visible={is_visible}");
+        let _ = win.set_skip_taskbar(true);
         win
     } else {
-        println!("[screenshot-trace] start_screenshot_impl: creating new screenshot window");
-        tauri::WebviewWindowBuilder::new(
-            &app,
-            "screenshot",
-            tauri::WebviewUrl::App("index.html".into()),
-        )
-        .title("YSN Screenshot Helper")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .visible(false)
-        .skip_taskbar(true)
-        .resizable(false)
-        .shadow(false)
-        .focused(false)
-        .build()
-        .map_err(|e| {
+        ensure_screenshot_window(&app, "start-screenshot").map_err(|e| {
             crate::window_lifecycle::restore_main_window_after_screenshot(
                 &app,
                 "create-screenshot-window-error",
             );
-            format!("Create screenshot window failed: {}", e)
+            e
         })?
     };
 
@@ -184,25 +242,11 @@ pub async fn start_screenshot_impl(
     let _ = screenshot_win.set_always_on_top(true);
 
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
-    let payload = match write_result {
-        Ok(path) => serde_json::json!({
-            "kind": "file",
-            "path": path.to_string_lossy().to_string(),
-            "bytes": png_bytes.len(),
-            "mode": screenshot_mode,
-        }),
-        Err(error) => {
-            eprintln!(
-                "[screenshot] failed to write temp file, falling back to base64 event: {error}"
-            );
-            serde_json::json!({
-                "kind": "base64",
-                "base64": BASE64_STANDARD.encode(&png_bytes),
-                "bytes": png_bytes.len(),
-                "mode": screenshot_mode,
-            })
-        }
-    };
+    let payload = serde_json::json!({
+        "kind": "memory",
+        "bytes": png_bytes.len(),
+        "mode": screenshot_mode,
+    });
     let _ = screenshot_win.emit("screenshot-updated", payload);
 
     Ok(())

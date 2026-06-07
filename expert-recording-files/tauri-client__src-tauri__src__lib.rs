@@ -1,4 +1,4 @@
-﻿pub mod app_paths;
+pub mod app_paths;
 pub use app_paths::*;
 
 pub mod config_store;
@@ -256,8 +256,16 @@ unsafe extern "system" fn enum_windows_for_cursor(hwnd: isize, lparam: isize) ->
     if hwnd == 0 || ctx.excluded_hwnds.contains(&hwnd) || win32::IsWindowVisible(hwnd) == 0 {
         return 1;
     }
-    if hwnd_contains_cursor(hwnd, ctx.cursor_x, ctx.cursor_y, ctx.min_size) {
-        ctx.matches.push(hwnd);
+    if let Some(rect) = hwnd_rect(hwnd, true) {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        let contains_cursor = ctx.cursor_x >= rect.left
+            && ctx.cursor_x <= rect.right
+            && ctx.cursor_y >= rect.top
+            && ctx.cursor_y <= rect.bottom;
+        if contains_cursor && w >= ctx.min_size && h >= ctx.min_size {
+            ctx.matches.push(hwnd);
+        }
     }
     1
 }
@@ -268,8 +276,16 @@ unsafe extern "system" fn enum_child_windows_for_cursor(hwnd: isize, lparam: isi
     if hwnd == 0 || win32::IsWindowVisible(hwnd) == 0 {
         return 1;
     }
-    if hwnd_contains_cursor(hwnd, ctx.cursor_x, ctx.cursor_y, ctx.min_size) {
-        ctx.matches.push(hwnd);
+    if let Some(rect) = hwnd_rect(hwnd, false) {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        let contains_cursor = ctx.cursor_x >= rect.left
+            && ctx.cursor_x <= rect.right
+            && ctx.cursor_y >= rect.top
+            && ctx.cursor_y <= rect.bottom;
+        if contains_cursor && w >= ctx.min_size && h >= ctx.min_size {
+            ctx.matches.push(hwnd);
+        }
     }
     1
 }
@@ -549,7 +565,6 @@ pub fn run() {
             if let Err(error) = write_startup_diagnostics_probe(app.handle()) {
                 eprintln!("Failed to write startup diagnostics probe: {}", error);
             }
-            prewarm_screenshot_window(app.handle().clone());
             let readiness_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let probe_app = readiness_app.clone();

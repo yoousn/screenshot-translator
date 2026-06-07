@@ -83,6 +83,7 @@ interface UseScreenshotInteractionProps {
   cancelScreenshot: () => void;
   handlePin: () => void;
   forceCloseScreenshots: () => void;
+  lastMouseRef?: React.MutableRefObject<{ x: number; y: number }>;
 
   // State Refs
   selectionStartedAtRef: React.RefObject<number>;
@@ -169,6 +170,7 @@ export function useScreenshotInteraction({
   cancelScreenshot,
   handlePin,
   forceCloseScreenshots,
+  lastMouseRef: sharedLastMouseRef,
 
   selectionStartedAtRef,
   selectionCompletedAtRef,
@@ -198,7 +200,8 @@ export function useScreenshotInteraction({
   const annotationResizeHandleRef = useRef<AnnotationResizeHandle | null>(null);
   const annotationStartRef = useRef({ x: 0, y: 0 });
   const annotationDragStartRef = useRef({ x: 0, y: 0 });
-  const lastMouseRef = useRef({ x: 0, y: 0 });
+  const internalLastMouseRef = useRef({ x: 0, y: 0 });
+  const lastMouseRef = sharedLastMouseRef || internalLastMouseRef;
 
   function EMPTY_RECT(): Rect {
     return { x: 0, y: 0, w: 0, h: 0 };

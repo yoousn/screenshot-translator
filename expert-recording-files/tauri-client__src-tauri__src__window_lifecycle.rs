@@ -1,4 +1,4 @@
-﻿use crate::recording_overlay::*;
+use crate::recording_overlay::*;
 #[cfg(target_os = "windows")]
 use crate::win32;
 #[cfg(target_os = "windows")]
@@ -201,10 +201,12 @@ pub fn prepare_main_window_for_screenshot(app: &tauri::AppHandle) -> bool {
 pub async fn wait_for_hidden_main_capture_settle() {
     #[cfg(target_os = "windows")]
     {
-        unsafe {
-            let _ = win32::DwmFlush();
+        for _ in 0..3 {
+            unsafe {
+                let _ = win32::DwmFlush();
+            }
+            tokio::time::sleep(Duration::from_millis(120)).await;
         }
-        tokio::time::sleep(Duration::from_millis(80)).await;
         unsafe {
             let _ = win32::DwmFlush();
         }
@@ -492,7 +494,8 @@ pub async fn overlay_ready_to_show(
             target_label
         ));
     };
-    let _ = screenshot_win.set_skip_taskbar(true);
+    activate_webview_window(&screenshot_win);
+    tokio::time::sleep(Duration::from_millis(35)).await;
     activate_webview_window(&screenshot_win);
     Ok(())
 }
@@ -526,7 +529,7 @@ pub async fn force_close_recording_controls(
         source_str, hide_main_for_cleanup
     );
 
-    // 1. force_close_recording_controls 鎵ц鍓嶈瘖鏂?
+    // 1. force_close_recording_controls 执行前诊断
     dump_all_windows_state_internal(
         &app,
         format!("force_close_recording_controls-before({})", source_str),
@@ -574,10 +577,10 @@ pub async fn force_close_recording_controls(
         });
     }
 
-    // 2. force_close_recording_controls 鎵ц鍚?100ms 璇婃柇
-    // 褰曞埗鎺у埗鏉＄瓑琚嫢鏈夌殑绐楀彛鍦?close() 鏃讹紝Windows 浼氭妸鐒︾偣/婵€娲诲洖浜ょ粰 owner锛坢ain锛夛紝
-    // 鍙兘瀵艰嚧 main 鍦ㄥ叧闂悗琚噸鏂版縺娲诲苟鏄剧ず鍑虹櫧鑹茬獥鍙ｃ€?
-    // 鐢变簬鍏抽棴鏄欢杩?50ms 鎵ц鐨勶紝杩欓噷鍦ㄧ獥鍙ｇ‘瀹為攢姣佷箣鍚庡啀琛ヤ竴娆￠殣钘?main锛屾秷闄ゆ畫鐣欑櫧绐椼€?
+    // 2. force_close_recording_controls 执行后 100ms 诊断
+    // 录制控制条等被拥有的窗口在 close() 时，Windows 会把焦点/激活回交给 owner（main），
+    // 可能导致 main 在关闭后被重新激活并显示出白色窗口。
+    // 由于关闭是延迟 50ms 执行的，这里在窗口确实销毁之后再补一次隐藏 main，消除残留白窗。
     let app_clone = app.clone();
     let source_str_clone = source_str.clone();
     tauri::async_runtime::spawn(async move {
@@ -757,7 +760,7 @@ pub fn set_webview_capture_excluded(
 /// Windows OS focus-fallback from activating any of them when a recording overlay closes.
 pub fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
     for (lbl, win) in app.webview_windows() {
-        // 鍙?hide main 鍜?screenshot 绯诲垪绐楀彛锛屼笉 hide 姝ｅ湪鍏抽棴涓殑 recording_control 鑷韩
+        // 只 hide main 和 screenshot 系列窗口，不 hide 正在关闭中的 recording_control 自身
         if lbl == "main" || lbl == "screenshot" || lbl.starts_with("screenshot_") {
             let is_visible = win.is_visible().unwrap_or(false);
             if is_visible {
