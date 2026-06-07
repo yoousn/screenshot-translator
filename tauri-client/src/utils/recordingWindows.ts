@@ -142,7 +142,17 @@ const removeRecordingSessionPayload = (key: string) => {
   }
 };
 
-export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
+type CloseRecordingBorderWindowsOptions = {
+  source?: string;
+  hideMain?: boolean;
+};
+
+export const closeRecordingBorderWindows = async (
+  _labels: string[] = [],
+  options: CloseRecordingBorderWindowsOptions = {}
+) => {
+  const source = options.source ?? "closeRecordingBorderWindows";
+  const hideMain = options.hideMain ?? true;
   console.log("[window-trace] action=closeRecordingBorderWindows start");
   await Promise.all([
     setWindowCaptureExcludedIfExists("main", false),
@@ -150,8 +160,8 @@ export const closeRecordingBorderWindows = async (_labels: string[] = []) => {
     setWindowCaptureExcludedByPrefix(RECORDING_CONTROL_PREFIX, false),
     setWindowCaptureExcludedIfExists(RECORDING_NOTICE_LABEL, false),
     (async () => {
-      console.log("[window-trace] invoke force_close_recording_controls source=closeRecordingBorderWindows");
-      await withTimeout(invoke("force_close_recording_controls", { source: "closeRecordingBorderWindows" }).catch(() => {}), 700);
+      console.log(`[window-trace] invoke force_close_recording_controls source=${source} hideMain=${hideMain}`);
+      await withTimeout(invoke("force_close_recording_controls", { source, hideMain }).catch(() => {}), 700);
     })(),
     withTimeout(invoke("hide_recording_overlay").catch(() => {}), 500),
     withTimeout(closeWindowIfExists("recording_overlay", 500).catch(() => {}), 500),

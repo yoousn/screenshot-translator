@@ -341,7 +341,7 @@ export function useScreenshotRecording({
       message.success(`录屏已保存：${savedPath}`);
       triggerRender();
       setTimeout(() => {
-        closeRecordingBorderWindows().catch(console.error);
+        closeRecordingBorderWindows([], { source: "recording-finish", hideMain: true }).catch(console.error);
       }, 100);
     } catch (error: any) {
       message.error("完成录屏失败：" + (error?.message || error));
@@ -370,12 +370,20 @@ export function useScreenshotRecording({
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
       triggerRender();
       setTimeout(() => {
-        closeRecordingBorderWindows().catch(console.error);
+        closeRecordingBorderWindows([], { source: "recording-cancel", hideMain: true }).catch(console.error);
       }, 100);
     }
   };
 
   const clearRecordingState = () => {
+    const hadRecordingActivity =
+      recordingStatusRef.current !== "idle" ||
+      recordingSegmentsRef.current.length > 0 ||
+      recordingPickerModeRef.current !== null ||
+      recordingStartedAtRef.current !== null ||
+      isRecordingBusyRef.current ||
+      recordingRegionRef.current !== null;
+
     recordingSegmentsRef.current = [];
     recordingRegionRef.current = null;
     setRecordingStatus("idle");
@@ -383,9 +391,11 @@ export function useScreenshotRecording({
     setRecordingStartedAt(null);
     setRecordingElapsedMs(0);
     setRecordingPickerMode(null);
-    setTimeout(() => {
-      closeRecordingBorderWindows().catch(console.error);
-    }, 100);
+    if (hadRecordingActivity) {
+      setTimeout(() => {
+        closeRecordingBorderWindows([], { source: "clearRecordingState-active", hideMain: true }).catch(console.error);
+      }, 100);
+    }
   };
 
   return {

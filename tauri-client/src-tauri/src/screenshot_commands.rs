@@ -1,6 +1,6 @@
 use crate::*;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 pub static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 fn get_screenshot_image() -> &'static Mutex<Option<Vec<u8>>> {
@@ -11,15 +11,19 @@ fn capture_current_monitor_png() -> Result<(Vec<u8>, (i32, i32, u32, u32)), Stri
     match capture_current_monitor_png_xcap() {
         Ok(result) => Ok(result),
         Err(xcap_error) => {
-            eprintln!("[screenshot] xcap capture failed, falling back to screenshots crate: {xcap_error}");
-            capture_current_monitor_png_legacy()
-                .map_err(|legacy_error| format!("xcap capture failed: {xcap_error}; legacy capture failed: {legacy_error}"))
+            eprintln!(
+                "[screenshot] xcap capture failed, falling back to screenshots crate: {xcap_error}"
+            );
+            capture_current_monitor_png_legacy().map_err(|legacy_error| {
+                format!("xcap capture failed: {xcap_error}; legacy capture failed: {legacy_error}")
+            })
         }
     }
 }
 
 fn capture_current_monitor_png_xcap() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
-    let monitors = xcap::Monitor::all().map_err(|error| format!("xcap enumerate displays failed: {error}"))?;
+    let monitors =
+        xcap::Monitor::all().map_err(|error| format!("xcap enumerate displays failed: {error}"))?;
     if monitors.is_empty() {
         return Err("xcap detected no display".to_string());
     }
@@ -28,11 +32,21 @@ fn capture_current_monitor_png_xcap() -> Result<(Vec<u8>, (i32, i32, u32, u32)),
     } else {
         monitors[0].clone()
     };
-    let x = monitor.x().map_err(|error| format!("xcap display x failed: {error}"))?;
-    let y = monitor.y().map_err(|error| format!("xcap display y failed: {error}"))?;
-    let width = monitor.width().map_err(|error| format!("xcap display width failed: {error}"))?;
-    let height = monitor.height().map_err(|error| format!("xcap display height failed: {error}"))?;
-    let image = monitor.capture_image().map_err(|error| format!("xcap screenshot failed: {error}"))?;
+    let x = monitor
+        .x()
+        .map_err(|error| format!("xcap display x failed: {error}"))?;
+    let y = monitor
+        .y()
+        .map_err(|error| format!("xcap display y failed: {error}"))?;
+    let width = monitor
+        .width()
+        .map_err(|error| format!("xcap display width failed: {error}"))?;
+    let height = monitor
+        .height()
+        .map_err(|error| format!("xcap display height failed: {error}"))?;
+    let image = monitor
+        .capture_image()
+        .map_err(|error| format!("xcap screenshot failed: {error}"))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
     xcap::image::DynamicImage::ImageRgba8(image)
         .write_to(&mut buffer, xcap::image::ImageFormat::Png)
@@ -41,7 +55,8 @@ fn capture_current_monitor_png_xcap() -> Result<(Vec<u8>, (i32, i32, u32, u32)),
 }
 
 fn capture_current_monitor_png_legacy() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
-    let screens = Screen::all().map_err(|error| format!("Failed to enumerate displays: {error}"))?;
+    let screens =
+        Screen::all().map_err(|error| format!("Failed to enumerate displays: {error}"))?;
     if screens.is_empty() {
         return Err("No display detected".to_string());
     }
@@ -52,7 +67,9 @@ fn capture_current_monitor_png_legacy() -> Result<(Vec<u8>, (i32, i32, u32, u32)
     };
     let info = screen.display_info;
     let screen_info = (info.x, info.y, info.width, info.height);
-    let image = screen.capture().map_err(|error| format!("Screenshot failed: {error}"))?;
+    let image = screen
+        .capture()
+        .map_err(|error| format!("Screenshot failed: {error}"))?;
     let mut buffer = std::io::Cursor::new(Vec::new());
     image
         .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
@@ -60,24 +77,41 @@ fn capture_current_monitor_png_legacy() -> Result<(Vec<u8>, (i32, i32, u32, u32)
     Ok((buffer.into_inner(), screen_info))
 }
 
-pub async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) -> Result<(), String> {
-    println!("[screenshot-trace] enter start_screenshot_impl, mode={:?}", mode);
+pub async fn start_screenshot_impl(
+    app: tauri::AppHandle,
+    mode: Option<String>,
+) -> Result<(), String> {
+    println!(
+        "[screenshot-trace] enter start_screenshot_impl, mode={:?}",
+        mode
+    );
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
     let _ = crate::window_lifecycle::set_webview_capture_excluded(&app, "main", false);
     start_text_source_snapshot_capture(&app);
 
-    // Treat the settings panel like any other app window during screenshots.
-    // If it is visible on screen it is captured; if it is covered it is not.
+    let main_hidden_for_capture = crate::window_lifecycle::prepare_main_window_for_screenshot(&app);
+
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let _ = screenshot_win.set_always_on_top(false);
         crate::window_lifecycle::robust_hide_window(&screenshot_win);
     }
     close_screenshot_windows(&app, false);
+    if main_hidden_for_capture {
+        crate::window_lifecycle::wait_for_hidden_main_capture_settle().await;
+    }
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime.
-    let (png_bytes, screen_info) = tokio::task::spawn_blocking(capture_current_monitor_png)
+    let (png_bytes, screen_info) = match tokio::task::spawn_blocking(capture_current_monitor_png)
         .await
-        .map_err(|error| format!("Screenshot task failed: {error}"))??;
+        .map_err(|error| format!("Screenshot task failed: {error}"))
+        .and_then(|result| result)
+    {
+        Ok(result) => result,
+        Err(error) => {
+            crate::window_lifecycle::restore_main_window_after_screenshot(&app, "capture-error");
+            return Err(error);
+        }
+    };
 
     // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
     if let Ok(mut guard) = get_screenshot_image().lock() {
@@ -125,7 +159,13 @@ pub async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) 
         .shadow(false)
         .focused(false)
         .build()
-        .map_err(|e| format!("Create screenshot window failed: {}", e))?
+        .map_err(|e| {
+            crate::window_lifecycle::restore_main_window_after_screenshot(
+                &app,
+                "create-screenshot-window-error",
+            );
+            format!("Create screenshot window failed: {}", e)
+        })?
     };
 
     // Disable transition animation to avoid windows rendering delay/flicker
@@ -134,7 +174,11 @@ pub async fn start_screenshot_impl(app: tauri::AppHandle, mode: Option<String>) 
     let (x, y, width, height) = screen_info;
 
     // Position and configure the window while still hidden
-    println!("[screenshot-trace] start_screenshot_impl: configuring window, url={:?}, title={:?}", screenshot_win.url(), screenshot_win.title());
+    println!(
+        "[screenshot-trace] start_screenshot_impl: configuring window, url={:?}, title={:?}",
+        screenshot_win.url(),
+        screenshot_win.title()
+    );
     let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = screenshot_win.set_always_on_top(true);
@@ -233,6 +277,7 @@ pub async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String
     println!("[screenshot-trace] enter force_close_screenshots");
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
+    crate::window_lifecycle::restore_main_window_after_screenshot(&app, "force-close-screenshots");
     println!("[screenshot-trace] force_close_screenshots: CAPTURING is now false");
     Ok(())
 }
@@ -244,7 +289,8 @@ pub fn quick_fullscreen_capture() -> Result<(), String> {
         .map_err(|error| format!("Decode fullscreen capture failed: {error}"))?
         .to_rgba8();
     let (width, height) = decoded.dimensions();
-    let mut clipboard = Clipboard::new().map_err(|error| format!("Initialize clipboard failed: {error}"))?;
+    let mut clipboard =
+        Clipboard::new().map_err(|error| format!("Initialize clipboard failed: {error}"))?;
     let img_data = ImageData {
         width: width as usize,
         height: height as usize,
@@ -270,6 +316,7 @@ pub async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> 
         close_screenshot_windows(&app, true);
     }
     CAPTURING.store(false, Ordering::SeqCst);
+    crate::window_lifecycle::restore_main_window_after_screenshot(&app, "cancel-screenshot");
     Ok(())
 }
 
@@ -426,4 +473,3 @@ pub async fn save_image_to_file(image_base64: String) -> Result<String, String> 
         Err("Save cancelled by user".to_string())
     }
 }
-

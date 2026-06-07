@@ -222,6 +222,7 @@ pub(crate) mod win32 {
             pvAttribute: *mut std::ffi::c_void,
             cbAttribute: u32,
         ) -> i32;
+        pub fn DwmFlush() -> i32;
     }
 }
 
