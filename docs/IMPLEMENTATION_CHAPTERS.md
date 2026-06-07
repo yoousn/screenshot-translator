@@ -4603,3 +4603,158 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 
 ### 下一章建议
 - 开始优化截图/翻译/OCR 耗时，将耗时细节分别打点暴露给用户诊断，并继续优化 OCR candidate 和 LLM 通道。
+
+
+## Chapter 158 - Screenshot Overlay Lifecycle Isolation (2026-06-07)
+
+### Goal
+
+- Make screenshot capture a T0 independent capability: the main window is not special-cased and remains a normal capture target if it is visible.
+- Prevent half-initialized transparent screenshot windows from appearing as ghost windows.
+- Keep Alt+A responsiveness by only waiting for the screenshot bitmap, canvas, and pointer interaction readiness before showing the overlay.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not hide, minimize, exclude, or restore the main window during normal screenshots.
+- Did not change OCR, translation, recording, pin-window, or save/copy behavior.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- The screenshot overlay now stays non-interactive while initializing and only becomes interactive when the screenshot image and canvas are ready.
+- The screenshot page root now uses the existing `screenshot-root initializing/ready` CSS states so the ready state is explicit instead of implicit.
+- The canvas disables pointer events until `overlayVisible` is true, avoiding accidental click-through or first-click activation confusion.
+- The frontend now waits two animation frames after setting overlay state before invoking `overlay_ready_to_show`, giving React/DOM time to commit the ready canvas before the native window is shown and focused.
+- `overlay_ready_to_show` now returns an error if the target screenshot overlay window is missing, allowing frontend cleanup instead of silently leaving a bad state.
+- Screenshot image load timeout, image load failure, invalid screenshot data, and activation failure now route through one cleanup path that cancels the screenshot and attempts to show a concise error message.
+
+### Validation
+
+- `npm run build`: passed. Existing Vite warnings remain: large chunk warning and mixed static/dynamic import warning for `@tauri-apps/api/window.js`.
+- `cargo check`: passed.
+
+### Current Risks
+
+- Needs real Windows desktop smoke testing with the packaged/dev app: Alt+A from desktop, Alt+A while main window is foreground, tray Screenshot Now, and repeated cancel/retry loops.
+- Failure toast visibility may depend on whether the screenshot webview is visible at the exact failure moment; cleanup is prioritized over leaving a ghost window.
+
+### Next Recommended Chapter
+
+- Run real interaction smoke tests for screenshot lifecycle: verify first left-click starts selection, the main window is captured normally when visible, no ghost transparent window appears, and repeated Alt+A does not leave hidden overlay state.
+
+
+## Chapter 159 - WGC-Class Screenshot Backend Migration (2026-06-07)
+
+### Goal
+
+- Fix the reproduced issue where visible Tauri/WebView2 content is captured as a white rectangle during screenshots.
+- Preserve the product rule: screenshots should capture the visible screen as-is, including the main window when it is visible.
+- Keep the screenshot overlay hidden until its bitmap/canvas is ready.
+
+### Evidence
+
+- Reviewed `C:/Users/ysn/Videos/Snow Shot/SnowShot_Video_2026-06-07_05-00-20.mp4`, `C:/Users/ysn/Videos/Snow Shot/SnowShot_Video_2026-06-07_05-38-06.mp4`, and `C:/Users/ysn/Videos/Snow Shot/SnowShot_Video_2026-06-07_06-01-26.mp4` through extracted contact sheets.
+- The latest mouse-only video showed the main window content rendering normally before screenshot, then appearing white in the captured screenshot background.
+- This points to the old `screenshots` crate/legacy capture path being unable to reliably capture WebView2/D3D-backed windows, rather than a hotkey, focus, or main-window visibility bug.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/Cargo.toml`
+- `tauri-client/src-tauri/Cargo.lock`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not hide, minimize, or exclude the main window during ordinary screenshots.
+- Did not change OCR, translation, recording, copy, save, or pin behavior.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- Added `xcap` as the primary monitor capture backend. On Windows, this provides a more modern capture path suitable for WebView2/D3D-backed content than the previous legacy capture path.
+- Added `capture_current_monitor_png` with primary `xcap` capture and legacy `screenshots` fallback, so capture still has a recovery path if the new backend fails.
+- Updated the normal screenshot flow to use the shared capture helper before showing the overlay.
+- Updated `quick_fullscreen_capture` to use the same capture helper, keeping fullscreen clipboard behavior aligned with the normal screenshot path.
+- Screenshot start and explicit tray `Show Main Window` clear stale `main` capture exclusion as a safety measure, but no longer rely on hide/show heuristics.
+- `overlay_ready_to_show` now returns an error if the target screenshot overlay is missing, allowing frontend cleanup instead of silently leaving a bad state.
+- The screenshot page root now uses explicit `screenshot-root initializing/ready` states and disables canvas pointer events until the overlay is ready.
+
+### Validation
+
+- `cargo check`: passed after adding `xcap`.
+- `npm run build`: passed. Existing Vite warnings remain: large chunk warning and mixed static/dynamic import warning for `@tauri-apps/api/window.js`.
+
+### Current Risks
+
+- Needs real Windows smoke testing after fully restarting the app: visible main window + mouse-triggered screenshot, tray-hidden app + tray screenshot, and screenshot after recording controls have been opened/closed.
+- If white capture still reproduces, the next step is a native diagnostics command that writes both `xcap` and legacy captures to disk side-by-side for the same frame.
+
+### Next Recommended Chapter
+
+- Run a real desktop smoke loop and compare captured backgrounds with visible WebView2/Tauri windows, browsers, Explorer, and other hardware-accelerated apps.
+
+
+## Chapter 160 - Root Cache Cleanup Utility (2026-06-07)
+
+### Goal
+
+- Add a root-level utility BAT for clearing safe project/system caches and refreshing Windows Explorer during screenshot/window troubleshooting.
+
+### Added Files
+
+- `clean_all_cache.bat`
+
+### Modified Files
+
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Does not delete models, RapidOCR resources, user config, history, recordings, source files, or `node_modules` itself.
+- Does not automatically run cleanup during build or app startup.
+
+### Actual Changes
+
+- Added conservative cleanup for Vite output/cache, selected Rust incremental/build caches, temporary analysis frame folders, user/system temp files, Explorer thumbnail/icon cache, and Windows Explorer restart.
+- The script warns when not run as Administrator because Windows Temp and shell cache files may be skipped.
+- The script pauses at the end and prints recommended next steps for restarting YsnTrans and retesting screenshot capture.
+
+### Validation
+
+- Static inspection only; the cleanup script was not executed to avoid disrupting the active session.
+
+### Next Recommended Chapter
+
+- Run `clean_all_cache.bat` manually as Administrator if the white-window capture state persists, then restart the app and retest visible-main-window screenshot capture.

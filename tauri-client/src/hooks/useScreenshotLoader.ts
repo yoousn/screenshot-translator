@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { message } from "antd";
 import type { Rect } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
@@ -80,6 +81,11 @@ export function useScreenshotLoader({
 
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
+  const reportOverlayFailure = (reason: string) => {
+    setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: reason });
+    message.error({ content: `Screenshot window failed to start: ${reason}`, key: "screenshot-overlay", duration: 3 });
+  };
+
   const clearPendingConfirm = () => {
     if (pendingConfirmTimerRef.current !== null) {
       window.clearTimeout(pendingConfirmTimerRef.current);
@@ -145,7 +151,8 @@ export function useScreenshotLoader({
     }
   };
 
-  const cancelScreenshot = async () => {
+  const cancelScreenshot = async (reason?: string) => {
+    if (reason) reportOverlayFailure(reason);
     resetScreenshotState();
     await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
   };
@@ -182,7 +189,7 @@ export function useScreenshotLoader({
     timeoutRef.current = setTimeout(() => {
       if (sessionId !== captureIdRef.current) return;
       if (imageRef.current === null) {
-        cancelScreenshot();
+        cancelScreenshot("Screenshot overlay failed");
       }
     }, 1500);
 
@@ -223,18 +230,29 @@ export function useScreenshotLoader({
       initCanvas(img);
 
       requestAnimationFrame(() => {
-        if (sessionId !== captureIdRef.current) return;
-        overlayVisibleRef.current = true;
-        setOverlayVisible(true);
-        // 通知后端显示并激活截图窗口（窗口创建时是 hidden 的）
-        invoke("overlay_ready_to_show").catch(() => {});
-        const focusWindow = () => {
-          const canvasEl = document.querySelector("canvas");
-          if (canvasEl) canvasEl.focus({ preventScroll: true });
-          getCurrentWindow().setFocus().catch(() => {});
-        };
-        focusWindow();
-        window.setTimeout(focusWindow, 60);
+        void (async () => {
+          if (sessionId !== captureIdRef.current) return;
+          overlayVisibleRef.current = true;
+          setOverlayVisible(true);
+          await nextFrame();
+          await nextFrame();
+          if (sessionId !== captureIdRef.current) return;
+          try {
+            await invoke("overlay_ready_to_show", { label: getCurrentWindow().label });
+          } catch (error: any) {
+            throw new Error(error?.message || String(error));
+          }
+          const focusWindow = () => {
+            const canvasEl = document.querySelector("canvas");
+            if (canvasEl) canvasEl.focus({ preventScroll: true });
+            getCurrentWindow().setFocus().catch(() => {});
+          };
+          focusWindow();
+          window.setTimeout(focusWindow, 60);
+        })().catch((error) => {
+          if (sessionId !== captureIdRef.current) return;
+          cancelScreenshot(error?.message || "Screenshot overlay failed");
+        });
       });
     };
 
@@ -244,14 +262,17 @@ export function useScreenshotLoader({
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
-      cancelScreenshot();
+      cancelScreenshot("Screenshot overlay failed");
     };
     img.src = source;
   };
 
   const loadImageFromBase64 = (base64: string, sessionId: number) => {
     if (sessionId !== captureIdRef.current) return;
-    if (!base64 || base64.length < 1000) return;
+    if (!base64 || base64.length < 1000) {
+      cancelScreenshot("Screenshot overlay failed");
+      return;
+    }
     const dataUrl = "data:image/png;base64," + base64;
     loadImageFromSource(dataUrl, sessionId, Math.round(base64.length * 0.75));
   };
@@ -262,23 +283,29 @@ export function useScreenshotLoader({
       loadWindowRects(true);
       const base64 = await invoke<string>("get_fullscreen_image");
       if (sessionId !== captureIdRef.current) return;
-      if (!base64 || base64.length < 1000) return;
+      if (!base64 || base64.length < 1000) {
+        cancelScreenshot("Screenshot overlay failed");
+        return;
+      }
       loadImageFromBase64(base64, sessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
-      cancelScreenshot();
+      cancelScreenshot(err?.message || "Screenshot overlay failed");
     }
   };
 
   const loadFullscreenFromBase64 = (base64: string, mode = "normal") => {
     const sessionId = startNewCaptureSession(mode);
     try {
-      if (!base64 || base64.length < 1000) return;
+      if (!base64 || base64.length < 1000) {
+        cancelScreenshot("Screenshot overlay failed");
+        return;
+      }
       loadWindowRects(true);
       loadImageFromBase64(base64, sessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
-      cancelScreenshot();
+      cancelScreenshot(err?.message || "Screenshot overlay failed");
     }
   };
 

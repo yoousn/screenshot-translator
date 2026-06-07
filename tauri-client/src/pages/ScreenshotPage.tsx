@@ -672,7 +672,7 @@ export default function ScreenshotPage() {
   ];
 
   return (
-    <div style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: hasSelected ? "default" : "crosshair" }}>
+    <div className={`screenshot-root ${overlayVisible && screenshotState === "ready" ? "ready" : "initializing"}`} style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: hasSelected ? "default" : "crosshair" }}>
       {overlayVisible && !hasSelected && (
         <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px", display: "none" }}>0, 0</div>
       )}
@@ -696,7 +696,7 @@ export default function ScreenshotPage() {
         onPointerUp={handleMouseUp}
         onPointerCancel={handlePointerCancel}
         onDoubleClick={handleDoubleClick}
-        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none" }}
+        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible ? "auto" : "none" }}
       />
 
       {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (

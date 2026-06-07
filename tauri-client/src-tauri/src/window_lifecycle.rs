@@ -122,11 +122,12 @@ pub async fn overlay_ready_to_show(app: tauri::AppHandle, label: Option<String>)
     if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
         return Ok(());
     }
-    if let Some(screenshot_win) = app.get_webview_window(&target_label) {
-        activate_webview_window(&screenshot_win);
-        tokio::time::sleep(Duration::from_millis(35)).await;
-        activate_webview_window(&screenshot_win);
-    }
+    let Some(screenshot_win) = app.get_webview_window(&target_label) else {
+        return Err(format!("Screenshot overlay window not found: {}", target_label));
+    };
+    activate_webview_window(&screenshot_win);
+    tokio::time::sleep(Duration::from_millis(35)).await;
+    activate_webview_window(&screenshot_win);
     Ok(())
 }
 #[tauri::command]

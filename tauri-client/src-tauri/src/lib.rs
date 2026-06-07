@@ -604,6 +604,7 @@ pub fn run() {
                         });
                     }
                     "show" => {
+                        let _ = crate::window_lifecycle::set_webview_capture_excluded(app, "main", false);
                         if let Some(win) = app.get_webview_window("main") {
                             println!("[window-trace] source=tray-menu action=show-main label=main reason=tray_menu");
                             let _ = win.show();
