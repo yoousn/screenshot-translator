@@ -4758,3 +4758,74 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 ### Next Recommended Chapter
 
 - Run `clean_all_cache.bat` manually as Administrator if the white-window capture state persists, then restart the app and retest visible-main-window screenshot capture.
+
+
+## Chapter 161 - Hidden Main Window Screenshot Ghost Closure (2026-06-07)
+
+### Goal
+
+- Continue from `GHOST_WINDOW_FIX_HANDOFF.md` and fix the remaining scenario 4 failure: after the main panel is hidden with the top-right `X`, `Alt+A` screenshot close must not leave a real white `YsnTrans` shell on the desktop.
+- Keep the five required user scenarios automated and inspect real desktop images, not just Win32/Tauri visibility fields.
+
+### Added Files
+
+- None in tracked source.
+- Temporary validation evidence only: `.codex-analysis/desktop-smoke.ps1` and `.codex-analysis/ghost-smoke-*` screenshots/logs. These remain untracked and should not be submitted.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Non-Goals
+
+- Did not change OCR, translation, recording, annotation, copy/save, pin-window, or release packaging behavior.
+- Did not re-enable the unsafe `xcap` WGC feature inside the Tauri main process.
+- Did not commit, push, create branches, or tag releases.
+
+### Actual Changes
+
+- Added a Windows-only hidden-main parking path for screenshot lifecycle:
+  - When screenshot starts and `main` was already hidden, save its normal position, move the HWND to `-32000,-32000`, hide it with `SetWindowPos(... SWP_HIDEWINDOW | SWP_NOACTIVATE)`, and wait for DWM settle before capture.
+  - Before closing a screenshot overlay while `main` was originally hidden, park `main` offscreen again, move foreground focus to a non-app top-level window or shell fallback, clear active/focus handles, then hide the overlay without activation.
+  - When the user reopens the main panel via single-instance launch, tray menu, tray click, or `activate_webview_window`, restore the saved normal position before showing/focusing it.
+- Split screenshot overlay hiding away from the generic `robust_hide_window` path:
+  - Screenshot windows now use `hide_window_without_activation`, avoiding `ShowWindow(SW_HIDE)` as the primary close path for overlays.
+  - `cancel_screenshot` uses the same focus handoff and non-activating hide path.
+- Added `GetShellWindow` FFI for shell focus fallback.
+
+### Validation
+
+- Reproduced the original scenario 4 failure before the fix:
+  - `.codex-analysis/ghost-smoke-20260607-163819/04_show_x_close_alt_a_close/desktop-after.png` visibly showed the white `YsnTrans` shell.
+  - `afterWhiteRatio=0.9614`, while Win32 still reported `mainAfter.visible=false`.
+- Verified scenario 4 after the fix:
+  - `.codex-analysis/ghost-smoke-20260607-164741/04_show_x_close_alt_a_close/fullscreen_temp.png` was clean.
+  - `.codex-analysis/ghost-smoke-20260607-164741/04_show_x_close_alt_a_close/desktop-after.png` was clean.
+  - Summary: `tempWhiteRatio=0.01`, `afterWhiteRatio=0.01`.
+- Ran the full required five-scenario automated desktop smoke:
+  - Output directory: `.codex-analysis/ghost-smoke-20260607-165233`.
+  - 1 hidden `Alt+A` close: bottom and after clean.
+  - 2 visible main `Alt+A` close: bottom clean; after restored visible.
+  - 3 visible main minimized `Alt+A` close: app log confirmed `was_visible=true was_minimized=true` and `keep-minimized`; before/after desktop images showed no restored main panel.
+  - 4 `X` hidden main `Alt+A` close: bottom and after clean.
+  - 5 taskbar/single-instance restore then `Alt+A` close: bottom clean; after restored visible.
+- `cargo check`: passed.
+- `cargo test`: passed, `19 passed`.
+- `npm run build`: passed. Existing Vite warnings remain: mixed static/dynamic import for `@tauri-apps/api/window.js` and chunk size over `1200 kB`.
+- `git diff --check`: passed with only existing CRLF conversion warnings for touched Rust files.
+
+### Current Risks
+
+- The smoke script is intentionally temporary and untracked; keep using the saved images for this chapter's evidence but do not submit `.codex-analysis`.
+- The hidden-main parking strategy is Windows-specific and deliberately scoped to screenshot lifecycle when `main` is already hidden. Future refactors should keep position restore wired into every user-visible "show main" entry.
+
+### Next Recommended Chapter
+
+- Repeat the five-scenario smoke against a packaged/release build after the next release build is produced, then continue broader screenshot lifecycle smoke on multi-monitor/DPI setups.

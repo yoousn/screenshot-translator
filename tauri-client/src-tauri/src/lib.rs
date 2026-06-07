@@ -162,6 +162,7 @@ pub(crate) mod win32 {
         pub fn SetActiveWindow(hWnd: isize) -> isize;
         pub fn SetFocus(hWnd: isize) -> isize;
         pub fn GetForegroundWindow() -> isize;
+        pub fn GetShellWindow() -> isize;
         pub fn GetCurrentThreadId() -> u32;
         pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
         pub fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
@@ -474,6 +475,10 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 println!("[window-trace] source=single-instance action=show-main label=main reason=single_instance");
+                crate::window_lifecycle::restore_parked_main_window_position(
+                    &window,
+                    "single_instance",
+                );
                 let _ = window.show();
                 println!("[window-trace] source=single-instance action=unminimize-main label=main reason=single_instance");
                 let _ = window.unminimize();
@@ -608,6 +613,10 @@ pub fn run() {
                         let _ = crate::window_lifecycle::set_webview_capture_excluded(app, "main", false);
                         if let Some(win) = app.get_webview_window("main") {
                             println!("[window-trace] source=tray-menu action=show-main label=main reason=tray_menu");
+                            crate::window_lifecycle::restore_parked_main_window_position(
+                                &win,
+                                "tray_menu",
+                            );
                             let _ = win.show();
                             println!("[window-trace] source=tray-menu action=focus-main label=main reason=tray_menu");
                             let _ = win.set_focus();
@@ -639,6 +648,10 @@ pub fn run() {
 
                         if let Some(win) = app.get_webview_window("main") {
                             println!("[window-trace] source=tray-click action=show-main label=main reason=tray_click");
+                            crate::window_lifecycle::restore_parked_main_window_position(
+                                &win,
+                                "tray_click",
+                            );
                             let _ = win.show();
                             println!("[window-trace] source=tray-click action=focus-main label=main reason=tray_click");
                             let _ = win.set_focus();

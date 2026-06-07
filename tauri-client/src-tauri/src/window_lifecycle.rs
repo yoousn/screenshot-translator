@@ -17,12 +17,17 @@ const HWND_TOPMOST: isize = -1;
 const SWP_NOSIZE: u32 = 0x0001;
 #[cfg(target_os = "windows")]
 const SWP_NOMOVE: u32 = 0x0002;
-#[cfg(target_os = "windows")]
 const SWP_NOACTIVATE: u32 = 0x0010;
 #[cfg(target_os = "windows")]
 const SWP_SHOWWINDOW: u32 = 0x0040;
 #[cfg(target_os = "windows")]
 const SWP_HIDEWINDOW: u32 = 0x0080;
+#[cfg(target_os = "windows")]
+const HWND_NOTOPMOST: isize = -2;
+#[cfg(target_os = "windows")]
+const HIDDEN_MAIN_PARK_X: i32 = -32000;
+#[cfg(target_os = "windows")]
+const HIDDEN_MAIN_PARK_Y: i32 = -32000;
 
 #[derive(Debug, Clone, Copy)]
 struct MainWindowScreenshotState {
@@ -32,9 +37,22 @@ struct MainWindowScreenshotState {
 
 static MAIN_WINDOW_SCREENSHOT_STATE: OnceLock<Mutex<Option<MainWindowScreenshotState>>> =
     OnceLock::new();
+static HIDDEN_MAIN_WINDOW_POSITION: OnceLock<Mutex<Option<tauri::PhysicalPosition<i32>>>> =
+    OnceLock::new();
 
 fn get_main_window_screenshot_state() -> &'static Mutex<Option<MainWindowScreenshotState>> {
     MAIN_WINDOW_SCREENSHOT_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn get_hidden_main_window_position() -> &'static Mutex<Option<tauri::PhysicalPosition<i32>>> {
+    HIDDEN_MAIN_WINDOW_POSITION.get_or_init(|| Mutex::new(None))
+}
+
+fn peek_main_window_screenshot_state() -> Option<MainWindowScreenshotState> {
+    get_main_window_screenshot_state()
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
 }
 
 #[cfg(target_os = "windows")]
@@ -76,6 +94,9 @@ pub fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWind
     }
 }
 pub fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
+    if window.label() == "main" {
+        restore_parked_main_window_position(window, "activate-webview-window");
+    }
     let _ = window.show();
     let _ = window.set_always_on_top(true);
     #[cfg(target_os = "windows")]
@@ -123,12 +144,14 @@ pub fn close_screenshot_windows(app: &tauri::AppHandle, include_primary: bool) {
             let is_visible = window.is_visible().unwrap_or(false);
             println!("[screenshot-trace] close_screenshot_windows: hiding screenshot window (visible={})", is_visible);
             let _ = window.set_always_on_top(false);
-            robust_hide_window(&window);
+            prepare_focus_for_screenshot_overlay_close(app, "close-primary-screenshot");
+            hide_window_without_activation(&window);
         } else if label.starts_with("screenshot_") {
             let is_visible = window.is_visible().unwrap_or(false);
             println!("[screenshot-trace] close_screenshot_windows: hiding and closing secondary screenshot window {}, visible={}", label, is_visible);
             let _ = window.set_always_on_top(false);
-            robust_hide_window(&window);
+            prepare_focus_for_screenshot_overlay_close(app, "close-secondary-screenshot");
+            hide_window_without_activation(&window);
             let win_clone = window.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -163,6 +186,12 @@ pub fn prepare_main_window_for_screenshot(app: &tauri::AppHandle) -> bool {
         println!("[window-trace] source=prepare-main-for-screenshot action=hide-main label=main");
         disable_windows_transition(&main);
         robust_hide_window(&main);
+        true
+    } else if !was_visible && !was_minimized {
+        println!(
+            "[window-trace] source=prepare-main-for-screenshot action=park-hidden-main label=main"
+        );
+        park_hidden_main_window_for_screenshot(&main, "prepare-main-for-screenshot");
         true
     } else {
         false
@@ -219,9 +248,28 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
             "[window-trace] source=restore-main-after-screenshot action=show-main label=main reason={}",
             reason
         );
+        restore_parked_main_window_position(&main, "restore-main-after-screenshot");
         let _ = main.show();
         let _ = main.unminimize();
     }
+}
+
+pub fn restore_parked_main_window_position<W: tauri::Runtime>(
+    window: &tauri::WebviewWindow<W>,
+    reason: &str,
+) {
+    let parked_position = get_hidden_main_window_position()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    let Some(position) = parked_position else {
+        return;
+    };
+    println!(
+        "[window-trace] source=restore-parked-main-position action=restore label=main reason={} x={} y={}",
+        reason, position.x, position.y
+    );
+    let _ = window.set_position(position);
 }
 
 fn keep_main_window_hidden_after_screenshot(app: &tauri::AppHandle, reason: &str) {
@@ -246,6 +294,189 @@ fn keep_main_window_hidden_after_screenshot(app: &tauri::AppHandle, reason: &str
             robust_hide_window(&main_clone);
         }
     });
+}
+
+#[cfg(target_os = "windows")]
+struct ForegroundHandoffContext {
+    current_pid: u32,
+    candidate: isize,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_foreground_handoff_candidate(hwnd: isize, lparam: isize) -> i32 {
+    let ctx = &mut *(lparam as *mut ForegroundHandoffContext);
+    if hwnd == 0 || win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+
+    let mut pid: u32 = 0;
+    win32::GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+    if pid == ctx.current_pid {
+        return 1;
+    }
+
+    let mut rect = win32::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if win32::GetWindowRect(hwnd, &mut rect) == 0 {
+        return 1;
+    }
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width < 120 || height < 80 {
+        return 1;
+    }
+
+    if window_title(hwnd).trim().is_empty() {
+        return 1;
+    }
+
+    ctx.candidate = hwnd;
+    0
+}
+
+#[cfg(target_os = "windows")]
+fn find_foreground_handoff_target() -> isize {
+    let mut ctx = ForegroundHandoffContext {
+        current_pid: std::process::id(),
+        candidate: 0,
+    };
+    unsafe {
+        win32::EnumWindows(
+            Some(enum_foreground_handoff_candidate),
+            &mut ctx as *mut ForegroundHandoffContext as isize,
+        );
+        if ctx.candidate != 0 {
+            return ctx.candidate;
+        }
+        win32::GetShellWindow()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_hwnd_without_activation(hwnd: isize) {
+    unsafe {
+        let _ = win32::SetWindowPos(
+            hwnd,
+            HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW,
+        );
+        let _ = win32::InvalidateRect(0, std::ptr::null(), 1);
+        let _ = win32::DwmFlush();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn park_hwnd_offscreen_without_activation(hwnd: isize) {
+    unsafe {
+        let _ = win32::SetWindowPos(
+            hwnd,
+            HWND_NOTOPMOST,
+            HIDDEN_MAIN_PARK_X,
+            HIDDEN_MAIN_PARK_Y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW,
+        );
+        let _ = win32::InvalidateRect(0, std::ptr::null(), 1);
+        let _ = win32::DwmFlush();
+    }
+}
+
+pub fn hide_window_without_activation<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
+    let _ = window.set_always_on_top(false);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        hide_hwnd_without_activation(hwnd.0 as isize);
+        return;
+    }
+    let _ = window.hide();
+}
+
+fn hide_tauri_window_without_activation(window: &tauri::Window) {
+    let _ = window.set_always_on_top(false);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        hide_hwnd_without_activation(hwnd.0 as isize);
+        return;
+    }
+    let _ = window.hide();
+}
+
+fn park_hidden_main_window_for_screenshot<W: tauri::Runtime>(
+    window: &tauri::WebviewWindow<W>,
+    reason: &str,
+) {
+    if let Ok(position) = window.outer_position() {
+        if position.x > -30000 || position.y > -30000 {
+            if let Ok(mut guard) = get_hidden_main_window_position().lock() {
+                if guard.is_none() {
+                    println!(
+                        "[window-trace] source=park-hidden-main action=save-position label=main reason={} x={} y={}",
+                        reason, position.x, position.y
+                    );
+                    *guard = Some(position);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        println!(
+            "[window-trace] source=park-hidden-main action=park-offscreen label=main reason={}",
+            reason
+        );
+        park_hwnd_offscreen_without_activation(hwnd.0 as isize);
+        return;
+    }
+
+    let _ = window.set_position(tauri::PhysicalPosition::new(-32000, -32000));
+    let _ = window.hide();
+}
+
+pub fn prepare_focus_for_screenshot_overlay_close(app: &tauri::AppHandle, reason: &str) {
+    let Some(state) = peek_main_window_screenshot_state() else {
+        return;
+    };
+    if state.was_visible {
+        return;
+    }
+
+    if let Some(main) = app.get_webview_window("main") {
+        println!(
+            "[window-trace] source=prepare-screenshot-close-focus action=park-main-before-overlay-close label=main reason={}",
+            reason
+        );
+        park_hidden_main_window_for_screenshot(&main, reason);
+    }
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let target = find_foreground_handoff_target();
+        if target != 0 {
+            let ok = win32::SetForegroundWindow(target);
+            println!(
+                "[window-trace] source=prepare-screenshot-close-focus action=set-foreground target={} ok={} reason={}",
+                target, ok, reason
+            );
+        } else {
+            println!(
+                "[window-trace] source=prepare-screenshot-close-focus action=no-foreground-target reason={}",
+                reason
+            );
+        }
+        let _ = win32::SetActiveWindow(0);
+        let _ = win32::SetFocus(0);
+        let _ = win32::DwmFlush();
+    }
 }
 
 #[tauri::command]
@@ -278,7 +509,10 @@ pub async fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn should_hide_main_for_recording_cleanup(source: &str) -> bool {
-    !matches!(source, "clearRecordingState-idle" | "screenshot-idle-cleanup")
+    !matches!(
+        source,
+        "clearRecordingState-idle" | "screenshot-idle-cleanup"
+    )
 }
 
 #[tauri::command]
@@ -567,14 +801,11 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if label == "screenshot" {
         match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                let _ = window.set_always_on_top(false);
-                let _ = window.hide();
-                #[cfg(target_os = "windows")]
-                if let Ok(hwnd) = window.hwnd() {
-                    unsafe {
-                        crate::win32::ShowWindow(hwnd.0 as isize, 0);
-                    }
-                }
+                prepare_focus_for_screenshot_overlay_close(
+                    window.app_handle(),
+                    "screenshot-close-requested",
+                );
+                hide_tauri_window_without_activation(window);
                 crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
                 restore_main_window_after_screenshot(
                     window.app_handle(),

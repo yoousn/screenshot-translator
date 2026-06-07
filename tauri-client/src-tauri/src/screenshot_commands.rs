@@ -93,7 +93,7 @@ pub async fn start_screenshot_impl(
 
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
         let _ = screenshot_win.set_always_on_top(false);
-        crate::window_lifecycle::robust_hide_window(&screenshot_win);
+        crate::window_lifecycle::hide_window_without_activation(&screenshot_win);
     }
     close_screenshot_windows(&app, false);
     if main_hidden_for_capture {
@@ -308,7 +308,11 @@ pub async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> 
         if target_label == "screenshot" || target_label.starts_with("screenshot_") {
             if let Some(screenshot_win) = app.get_webview_window(&target_label) {
                 let _ = screenshot_win.set_always_on_top(false);
-                crate::window_lifecycle::robust_hide_window(&screenshot_win);
+                crate::window_lifecycle::prepare_focus_for_screenshot_overlay_close(
+                    &app,
+                    "cancel-screenshot-target",
+                );
+                crate::window_lifecycle::hide_window_without_activation(&screenshot_win);
             }
             close_screenshot_windows(&app, false);
         }

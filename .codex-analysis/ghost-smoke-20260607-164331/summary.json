@@ -1,0 +1,51 @@
+﻿{
+    "name":  "04_show_x_close_alt_a_close",
+    "tempCreated":  true,
+    "tempLength":  3690984,
+    "alive":  true,
+    "mainShown":  {
+                      "hwnd":  3083254,
+                      "hwndValue":  3083254,
+                      "title":  "YsnTrans",
+                      "className":  "Tauri Window",
+                      "visible":  true,
+                      "iconic":  false,
+                      "rect":  {
+                                   "left":  338,
+                                   "top":  338,
+                                   "right":  1554,
+                                   "bottom":  1177,
+                                   "width":  1216,
+                                   "height":  839
+                               }
+                  },
+    "mainAfter":  {
+                      "hwnd":  3083254,
+                      "hwndValue":  3083254,
+                      "title":  "YsnTrans",
+                      "className":  "Tauri Window",
+                      "visible":  false,
+                      "iconic":  false,
+                      "rect":  {
+                                   "left":  -32000,
+                                   "top":  -32000,
+                                   "right":  -30784,
+                                   "bottom":  -31161,
+                                   "width":  1216,
+                                   "height":  839
+                               }
+                  },
+    "beforeImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164331\\04_show_x_close_alt_a_close\\desktop-before.png",
+    "overlayImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164331\\04_show_x_close_alt_a_close\\desktop-overlay.png",
+    "afterImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164331\\04_show_x_close_alt_a_close\\desktop-after.png",
+    "beforeRegion":  {
+                         "samples":  16065,
+                         "whiteRatio":  0.0082,
+                         "mean":  117.98
+                     },
+    "afterRegion":  {
+                        "samples":  16065,
+                        "whiteRatio":  0.0082,
+                        "mean":  117.98
+                    }
+}

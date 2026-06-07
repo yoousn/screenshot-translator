@@ -1,0 +1,21 @@
+[window-trace] source=single-instance action=show-main label=main reason=single_instance
+[window-trace] source=single-instance action=unminimize-main label=main reason=single_instance
+[window-trace] source=single-instance action=focus-main label=main reason=single_instance
+[screenshot-trace] enter start_screenshot, mode=None
+[screenshot-trace] start_screenshot: CAPTURING is now true
+[screenshot-trace] enter start_screenshot_impl, mode=None
+[screenshot-trace] close_screenshot_windows called, include_primary=false
+[screenshot-trace] start_screenshot_impl: reusing screenshot window, visible=false
+[screenshot-trace] start_screenshot_impl: configuring window, url=Ok(Url { scheme: "http", cannot_be_a_base: false, username: "", password: None, host: Some(Ipv4(127.0.0.1)), port: Some(1420), path: "/", query: None, fragment: None }), title=Ok("YSN 截图辅助窗口")
+[screenshot-trace] enter force_close_screenshots
+[screenshot-trace] close_screenshot_windows called, include_primary=true
+[screenshot-trace] close_screenshot_windows: hiding screenshot window (visible=true)
+[window-trace] source=prepare-screenshot-close-focus action=park-main-before-overlay-close label=main reason=close-primary-screenshot
+[window-trace] source=park-hidden-main action=save-position label=main reason=close-primary-screenshot x=338 y=338
+[window-trace] source=park-hidden-main action=park-offscreen label=main reason=close-primary-screenshot
+[window-trace] source=prepare-screenshot-close-focus action=set-foreground target=131992 ok=1 reason=close-primary-screenshot
+[window-trace] source=restore-main-after-screenshot action=keep-hidden reason=force-close-screenshots was_visible=false was_minimized=false
+[window-trace] source=restore-main-after-screenshot action=hide-main label=main reason=force-close-screenshots
+[screenshot-trace] force_close_screenshots: CAPTURING is now false
+[window-trace] source=restore-main-after-screenshot action=hide-main-delayed label=main reason=force-close-screenshots delay_ms=120
+[window-trace] source=restore-main-after-screenshot action=hide-main-delayed label=main reason=force-close-screenshots delay_ms=280

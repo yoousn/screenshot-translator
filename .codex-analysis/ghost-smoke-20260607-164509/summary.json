@@ -1,0 +1,287 @@
+﻿[
+    {
+        "name":  "01_hidden_alt_a_close",
+        "tempCreated":  true,
+        "tempLength":  5529315,
+        "alive":  true,
+        "mainBefore":  {
+                           "hwnd":  2362336,
+                           "hwndValue":  2362336,
+                           "title":  "YsnTrans",
+                           "className":  "Tauri Window",
+                           "visible":  false,
+                           "iconic":  false,
+                           "rect":  {
+                                        "left":  286,
+                                        "top":  286,
+                                        "right":  1502,
+                                        "bottom":  1125,
+                                        "width":  1216,
+                                        "height":  839
+                                    }
+                       },
+        "mainAfter":  {
+                          "hwnd":  2362336,
+                          "hwndValue":  2362336,
+                          "title":  "YsnTrans",
+                          "className":  "Tauri Window",
+                          "visible":  false,
+                          "iconic":  false,
+                          "rect":  {
+                                       "left":  -32000,
+                                       "top":  -32000,
+                                       "right":  -30784,
+                                       "bottom":  -31161,
+                                       "width":  1216,
+                                       "height":  839
+                                   }
+                      },
+        "beforeImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\01_hidden_alt_a_close\\desktop-before.png",
+        "tempImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\01_hidden_alt_a_close\\fullscreen_temp.png",
+        "overlayImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\01_hidden_alt_a_close\\desktop-overlay.png",
+        "afterImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\01_hidden_alt_a_close\\desktop-after.png",
+        "beforeRegion":  {
+                             "samples":  16065,
+                             "whiteRatio":  0.01,
+                             "mean":  115.46
+                         },
+        "tempRegion":  {
+                           "samples":  16065,
+                           "whiteRatio":  0.01,
+                           "mean":  115.46
+                       },
+        "afterRegion":  {
+                            "samples":  16065,
+                            "whiteRatio":  0.01,
+                            "mean":  115.46
+                        }
+    },
+    {
+        "name":  "02_show_main_alt_a_close",
+        "tempCreated":  true,
+        "tempLength":  5529434,
+        "alive":  true,
+        "mainBefore":  {
+                           "hwnd":  2362336,
+                           "hwndValue":  2362336,
+                           "title":  "YsnTrans",
+                           "className":  "Tauri Window",
+                           "visible":  true,
+                           "iconic":  false,
+                           "rect":  {
+                                        "left":  286,
+                                        "top":  286,
+                                        "right":  1502,
+                                        "bottom":  1125,
+                                        "width":  1216,
+                                        "height":  839
+                                    }
+                       },
+        "mainAfter":  {
+                          "hwnd":  2362336,
+                          "hwndValue":  2362336,
+                          "title":  "YsnTrans",
+                          "className":  "Tauri Window",
+                          "visible":  true,
+                          "iconic":  false,
+                          "rect":  {
+                                       "left":  286,
+                                       "top":  286,
+                                       "right":  1502,
+                                       "bottom":  1125,
+                                       "width":  1216,
+                                       "height":  839
+                                   }
+                      },
+        "beforeImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\02_show_main_alt_a_close\\desktop-before.png",
+        "tempImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\02_show_main_alt_a_close\\fullscreen_temp.png",
+        "overlayImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\02_show_main_alt_a_close\\desktop-overlay.png",
+        "afterImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\02_show_main_alt_a_close\\desktop-after.png",
+        "beforeRegion":  {
+                             "samples":  16065,
+                             "whiteRatio":  0.8118,
+                             "mean":  242.03
+                         },
+        "tempRegion":  {
+                           "samples":  16065,
+                           "whiteRatio":  0.01,
+                           "mean":  115.46
+                       },
+        "afterRegion":  {
+                            "samples":  16065,
+                            "whiteRatio":  0.8118,
+                            "mean":  242.03
+                        }
+    },
+    {
+        "name":  "03_show_minimize_alt_a_close",
+        "tempCreated":  true,
+        "tempLength":  5530439,
+        "alive":  true,
+        "mainBefore":  {
+                           "hwnd":  6949958,
+                           "hwndValue":  6949958,
+                           "title":  "C:\\Users\\ysn\\Desktop\\zzjt\\tauri-client\\src-tauri\\target\\debug\\YsnTrans.exe",
+                           "className":  "ConsoleWindowClass",
+                           "visible":  false,
+                           "iconic":  false,
+                           "rect":  {
+                                        "left":  234,
+                                        "top":  234,
+                                        "right":  1227,
+                                        "bottom":  753,
+                                        "width":  993,
+                                        "height":  519
+                                    }
+                       },
+        "mainAfter":  {
+                          "hwnd":  6949958,
+                          "hwndValue":  6949958,
+                          "title":  "C:\\Users\\ysn\\Desktop\\zzjt\\tauri-client\\src-tauri\\target\\debug\\YsnTrans.exe",
+                          "className":  "ConsoleWindowClass",
+                          "visible":  false,
+                          "iconic":  false,
+                          "rect":  {
+                                       "left":  234,
+                                       "top":  234,
+                                       "right":  1227,
+                                       "bottom":  753,
+                                       "width":  993,
+                                       "height":  519
+                                   }
+                      },
+        "beforeImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\03_show_minimize_alt_a_close\\desktop-before.png",
+        "tempImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\03_show_minimize_alt_a_close\\fullscreen_temp.png",
+        "overlayImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\03_show_minimize_alt_a_close\\desktop-overlay.png",
+        "afterImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\03_show_minimize_alt_a_close\\desktop-after.png",
+        "beforeRegion":  {
+                             "samples":  16065,
+                             "whiteRatio":  0.01,
+                             "mean":  115.46
+                         },
+        "tempRegion":  {
+                           "samples":  16065,
+                           "whiteRatio":  0.01,
+                           "mean":  115.46
+                       },
+        "afterRegion":  {
+                            "samples":  16065,
+                            "whiteRatio":  0.01,
+                            "mean":  115.46
+                        }
+    },
+    {
+        "name":  "04_show_x_close_alt_a_close",
+        "tempCreated":  true,
+        "tempLength":  3707268,
+        "alive":  true,
+        "mainBefore":  {
+                           "hwnd":  2362336,
+                           "hwndValue":  2362336,
+                           "title":  "YsnTrans",
+                           "className":  "Tauri Window",
+                           "visible":  false,
+                           "iconic":  false,
+                           "rect":  {
+                                        "left":  286,
+                                        "top":  286,
+                                        "right":  1502,
+                                        "bottom":  1125,
+                                        "width":  1216,
+                                        "height":  839
+                                    }
+                       },
+        "mainAfter":  {
+                          "hwnd":  2362336,
+                          "hwndValue":  2362336,
+                          "title":  "YsnTrans",
+                          "className":  "Tauri Window",
+                          "visible":  false,
+                          "iconic":  false,
+                          "rect":  {
+                                       "left":  -32000,
+                                       "top":  -32000,
+                                       "right":  -30784,
+                                       "bottom":  -31161,
+                                       "width":  1216,
+                                       "height":  839
+                                   }
+                      },
+        "beforeImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\04_show_x_close_alt_a_close\\desktop-before.png",
+        "tempImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\04_show_x_close_alt_a_close\\fullscreen_temp.png",
+        "overlayImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\04_show_x_close_alt_a_close\\desktop-overlay.png",
+        "afterImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\04_show_x_close_alt_a_close\\desktop-after.png",
+        "beforeRegion":  {
+                             "samples":  16065,
+                             "whiteRatio":  0.01,
+                             "mean":  115.46
+                         },
+        "tempRegion":  {
+                           "samples":  16065,
+                           "whiteRatio":  0.9611,
+                           "mean":  249.39
+                       },
+        "afterRegion":  {
+                            "samples":  16065,
+                            "whiteRatio":  0.01,
+                            "mean":  115.46
+                        }
+    },
+    {
+        "name":  "05_show_taskbar_restore_alt_a_close",
+        "tempCreated":  true,
+        "tempLength":  5529403,
+        "alive":  true,
+        "mainBefore":  {
+                           "hwnd":  2362336,
+                           "hwndValue":  2362336,
+                           "title":  "YsnTrans",
+                           "className":  "Tauri Window",
+                           "visible":  true,
+                           "iconic":  false,
+                           "rect":  {
+                                        "left":  286,
+                                        "top":  286,
+                                        "right":  1502,
+                                        "bottom":  1125,
+                                        "width":  1216,
+                                        "height":  839
+                                    }
+                       },
+        "mainAfter":  {
+                          "hwnd":  2362336,
+                          "hwndValue":  2362336,
+                          "title":  "YsnTrans",
+                          "className":  "Tauri Window",
+                          "visible":  true,
+                          "iconic":  false,
+                          "rect":  {
+                                       "left":  286,
+                                       "top":  286,
+                                       "right":  1502,
+                                       "bottom":  1125,
+                                       "width":  1216,
+                                       "height":  839
+                                   }
+                      },
+        "beforeImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\05_show_taskbar_restore_alt_a_close\\desktop-before.png",
+        "tempImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\05_show_taskbar_restore_alt_a_close\\fullscreen_temp.png",
+        "overlayImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\05_show_taskbar_restore_alt_a_close\\desktop-overlay.png",
+        "afterImage":  "C:\\Users\\ysn\\Desktop\\zzjt\\.codex-analysis\\ghost-smoke-20260607-164509\\05_show_taskbar_restore_alt_a_close\\desktop-after.png",
+        "beforeRegion":  {
+                             "samples":  16065,
+                             "whiteRatio":  0.811,
+                             "mean":  241.89
+                         },
+        "tempRegion":  {
+                           "samples":  16065,
+                           "whiteRatio":  0.01,
+                           "mean":  115.46
+                       },
+        "afterRegion":  {
+                            "samples":  16065,
+                            "whiteRatio":  0.811,
+                            "mean":  241.89
+                        }
+    }
+]
