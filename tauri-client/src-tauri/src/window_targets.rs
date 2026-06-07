@@ -208,6 +208,14 @@ pub fn is_system_capture_window(hwnd: isize) -> bool {
 }
 
 #[cfg(target_os = "windows")]
+pub fn is_taskbar_capture_window(hwnd: isize) -> bool {
+    matches!(
+        window_class_name(hwnd).as_str(),
+        "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+    )
+}
+
+#[cfg(target_os = "windows")]
 pub fn push_rect_candidate(
     rects: &mut Vec<serde_json::Value>,
     rect: win32::RECT,
@@ -243,6 +251,25 @@ pub fn push_rect_candidate(
     if !duplicate {
         rects.push(json_rect);
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn push_display_candidate(
+    rects: &mut Vec<serde_json::Value>,
+    screen: (i32, i32, i32, i32),
+) {
+    let (_, _, w, h) = screen;
+    if w < 50 || h < 50 {
+        return;
+    }
+    let json_rect = serde_json::json!({
+        "x": 0,
+        "y": 0,
+        "w": w,
+        "h": h,
+        "kind": "display",
+    });
+    rects.push(json_rect);
 }
 
 #[cfg(target_os = "windows")]
@@ -310,6 +337,37 @@ pub fn child_windows_at_cursor(root: isize, cursor_x: i32, cursor_y: i32) -> Vec
     ctx.matches
 }
 
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_taskbar_windows_for_cursor(hwnd: isize, lparam: isize) -> i32 {
+    let ctx = &mut *(lparam as *mut WindowSearchContext);
+    if hwnd == 0 || win32::IsWindowVisible(hwnd) == 0 || !is_taskbar_capture_window(hwnd) {
+        return 1;
+    }
+    if hwnd_contains_cursor(hwnd, ctx.cursor_x, ctx.cursor_y, ctx.min_size) {
+        ctx.matches.push(hwnd);
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+pub fn taskbar_windows_at_cursor(cursor_x: i32, cursor_y: i32) -> Vec<isize> {
+    let mut ctx = WindowSearchContext {
+        cursor_x,
+        cursor_y,
+        excluded_hwnds: Vec::new(),
+        matches: Vec::new(),
+        min_size: 12,
+    };
+    // SAFETY: EnumWindows calls the callback synchronously while ctx remains valid.
+    unsafe {
+        win32::EnumWindows(
+            Some(enum_taskbar_windows_for_cursor),
+            &mut ctx as *mut WindowSearchContext as isize,
+        );
+    }
+    ctx.matches
+}
+
 #[tauri::command]
 pub fn get_window_rects(
     app: tauri::AppHandle,
@@ -322,6 +380,11 @@ pub fn get_window_rects(
         let window_clip = current_screen_work_area().unwrap_or(screen);
         let include_controls = include_controls.unwrap_or(false);
         if let Some((cx, cy)) = get_cursor_position() {
+            for hwnd in taskbar_windows_at_cursor(cx, cy) {
+                if let Some(rect) = hwnd_rect(hwnd, false) {
+                    push_rect_candidate(&mut rects, rect, "taskbar", screen, screen, 12);
+                }
+            }
             let excluded_hwnds = excluded_app_hwnds(&app);
             let windows = top_level_windows_at_cursor(cx, cy, excluded_hwnds);
             if let Some(hwnd) = windows.first().copied() {
@@ -341,6 +404,7 @@ pub fn get_window_rects(
                 }
             }
         }
+        push_display_candidate(&mut rects, screen);
         Ok(serde_json::to_string(&rects).unwrap_or_else(|_| "[]".to_string()))
     }
     #[cfg(not(target_os = "windows"))]

@@ -6,6 +6,16 @@ import type { Rect } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
 
+const logScreenshotPerf = (messageText: string) => {
+  invoke("log_screenshot_perf", { message: messageText }).catch(() => {});
+};
+
+const logScreenshotBaseline = (sessionId: string | number, phase: string, elapsedMs: number, detail = "") => {
+  invoke("log_screenshot_perf", {
+    message: `[baseline] session=${sessionId} phase=${phase} elapsed_ms=${Math.round(elapsedMs)} ${detail}`,
+  }).catch(() => {});
+};
+
 interface UseScreenshotLoaderProps {
   screenshotModeRef: React.MutableRefObject<string>;
   configRef: React.MutableRefObject<Config>;
@@ -78,6 +88,7 @@ export function useScreenshotLoader({
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
   const overlayVisibleRef = useRef(false);
+  const frontendSessionStartedAtRef = useRef<number>(0);
 
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
@@ -93,10 +104,12 @@ export function useScreenshotLoader({
     }
   };
 
-  const startNewCaptureSession = (mode = "normal") => {
+  const startNewCaptureSession = (mode = "normal", remoteSessionId?: string | number) => {
     clearPendingConfirm();
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
+    frontendSessionStartedAtRef.current = performance.now();
+    logScreenshotBaseline(remoteSessionId || currentId, "frontend_session_start", 0, `mode=${mode}`);
 
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
@@ -157,7 +170,7 @@ export function useScreenshotLoader({
     await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
   };
 
-  const captureAnalysisImageData = (img: HTMLImageElement, sessionId: number) => {
+  const captureAnalysisImageData = (img: HTMLImageElement, sessionId: number, remoteSessionId?: string | number) => {
     window.setTimeout(() => {
       if (sessionId !== captureIdRef.current) return;
       const width = Math.max(1, window.innerWidth);
@@ -170,13 +183,14 @@ export function useScreenshotLoader({
       ctx.drawImage(img, 0, 0, width, height);
       try {
         analysisImageDataRef.current = ctx.getImageData(0, 0, width, height);
+        logScreenshotBaseline(remoteSessionId || sessionId, "analysis_image_data_ready", performance.now() - frontendSessionStartedAtRef.current, `width=${width} height=${height}`);
       } catch {
         analysisImageDataRef.current = null;
       }
     }, 0);
   };
 
-  const initCanvas = (img: HTMLImageElement) => {
+  const initCanvas = (img: HTMLImageElement, sessionId?: number, remoteSessionId?: string | number) => {
     const width = Math.max(1, window.innerWidth);
     const height = Math.max(1, window.innerHeight);
 
@@ -190,14 +204,16 @@ export function useScreenshotLoader({
       oCtx.fillRect(0, 0, width, height);
     }
     maskedCanvasRef.current = offscreen;
+    if (sessionId) logScreenshotBaseline(remoteSessionId || sessionId, "mask_canvas_ready", performance.now() - frontendSessionStartedAtRef.current, `width=${width} height=${height}`);
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
     draw(0, 0, 0, 0);
   };
-  const loadImageFromSource = (source: string, sessionId: number, bytes?: number) => {
+  const loadImageFromSource = (source: string, sessionId: number, bytes?: number, remoteSessionId?: string | number, revokeSource = false) => {
     if (sessionId !== captureIdRef.current) return;
     const img = new Image();
     img.crossOrigin = "anonymous";
+    logScreenshotBaseline(remoteSessionId || sessionId, "file_load_start", performance.now() - frontendSessionStartedAtRef.current, `bytes=${bytes || 0}`);
 
     timeoutRef.current = setTimeout(() => {
       if (sessionId !== captureIdRef.current) return;
@@ -208,16 +224,22 @@ export function useScreenshotLoader({
 
     img.onload = async () => {
       if (sessionId !== captureIdRef.current) return;
+      logScreenshotBaseline(remoteSessionId || sessionId, "file_load_end", performance.now() - frontendSessionStartedAtRef.current, `natural=${img.naturalWidth}x${img.naturalHeight}`);
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
+      if (revokeSource) {
+        URL.revokeObjectURL(source);
+      }
       try {
+        logScreenshotBaseline(remoteSessionId || sessionId, "image_decode_start", performance.now() - frontendSessionStartedAtRef.current);
         await img.decode?.();
       } catch (e) {
         console.warn("[ScreenshotPage] img.decode failed", e);
       }
       if (sessionId !== captureIdRef.current) return;
+      logScreenshotBaseline(remoteSessionId || sessionId, "image_decode_end", performance.now() - frontendSessionStartedAtRef.current);
 
       imageRef.current = img;
       setDbgStatus({ 
@@ -228,6 +250,7 @@ export function useScreenshotLoader({
         errorMsg: "" 
       });
       setScreenshotState("ready");
+      logScreenshotPerf(`frontend image ready bytes=${bytes || 0}`);
       
       const canvas = document.querySelector("canvas");
       if (canvas) {
@@ -239,15 +262,18 @@ export function useScreenshotLoader({
         canvas.style.height = `${height}px`;
       }
 
-      initCanvas(img);
+      initCanvas(img, sessionId, remoteSessionId);
       overlayVisibleRef.current = true;
       setOverlayVisible(true);
 
       requestAnimationFrame(() => {
+        logScreenshotBaseline(remoteSessionId || sessionId, "first_paint", performance.now() - frontendSessionStartedAtRef.current);
         void (async () => {
           if (sessionId !== captureIdRef.current) return;
           try {
-            await invoke("overlay_ready_to_show", { label: getCurrentWindow().label });
+            logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_called", performance.now() - frontendSessionStartedAtRef.current);
+            await invoke("overlay_ready_to_show", { label: getCurrentWindow().label, sessionId: String(remoteSessionId || sessionId) });
+            logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_returned", performance.now() - frontendSessionStartedAtRef.current);
           } catch (error: any) {
             throw new Error(error?.message || String(error));
           }
@@ -258,10 +284,15 @@ export function useScreenshotLoader({
           };
           focusWindow();
           window.setTimeout(focusWindow, 60);
-          captureAnalysisImageData(img, sessionId);
+          captureAnalysisImageData(img, sessionId, remoteSessionId);
           window.setTimeout(() => {
-            if (sessionId === captureIdRef.current) loadWindowRects(true);
-          }, 0);
+            if (sessionId === captureIdRef.current) {
+              logScreenshotBaseline(remoteSessionId || sessionId, "candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
+              loadWindowRects(true).then(() => {
+                logScreenshotBaseline(remoteSessionId || sessionId, "candidate_first_batch", performance.now() - frontendSessionStartedAtRef.current);
+              }).catch(() => {});
+            }
+          }, 48);
         })().catch((error) => {
           if (sessionId !== captureIdRef.current) return;
           cancelScreenshot(error?.message || "Screenshot overlay failed");
@@ -275,62 +306,91 @@ export function useScreenshotLoader({
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
+      if (revokeSource) {
+        URL.revokeObjectURL(source);
+      }
       cancelScreenshot("Screenshot overlay failed");
     };
     img.src = source;
   };
 
-  const loadImageFromBase64 = (base64: string, sessionId: number) => {
+  const loadImageFromBase64 = (base64: string, sessionId: number, remoteSessionId?: string | number) => {
     if (sessionId !== captureIdRef.current) return;
     if (!base64 || base64.length < 1000) {
       cancelScreenshot("Screenshot overlay failed");
       return;
     }
     const dataUrl = "data:image/png;base64," + base64;
-    loadImageFromSource(dataUrl, sessionId, Math.round(base64.length * 0.75));
+    loadImageFromSource(dataUrl, sessionId, Math.round(base64.length * 0.75), remoteSessionId);
   };
 
-  const loadFullscreen = async (mode = screenshotModeRef.current || "normal") => {
-    const sessionId = startNewCaptureSession(mode);
+  const normalizeScreenshotBytes = (raw: unknown): Uint8Array | null => {
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+    if (ArrayBuffer.isView(raw)) return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+    if (Array.isArray(raw)) return new Uint8Array(raw as number[]);
+    return null;
+  };
+
+  const loadImageFromBytes = (raw: unknown, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
+    if (sessionId !== captureIdRef.current) return false;
+    const data = normalizeScreenshotBytes(raw);
+    if (!data || data.byteLength < 1000) return false;
+    const objectUrl = URL.createObjectURL(new Blob([data], { type: "image/png" }));
+    loadImageFromSource(objectUrl, sessionId, bytes || data.byteLength, remoteSessionId, true);
+    return true;
+  };
+
+  const loadFullscreen = async (mode = screenshotModeRef.current || "normal", remoteSessionId?: string | number, bytes?: number) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId);
     try {
+      const binaryStartedAt = performance.now();
+      const binary = await invoke<unknown>("get_fullscreen_image_bytes");
+      logScreenshotBaseline(remoteSessionId || sessionId, "binary_fetch_end", performance.now() - frontendSessionStartedAtRef.current, `fetch_ms=${Math.round(performance.now() - binaryStartedAt)} bytes=${bytes || 0}`);
+      if (loadImageFromBytes(binary, sessionId, bytes, remoteSessionId)) return;
+    } catch (binaryErr) {
+      console.warn("[ScreenshotPage] binary screenshot fetch failed, falling back to base64", binaryErr);
+    }
+    try {
+      const base64StartedAt = performance.now();
       const base64 = await invoke<string>("get_fullscreen_image");
+      logScreenshotBaseline(remoteSessionId || sessionId, "base64_fetch_end", performance.now() - frontendSessionStartedAtRef.current, `fetch_ms=${Math.round(performance.now() - base64StartedAt)} bytes=${bytes || 0}`);
       if (sessionId !== captureIdRef.current) return;
       if (!base64 || base64.length < 1000) {
         cancelScreenshot("Screenshot overlay failed");
         return;
       }
-      loadImageFromBase64(base64, sessionId);
+      loadImageFromBase64(base64, sessionId, remoteSessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
       cancelScreenshot(err?.message || "Screenshot overlay failed");
     }
   };
 
-  const loadFullscreenFromBase64 = (base64: string, mode = "normal") => {
-    const sessionId = startNewCaptureSession(mode);
+  const loadFullscreenFromBase64 = (base64: string, mode = "normal", remoteSessionId?: string | number) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId);
     try {
       if (!base64 || base64.length < 1000) {
         cancelScreenshot("Screenshot overlay failed");
         return;
       }
-      loadImageFromBase64(base64, sessionId);
+      loadImageFromBase64(base64, sessionId, remoteSessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
       cancelScreenshot(err?.message || "Screenshot overlay failed");
     }
   };
 
-  const loadFullscreenFromFile = (path: string, bytes?: number, mode = "normal") => {
-    const sessionId = startNewCaptureSession(mode);
+  const loadFullscreenFromFile = (path: string, bytes?: number, mode = "normal", remoteSessionId?: string | number) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId);
     try {
       if (!path) {
-        loadFullscreen(mode);
+        loadFullscreen(mode, remoteSessionId, bytes);
         return;
       }
-      loadImageFromSource(`${convertFileSrc(path)}?t=${Date.now()}`, sessionId, bytes);
+      loadImageFromSource(`${convertFileSrc(path)}?t=${Date.now()}`, sessionId, bytes, remoteSessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
-      loadFullscreen(mode);
+      loadFullscreen(mode, remoteSessionId, bytes);
     }
   };
 

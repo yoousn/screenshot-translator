@@ -24,7 +24,7 @@ export const enUS: AppDictionary = {
     pin: "Pin",
     undo: "Undo Ctrl+Z",
     redo: "Redo Ctrl+Y / Ctrl+Shift+Z",
-    save: "Save Ctrl+S",
+    save: "Save As Ctrl+S",
     cancel: "Cancel Esc",
     copy: "Done and Copy Ctrl+C",
     size: "Size",

@@ -1,10 +1,70 @@
 use crate::*;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+static LATEST_SCREENSHOT_PAYLOAD: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+static SCREENSHOT_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_screenshot_session_id() -> String {
+    format!(
+        "ss-{}",
+        SCREENSHOT_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn now_epoch_millis_local() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn ensure_png_extension(path: PathBuf) -> PathBuf {
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("png"))
+        .unwrap_or(false)
+    {
+        path
+    } else {
+        let mut next = path;
+        next.set_extension("png");
+        next
+    }
+}
+
+fn log_screenshot_baseline(session_id: &str, phase: &str, started_at: &Instant, detail: &str) {
+    println!(
+        "[screenshot-baseline] session={} phase={} elapsed_ms={} {}",
+        session_id,
+        phase,
+        started_at.elapsed().as_millis(),
+        detail
+    );
+}
+
 fn get_screenshot_image() -> &'static Mutex<Option<Vec<u8>>> {
     SCREENSHOT_IMAGE.get_or_init(|| Mutex::new(None))
+}
+
+fn get_latest_screenshot_payload_store() -> &'static Mutex<Option<serde_json::Value>> {
+    LATEST_SCREENSHOT_PAYLOAD.get_or_init(|| Mutex::new(None))
+}
+
+fn set_latest_screenshot_payload(payload: serde_json::Value) {
+    if let Ok(mut guard) = get_latest_screenshot_payload_store().lock() {
+        *guard = Some(payload);
+    }
+}
+
+fn clear_latest_screenshot_payload() {
+    if let Ok(mut guard) = get_latest_screenshot_payload_store().lock() {
+        *guard = None;
+    }
 }
 
 fn capture_current_monitor_png() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
@@ -113,12 +173,20 @@ fn write_fullscreen_capture_backup(png_bytes: Vec<u8>) -> Result<PathBuf, String
     Ok(write_path)
 }
 
-fn persist_fullscreen_capture_backup(png_bytes: Vec<u8>) {
+fn persist_fullscreen_capture_backup(session_id: String, started_at: Instant, png_bytes: Vec<u8>) {
     tauri::async_runtime::spawn(async move {
+        let backup_started_at = started_at.elapsed().as_millis();
+        log_screenshot_baseline(&session_id, "backup_write_start", &started_at, "background=true");
         match tokio::task::spawn_blocking(move || write_fullscreen_capture_backup(png_bytes)).await {
-            Ok(Ok(path)) => println!(
-                "[screenshot-trace] fullscreen backup written path={}",
-                path.to_string_lossy()
+            Ok(Ok(path)) => log_screenshot_baseline(
+                &session_id,
+                "backup_write_end",
+                &started_at,
+                &format!(
+                    "background=true write_ms={} path={}",
+                    started_at.elapsed().as_millis().saturating_sub(backup_started_at),
+                    path.to_string_lossy()
+                ),
             ),
             Ok(Err(error)) => eprintln!("[screenshot] failed to write fullscreen backup: {error}"),
             Err(error) => eprintln!("[screenshot] fullscreen backup task failed: {error}"),
@@ -171,6 +239,14 @@ pub async fn start_screenshot_impl(
     app: tauri::AppHandle,
     mode: Option<String>,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
+    let session_id = next_screenshot_session_id();
+    log_screenshot_baseline(
+        &session_id,
+        "hotkey_received",
+        &started_at,
+        &format!("mode={}", mode.as_deref().unwrap_or("normal")),
+    );
     println!(
         "[screenshot-trace] enter start_screenshot_impl, mode={:?}",
         mode
@@ -180,17 +256,27 @@ pub async fn start_screenshot_impl(
     start_text_source_snapshot_capture(&app);
 
     let main_hidden_for_capture = crate::window_lifecycle::prepare_main_window_for_screenshot(&app);
+    log_screenshot_baseline(
+        &session_id,
+        "main_window_prepared",
+        &started_at,
+        &format!("hidden_for_capture={}", main_hidden_for_capture),
+    );
 
     if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        let _ = screenshot_win.set_always_on_top(false);
-        crate::window_lifecycle::hide_window_without_activation(&screenshot_win);
+        if screenshot_win.is_visible().unwrap_or(false) {
+            let _ = screenshot_win.set_always_on_top(false);
+            crate::window_lifecycle::hide_window_without_activation(&screenshot_win);
+        }
     }
     close_screenshot_windows(&app, false);
-    if main_hidden_for_capture {
+    if main_hidden_for_capture && crate::window_lifecycle::current_screenshot_capture_needs_settle() {
         crate::window_lifecycle::wait_for_hidden_main_capture_settle().await;
+        log_screenshot_baseline(&session_id, "main_hidden_settled", &started_at, "");
     }
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime.
+    log_screenshot_baseline(&session_id, "capture_start", &started_at, "");
     let (png_bytes, screen_info) = match tokio::task::spawn_blocking(capture_current_monitor_png)
         .await
         .map_err(|error| format!("Screenshot task failed: {error}"))
@@ -202,17 +288,41 @@ pub async fn start_screenshot_impl(
             return Err(error);
         }
     };
+    log_screenshot_baseline(
+        &session_id,
+        "capture_end",
+        &started_at,
+        &format!(
+            "bytes={} screen={}x{}@{},{}",
+            png_bytes.len(),
+            screen_info.2,
+            screen_info.3,
+            screen_info.0,
+            screen_info.1
+        ),
+    );
+    println!(
+        "[screenshot-perf] capture ready {}ms bytes={}",
+        started_at.elapsed().as_millis(),
+        png_bytes.len()
+    );
 
     // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
     if let Ok(mut guard) = get_screenshot_image().lock() {
         *guard = Some(png_bytes.clone());
     }
 
-    // Write to disk asynchronously (non-blocking) 鈥?only needed as a backup
-    persist_fullscreen_capture_backup(png_bytes.clone());
+    // Write backup in the background only. Do not block payload emission or overlay readiness.
+    persist_fullscreen_capture_backup(session_id.clone(), started_at, png_bytes.clone());
 
     let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
         let is_visible = win.is_visible().unwrap_or(false);
+        log_screenshot_baseline(
+            &session_id,
+            "window_reused",
+            &started_at,
+            &format!("visible={}", is_visible),
+        );
         println!("[screenshot-trace] start_screenshot_impl: reusing screenshot window, visible={is_visible}");
         let _ = win.set_skip_taskbar(true);
         win
@@ -246,8 +356,20 @@ pub async fn start_screenshot_impl(
         "kind": "memory",
         "bytes": png_bytes.len(),
         "mode": screenshot_mode,
+        "sessionId": session_id.clone(),
     });
+    set_latest_screenshot_payload(payload.clone());
     let _ = screenshot_win.emit("screenshot-updated", payload);
+    log_screenshot_baseline(
+        &session_id,
+        "payload_emit",
+        &started_at,
+        "event=screenshot-updated",
+    );
+    println!(
+        "[screenshot-perf] screenshot payload emitted {}ms",
+        started_at.elapsed().as_millis()
+    );
 
     Ok(())
 }
@@ -287,6 +409,74 @@ pub fn get_screenshot_pointer_state(
         "globalX": global_x,
         "globalY": global_y
     }))
+}
+
+#[tauri::command]
+pub fn get_latest_screenshot_payload() -> Result<Option<serde_json::Value>, String> {
+    get_latest_screenshot_payload_store()
+        .lock()
+        .map(|guard| guard.clone())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn show_save_feedback_toast(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let label = format!("save_toast_{}", now_epoch_millis_local());
+    let encoded_path = encode_query_component(&path);
+    let toast_width = 168_i32;
+    let toast_height = 46_i32;
+    let cursor = get_cursor_position().unwrap_or((0, 0));
+    let screen = match Screen::from_point(cursor.0, cursor.1) {
+        Ok(screen) => screen,
+        Err(_) => {
+            let screens = Screen::all()
+                .map_err(|error| format!("Resolve toast display failed: {error}"))?;
+            *screens
+                .first()
+                .ok_or_else(|| "Resolve toast display failed: no screen".to_string())?
+        }
+    };
+    let screen_info = screen.display_info;
+    let x = screen_info.x + ((screen_info.width as i32 - toast_width) / 2).max(12);
+    let y = screen_info.y + 28;
+    let toast = tauri::WebviewWindowBuilder::new(
+        &app,
+        label.clone(),
+        tauri::WebviewUrl::App(format!("index.html?save_toast=1&path={encoded_path}").into()),
+    )
+    .title("截图已保存")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .visible(false)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .inner_size(toast_width as f64, toast_height as f64)
+    .position(x as f64, y as f64)
+    .build()
+    .map_err(|error| format!("Create save toast failed: {error}"))?;
+    disable_windows_transition(&toast);
+    let _ = toast.show();
+    let toast_clone = toast.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1700)).await;
+        let _ = toast_clone.close();
+    });
+    Ok(())
+}
+
+fn encode_query_component(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -347,7 +537,15 @@ pub fn quick_fullscreen_capture() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
+pub async fn cancel_screenshot(
+    app: tauri::AppHandle,
+    label: Option<String>,
+    restore_main: Option<bool>,
+) -> Result<(), String> {
+    let should_restore_main = restore_main.unwrap_or(true);
+    if !should_restore_main {
+        crate::window_lifecycle::suppress_next_screenshot_restore();
+    }
     if let Some(target_label) = label {
         if target_label == "screenshot" || target_label.starts_with("screenshot_") {
             if let Some(screenshot_win) = app.get_webview_window(&target_label) {
@@ -364,7 +562,10 @@ pub async fn cancel_screenshot(app: tauri::AppHandle, label: Option<String>) -> 
         close_screenshot_windows(&app, true);
     }
     CAPTURING.store(false, Ordering::SeqCst);
-    crate::window_lifecycle::restore_main_window_after_screenshot(&app, "cancel-screenshot");
+    clear_latest_screenshot_payload();
+    if should_restore_main {
+        crate::window_lifecycle::restore_main_window_after_screenshot(&app, "cancel-screenshot");
+    }
     Ok(())
 }
 
@@ -383,6 +584,22 @@ pub fn get_fullscreen_image() -> Result<String, String> {
     }
     let bytes = fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?;
     Ok(BASE64_STANDARD.encode(&bytes))
+}
+
+#[tauri::command]
+pub fn get_fullscreen_image_bytes() -> Result<tauri::ipc::Response, String> {
+    if let Ok(guard) = get_screenshot_image().lock() {
+        if let Some(ref bytes) = *guard {
+            return Ok(tauri::ipc::Response::new(bytes.clone()));
+        }
+    }
+    let mut path = app_data_dir();
+    path.push("fullscreen_temp.png");
+    if !path.exists() {
+        return Err("No display detected".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -505,11 +722,13 @@ pub async fn save_image_to_file(image_base64: String) -> Result<String, String> 
     let bytes = BASE64_STANDARD
         .decode(&image_base64)
         .map_err(|e| format!("Decode base64 failed: {}", e))?;
-    let file_path = rfd::AsyncFileDialog::new()
+    let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter("PNG Image", &["png"])
-        .set_file_name("screenshot.png")
-        .save_file()
-        .await;
+        .set_file_name("screenshot.png");
+    if let Some(desktop_dir) = dirs::desktop_dir() {
+        dialog = dialog.set_directory(desktop_dir);
+    }
+    let file_path = dialog.save_file().await;
     if let Some(file_handle) = file_path {
         let path = file_handle.path();
         fs::write(path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
@@ -520,4 +739,65 @@ pub async fn save_image_to_file(image_base64: String) -> Result<String, String> 
     } else {
         Err("Save cancelled by user".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn choose_image_save_path() -> Result<Option<String>, String> {
+    let started_at = Instant::now();
+    println!("[screenshot-baseline] session=save-as phase=dialog_open_start elapsed_ms=0");
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .add_filter("PNG Image", &["png"])
+        .set_file_name("screenshot.png");
+    if let Some(desktop_dir) = dirs::desktop_dir() {
+        dialog = dialog.set_directory(desktop_dir);
+    }
+    let file_path = dialog.save_file().await;
+    let result = file_path.map(|file_handle| {
+        ensure_png_extension(file_handle.path().to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    });
+    println!(
+        "[screenshot-baseline] session=save-as phase=dialog_open_end elapsed_ms={} cancelled={}",
+        started_at.elapsed().as_millis(),
+        result.is_none()
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn write_image_to_file(
+    app: tauri::AppHandle,
+    image_base64: String,
+    path: String,
+) -> Result<String, String> {
+    let started_at = Instant::now();
+    println!(
+        "[screenshot-baseline] session=save-as phase=file_write_start elapsed_ms=0 bytes_estimate={} path={}",
+        image_base64.len().saturating_mul(3) / 4,
+        path
+    );
+    let bytes = BASE64_STANDARD
+        .decode(&image_base64)
+        .map_err(|e| format!("Decode base64 failed: {}", e))?;
+    let path = PathBuf::from(path);
+    let path = ensure_png_extension(PathBuf::from(path));
+    fs::write(&path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
+    let saved_path = path.to_string_lossy().to_string();
+    let toast_app = app.clone();
+    let toast_path = saved_path.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = show_save_feedback_toast(toast_app, toast_path);
+    });
+    println!(
+        "[screenshot-baseline] session=save-as phase=file_write_end elapsed_ms={} path={}",
+        started_at.elapsed().as_millis(),
+        saved_path
+    );
+    Ok(saved_path)
+}
+
+#[tauri::command]
+pub fn log_screenshot_perf(message: String) {
+    println!("[screenshot-perf] {message}");
 }

@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Rect } from "../types/screenshot";
 import type { Config } from "../types/config";
-import { getDetectionCandidatesAt, rectSignature, sortDetectionCandidates } from "../utils/detectionCandidates";
+import { getDetectionCandidatesAt, rectSignature } from "../utils/detectionCandidates";
 
 interface UseScreenshotWindowRectsProps {
   configRef: React.MutableRefObject<Config>;
@@ -70,16 +70,14 @@ export function useScreenshotWindowRects({
       if (!hasSelected && !isSelecting && !isDragging && !isResizing) {
         const mouse = lastMouseRef.current;
         setHoverCandidateList(
-          nextRects.length > 0
-            ? sortDetectionCandidates(nextRects, mouse.x, mouse.y)
-            : getDetectionCandidatesAt(
-                mouse.x,
-                mouse.y,
-                windowRectsRef.current,
-                analysisImageDataRef.current,
-                configRef.current.enableVisualDetection === true,
-                configRef.current.visualDetectionSensitivity || 3
-              )
+          getDetectionCandidatesAt(
+            mouse.x,
+            mouse.y,
+            windowRectsRef.current,
+            analysisImageDataRef.current,
+            configRef.current.enableVisualDetection === true,
+            configRef.current.visualDetectionSensitivity || 3
+          )
         );
       }
       triggerRender();

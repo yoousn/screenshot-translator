@@ -1,4 +1,4 @@
-﻿export type Rect = { x: number; y: number; w: number; h: number; kind?: "window" | "control" | "visual" };
+﻿export type Rect = { x: number; y: number; w: number; h: number; kind?: "window" | "control" | "taskbar" | "display" | "visual" };
 export type AnnotationTool = "rect" | "circle" | "mosaic" | "arrow" | "text" | "brush";
 export type Point = { x: number; y: number };
 export type Annotation = { type: AnnotationTool; rect: Rect; points?: Point[]; text?: string; color?: string; size?: number };

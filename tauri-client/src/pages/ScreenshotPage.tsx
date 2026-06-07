@@ -37,6 +37,7 @@ type ScreenshotUpdatedPayload = string | {
   base64?: string;
   bytes?: number;
   mode?: string;
+  sessionId?: string;
 };
 
 export default function ScreenshotPage() {
@@ -578,6 +579,28 @@ export default function ScreenshotPage() {
     let unlistenEvent: (() => void) | null = null;
     let unlistenRecordingEnded: (() => void) | null = null;
 
+    const handleScreenshotPayload = (payload: ScreenshotUpdatedPayload | null | undefined, source: string) => {
+      primeTextSourceSnapshot(source, 160);
+      if (typeof payload === "string") {
+        if (payload) loadFullscreenFromBase64(payload, screenshotModeRef.current || "normal");
+        else loadFullscreen();
+        return;
+      }
+      if (payload?.kind === "file" && payload.path) {
+        loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal", payload.sessionId);
+        return;
+      }
+      if (payload?.kind === "memory") {
+        loadFullscreen(payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.bytes);
+        return;
+      }
+      if (payload?.base64) {
+        loadFullscreenFromBase64(payload.base64, payload.mode || screenshotModeRef.current || "normal", payload.sessionId);
+        return;
+      }
+      loadFullscreen();
+    };
+
     listen<string>("screenshot-mode", (event) => {
       const nextMode = event.payload || "normal";
       setScreenshotMode(nextMode);
@@ -601,29 +624,15 @@ export default function ScreenshotPage() {
       .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
-    listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => {
-      primeTextSourceSnapshot("screenshot-updated", 160);
-      const payload = event.payload;
-      if (typeof payload === "string") {
-        if (payload) loadFullscreenFromBase64(payload, screenshotModeRef.current || "normal");
-        else loadFullscreen();
-        return;
-      }
-      if (payload?.kind === "file" && payload.path) {
-        loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal");
-        return;
-      }
-      if (payload?.kind === "memory") {
-        loadFullscreen(payload.mode || screenshotModeRef.current || "normal");
-        return;
-      }
-      if (payload?.base64) {
-        loadFullscreenFromBase64(payload.base64, payload.mode || screenshotModeRef.current || "normal");
-        return;
-      }
-      loadFullscreen();
-    })
-      .then((unsub) => { unlistenEvent = unsub; })
+    listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => handleScreenshotPayload(event.payload, "screenshot-updated"))
+      .then((unsub) => {
+        unlistenEvent = unsub;
+        invoke<ScreenshotUpdatedPayload | null>("get_latest_screenshot_payload")
+          .then((payload) => {
+            if (payload) handleScreenshotPayload(payload, "screenshot-pending-payload");
+          })
+          .catch(() => {});
+      })
       .catch(() => {});
 
     return () => {

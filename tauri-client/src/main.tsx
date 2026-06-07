@@ -9,6 +9,7 @@ import PinPage from "./pages/PinPage";
 import OcrPage from "./pages/OcrPage";
 import RecordingControlPage from "./pages/RecordingControlPage";
 import RecordingNoticePage from "./pages/RecordingNoticePage";
+import SaveToastPage from "./pages/SaveToastPage";
 import { I18nProvider } from "./i18n";
 import "./index.css";
 
@@ -19,6 +20,9 @@ const resolveWindowLabel = () => {
   }
   if (search.includes("recording_notice")) {
     return "recording_notice";
+  }
+  if (search.includes("save_toast")) {
+    return "save_toast";
   }
   try {
     return getCurrentWindow().label;
@@ -42,7 +46,7 @@ if (label === "main") {
 }
 
 // Set transparent background BEFORE React renders for screenshot windows
-if (label === "screenshot" || label.startsWith("recording_control") || label === "recording_notice") {
+if (label === "screenshot" || label.startsWith("recording_control") || label === "recording_notice" || label === "save_toast") {
   document.body.style.backgroundColor = "transparent";
   document.documentElement.style.backgroundColor = "transparent";
   document.body.classList.add("transparent-window");
@@ -63,6 +67,8 @@ if (label === "screenshot") {
   Component = RecordingControlPage;
 } else if (label === "recording_notice") {
   Component = RecordingNoticePage;
+} else if (label === "save_toast") {
+  Component = SaveToastPage;
 } else {
   Component = App;
 }

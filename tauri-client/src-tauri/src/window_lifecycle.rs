@@ -3,6 +3,7 @@ use crate::recording_overlay::*;
 use crate::win32;
 #[cfg(target_os = "windows")]
 use crate::window_targets::window_title;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::Manager;
@@ -39,9 +40,18 @@ static MAIN_WINDOW_SCREENSHOT_STATE: OnceLock<Mutex<Option<MainWindowScreenshotS
     OnceLock::new();
 static HIDDEN_MAIN_WINDOW_POSITION: OnceLock<Mutex<Option<tauri::PhysicalPosition<i32>>>> =
     OnceLock::new();
+static SUPPRESS_NEXT_SCREENSHOT_RESTORE: AtomicBool = AtomicBool::new(false);
 
 fn get_main_window_screenshot_state() -> &'static Mutex<Option<MainWindowScreenshotState>> {
     MAIN_WINDOW_SCREENSHOT_STATE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn suppress_next_screenshot_restore() {
+    SUPPRESS_NEXT_SCREENSHOT_RESTORE.store(true, Ordering::SeqCst);
+}
+
+fn should_suppress_screenshot_restore() -> bool {
+    SUPPRESS_NEXT_SCREENSHOT_RESTORE.swap(false, Ordering::SeqCst)
 }
 
 fn get_hidden_main_window_position() -> &'static Mutex<Option<tauri::PhysicalPosition<i32>>> {
@@ -53,6 +63,12 @@ fn peek_main_window_screenshot_state() -> Option<MainWindowScreenshotState> {
         .lock()
         .ok()
         .and_then(|guard| *guard)
+}
+
+pub fn current_screenshot_capture_needs_settle() -> bool {
+    peek_main_window_screenshot_state()
+        .map(|state| state.was_visible && !state.was_minimized)
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -94,7 +110,7 @@ pub fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWind
     }
 }
 
-fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
+pub fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
     let _ = window.set_skip_taskbar(true);
     let _ = window.show();
     let _ = window.set_always_on_top(true);
@@ -219,7 +235,7 @@ pub fn prepare_main_window_for_screenshot(app: &tauri::AppHandle) -> bool {
             "[window-trace] source=prepare-main-for-screenshot action=park-hidden-main label=main"
         );
         park_hidden_main_window_for_screenshot(&main, "prepare-main-for-screenshot");
-        true
+        false
     } else {
         false
     }
@@ -508,6 +524,7 @@ pub fn prepare_focus_for_screenshot_overlay_close(app: &tauri::AppHandle, reason
 pub async fn overlay_ready_to_show(
     app: tauri::AppHandle,
     label: Option<String>,
+    session_id: Option<String>,
 ) -> Result<(), String> {
     let target_label = label.unwrap_or_else(|| "screenshot".to_string());
     if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
@@ -519,7 +536,14 @@ pub async fn overlay_ready_to_show(
             target_label
         ));
     };
+    let started_at = std::time::Instant::now();
     show_screenshot_overlay_window(&screenshot_win);
+    println!(
+        "[screenshot-baseline] session={} phase=overlay_show_result elapsed_ms={} label={}",
+        session_id.unwrap_or_else(|| "unknown".to_string()),
+        started_at.elapsed().as_millis(),
+        target_label
+    );
     Ok(())
 }
 #[tauri::command]
@@ -830,25 +854,31 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
                 );
                 hide_tauri_window_without_activation(window);
                 crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
-                restore_main_window_after_screenshot(
-                    window.app_handle(),
-                    "screenshot-close-requested",
-                );
+                if !should_suppress_screenshot_restore() {
+                    restore_main_window_after_screenshot(
+                        window.app_handle(),
+                        "screenshot-close-requested",
+                    );
+                }
                 api.prevent_close();
             }
             tauri::WindowEvent::Destroyed => {
                 crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
-                restore_main_window_after_screenshot(window.app_handle(), "screenshot-destroyed");
+                if !should_suppress_screenshot_restore() {
+                    restore_main_window_after_screenshot(window.app_handle(), "screenshot-destroyed");
+                }
             }
             _ => {}
         }
     } else if label.starts_with("screenshot_") {
         if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
             crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
-            restore_main_window_after_screenshot(
-                window.app_handle(),
-                "secondary-screenshot-closed",
-            );
+            if !should_suppress_screenshot_restore() {
+                restore_main_window_after_screenshot(
+                    window.app_handle(),
+                    "secondary-screenshot-closed",
+                );
+            }
         }
     } else if label == "recording_border" || label.starts_with("recording_border_") {
         if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {

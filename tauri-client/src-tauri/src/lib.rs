@@ -55,24 +55,6 @@ const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 static LAST_CAPTURE_SHORTCUT_MS: AtomicU64 = AtomicU64::new(0);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
     use std::ffi::c_void;
@@ -238,29 +220,7 @@ pub(crate) mod win32 {
     }
 }
 
-
-
-
-
-
-
-
-
 #[cfg(target_os = "windows")]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn enum_windows_for_cursor(hwnd: isize, lparam: isize) -> i32 {
     let ctx = &mut *(lparam as *mut WindowSearchContext);
@@ -288,19 +248,6 @@ unsafe extern "system" fn enum_child_windows_for_cursor(hwnd: isize, lparam: isi
     1
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[derive(Debug, Deserialize)]
 struct GithubReleaseAsset {
     name: String,
@@ -314,10 +261,6 @@ struct GithubReleaseInfo {
     html_url: Option<String>,
     assets: Vec<GithubReleaseAsset>,
 }
-
-
-
-
 
 fn cleanup_finished_recording_process() -> Result<bool, String> {
     let mut guard = get_recording_process().lock().map_err(|e| e.to_string())?;
@@ -335,22 +278,11 @@ fn cleanup_finished_recording_process() -> Result<bool, String> {
     Ok(finished)
 }
 
-
-
-
-
-
-
 #[cfg(target_os = "windows")]
 struct RecordingWindowListContext {
     excluded_hwnds: Vec<isize>,
     windows: Vec<serde_json::Value>,
 }
-
-
-
-
-
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn enum_recording_windows(hwnd: isize, lparam: isize) -> i32 {
@@ -384,15 +316,6 @@ unsafe extern "system" fn enum_recording_windows(hwnd: isize, lparam: isize) -> 
     1
 }
 
-
-
-
-
-
-
-
-
-
 #[tauri::command]
 fn get_default_recording_output_dir() -> Result<String, String> {
     let dir = default_recording_output_dir();
@@ -400,72 +323,7 @@ fn get_default_recording_output_dir() -> Result<String, String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use serde::{Deserialize, Serialize};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -516,10 +374,16 @@ pub fn run() {
             is_autostart_enabled,
             set_autostart_enabled,
             start_screenshot,
+            get_latest_screenshot_payload,
+            show_save_feedback_toast,
             get_fullscreen_image,
+            get_fullscreen_image_bytes,
             capture_region,
             copy_image_to_clipboard,
             save_image_to_file,
+            choose_image_save_path,
+            write_image_to_file,
+            log_screenshot_perf,
             quick_fullscreen_capture,
             capture_live_region,
             scroll_mouse_at,

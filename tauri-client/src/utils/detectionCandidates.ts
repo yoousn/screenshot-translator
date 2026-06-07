@@ -12,7 +12,11 @@ export const sortDetectionCandidates = (candidates: Rect[], mx: number, my: numb
     return candidate.w >= 12 && candidate.h >= 12;
   });
   return unique.sort((a, b) => {
-    const priority = (rect: Rect) => rect.kind === "control" ? 0 : rect.kind === "window" ? 1 : 2;
+    const priority = (rect: Rect) => {
+      if (rect.kind === "control" || rect.kind === "window" || rect.kind === "taskbar") return 0;
+      if (rect.kind === "display") return 1;
+      return 2;
+    };
     const areaA = a.w * a.h;
     const areaB = b.w * b.h;
     const centerA = Math.hypot(mx - (a.x + a.w / 2), my - (a.y + a.h / 2));
@@ -134,6 +138,7 @@ export const getDetectionCandidatesAt = (
       candidates.push(candidate);
     }
   }
-  if (visualEnabled && (candidates.length === 0 || sensitivity >= 4)) candidates.push(...getVisualRectsAt(imageData, mx, my, sensitivity));
+  const hasPreciseNativeCandidate = candidates.some((candidate) => candidate.kind !== "display");
+  if (visualEnabled && (!hasPreciseNativeCandidate || sensitivity >= 4)) candidates.push(...getVisualRectsAt(imageData, mx, my, sensitivity));
   return sortDetectionCandidates(candidates, mx, my);
 };

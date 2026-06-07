@@ -29,6 +29,10 @@
 - 内容是稳定规范，例如协议、模型 manifest 格式、发布流程规范，且需要被代码或团队长期引用。
 - 新文档必须先在本文档建立索引、说明用途和保留理由；否则视为临时文件，完成后必须删除或合并。
 
+当前已批准的专项长期文档：
+
+- `docs/SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md`：截图唤醒延迟、无闪烁/不卡顿、保存体验、多显示器与候选框精准度的专项实施计划。保留理由：该主题横跨 Tauri 窗口生命周期、Windows 捕获、WebView 图片传输、Win32/UIAutomation 候选、前端交互状态机、发布构建和人工延迟测试，直接塞入主计划会显著降低主计划可读性；该文档只负责分阶段施工步骤、验收门禁、回滚标准和 Snow Shot 对照线索，长期方向仍服从本文档。
+
 ### 0.3 章节记录规则
 
 每个可描述的代码章节完成后，必须追加到 `docs/IMPLEMENTATION_CHAPTERS.md`，格式至少包含：
@@ -305,12 +309,13 @@
 
 ### 6.3 下一轮优先级
 
-1. Chapter 149：继续优化真实用户感知延迟，优先把 small-text retry 改成动态触发。
-2. 记录 UIA 文本源命中率、耗时、拒绝原因和前台进程名，并在诊断报告中暴露最近一次文本源状态。
-3. 继续拆 OCR 延迟构成，把 warm/cold、detector、recognizer、IPC、前端裁剪、normalization、翻译请求分别打点到诊断报告。
-4. 优化 RapidOCR fallback 性能：候选早停、脚本路由、检测框复用，避免韩文/阿拉伯文每个候选重复初始化和重复 detector。
-5. 将 RapidOCR candidate summary、selectedLang、耗时和低置信度原因暴露到诊断报告或 OCR 结果调试信息。
-6. 继续接入并验证更可靠的付费/LLM 翻译通道，替代 Google 免费通道作为正式质量路线。
+1. Chapter 149：优先执行 `docs/SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md` 的截图专项计划，先追求 `Alt+A` 接近瞬间唤醒、无闪烁、不卡顿，并修正 `Ctrl+S` / 点击保存后的退出截图状态。
+2. 在截图专项稳定后，继续优化真实用户感知延迟，优先把 small-text retry 改成动态触发。
+3. 记录 UIA 文本源命中率、耗时、拒绝原因和前台进程名，并在诊断报告中暴露最近一次文本源状态。
+4. 继续拆 OCR 延迟构成，把 warm/cold、detector、recognizer、IPC、前端裁剪、normalization、翻译请求分别打点到诊断报告。
+5. 优化 RapidOCR fallback 性能：候选早停、脚本路由、检测框复用，避免韩文/阿拉伯文每个候选重复初始化和重复 detector。
+6. 将 RapidOCR candidate summary、selectedLang、耗时和低置信度原因暴露到诊断报告或 OCR 结果调试信息。
+7. 继续接入并验证更可靠的付费/LLM 翻译通道，替代 Google 免费通道作为正式质量路线。
 
 ### 6.4 下一执行目标（当前）
 

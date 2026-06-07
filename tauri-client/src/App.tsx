@@ -95,8 +95,6 @@ function AppContent() {
       translationMetadata={translationMetadata}
       language={language}
       labels={{
-        appName: text.app.name,
-        tagline: text.app.tagline,
         screenshotNow: text.app.screenshotNow,
         refresh: text.app.refresh,
         language: text.app.language,

@@ -24,7 +24,7 @@ export const zhCN: AppDictionary = {
     pin: "钉图",
     undo: "撤销 Ctrl+Z",
     redo: "恢复 Ctrl+Y / Ctrl+Shift+Z",
-    save: "保存 Ctrl+S",
+    save: "另存为 Ctrl+S",
     cancel: "取消 Esc",
     copy: "完成并复制 Ctrl+C",
     size: "大小",
