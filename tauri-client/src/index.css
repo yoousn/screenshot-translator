@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 @import "tailwindcss";
 
@@ -108,10 +108,17 @@ html, body, #root {
   pointer-events: none;
 }
 
+.screenshot-root.shell {
+  opacity: 0;
+  pointer-events: none;
+  background: transparent;
+}
+
 .screenshot-root.ready {
   opacity: 1;
   pointer-events: auto;
 }
+
 
 .app-brand-wordmark {
   font-family: Georgia, 'Times New Roman', 'Microsoft YaHei UI', serif;
@@ -132,48 +139,89 @@ html, body, #root {
   width: 100%;
   display: grid;
   place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
 }
 
 .about-hero-panel {
-  width: min(100%, calc(100vw - 320px));
-  min-height: calc(100vh - 160px);
+  width: min(100%, 640px);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  padding: 40px 44px;
   text-align: center;
-  padding: clamp(36px, 7vw, 96px);
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.20);
+  border-radius: 24px;
   background: rgba(255, 255, 255, 0.84);
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 20px 56px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+.about-hero-kicker {
+  margin-bottom: 10px;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .about-hero-title.ant-typography {
   margin: 0;
   color: #0f172a;
-  font-size: clamp(32px, 5vw, 58px);
-  font-weight: 900;
-  letter-spacing: -0.04em;
-  line-height: 1.04;
+  font-size: 32px;
+  font-weight: 850;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
 }
 
 .about-hero-subtitle {
-  margin-top: 10px;
+  margin-top: 6px;
   color: #64748b;
-  font-size: clamp(17px, 2vw, 24px);
+  font-size: 16px;
   letter-spacing: 0.02em;
 }
 
 .about-hero-description.ant-typography {
-  max-width: 760px;
-  margin: 34px 0 0;
+  max-width: 520px;
+  margin: 18px 0 0;
   color: #334155;
-  font-size: clamp(16px, 1.8vw, 22px);
-  line-height: 1.9;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.about-meta-list {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.about-meta-item {
+  display: grid;
+  grid-template-columns: 20px 56px 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  color: #64748b;
+  text-align: left;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.74);
+}
+
+.about-meta-item strong {
+  color: #0f172a;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.about-actions {
+  margin-top: 24px;
 }
 
 .save-toast-shell {

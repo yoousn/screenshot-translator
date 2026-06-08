@@ -4,15 +4,15 @@ import { drawAnnotation } from "./renderAnnotations";
 
 type RenderScreenshotCanvasOptions = {
   canvas: HTMLCanvasElement | null;
-  image: HTMLImageElement | null;
+  image: (HTMLImageElement | HTMLCanvasElement) | null;
   maskedCanvas: HTMLCanvasElement | null;
   hoverRect: Rect | null;
   hoverCandidatesCount: number;
   hoverCandidateIndex: number;
   hasSelected: boolean;
   selection: Rect;
-  translatedImg: HTMLImageElement | null;
-  overrideTranslatedImg?: HTMLImageElement;
+  translatedImg: (HTMLImageElement | HTMLCanvasElement) | null;
+  overrideTranslatedImg?: HTMLImageElement | HTMLCanvasElement;
   annotations: Annotation[];
   draftAnnotation: Annotation | null;
   selectedAnnotationIndex: number | null;
@@ -21,6 +21,9 @@ type RenderScreenshotCanvasOptions = {
   selectionLabelColor?: string;
   selectionOnly?: boolean;
 };
+
+const getImageWidth = (image: HTMLImageElement | HTMLCanvasElement) => image instanceof HTMLImageElement ? image.naturalWidth : image.width;
+const getImageHeight = (image: HTMLImageElement | HTMLCanvasElement) => image instanceof HTMLImageElement ? image.naturalHeight : image.height;
 
 const getHandlePoints = (x: number, y: number, w: number, h: number) => [
   { x, y },
@@ -52,25 +55,33 @@ export const renderScreenshotCanvas = ({
   selectionLabelColor = selectionBorderColor,
   selectionOnly = false,
 }: RenderScreenshotCanvasOptions) => {
-  if (!canvas || !image) return;
+  if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
+  const sourceImage = image;
 
   if (selectionOnly) ctx.clearRect(0, 0, canvas.width, canvas.height);
   else if (maskedCanvas) ctx.drawImage(maskedCanvas, 0, 0);
-  else {
+  else if (sourceImage) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
   const preview = hoverRect;
   if (!hasSelected && preview && preview.w > 0 && preview.h > 0) {
-    const scaleX = image.naturalWidth / canvas.width;
-    const scaleY = image.naturalHeight / canvas.height;
-    ctx.clearRect(preview.x, preview.y, preview.w, preview.h);
-    ctx.drawImage(image, preview.x * scaleX, preview.y * scaleY, preview.w * scaleX, preview.h * scaleY, preview.x, preview.y, preview.w, preview.h);
+    if (sourceImage) {
+      const scaleX = getImageWidth(sourceImage) / canvas.width;
+      const scaleY = getImageHeight(sourceImage) / canvas.height;
+      ctx.clearRect(preview.x, preview.y, preview.w, preview.h);
+      ctx.drawImage(sourceImage, preview.x * scaleX, preview.y * scaleY, preview.w * scaleX, preview.h * scaleY, preview.x, preview.y, preview.w, preview.h);
+    } else {
+      ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+      ctx.fillRect(preview.x, preview.y, preview.w, preview.h);
+    }
     ctx.strokeStyle = "#1677ff";
     ctx.lineWidth = clamp(detectionBorderWidth || 2, 1, 6);
     ctx.setLineDash([]);
@@ -97,10 +108,10 @@ export const renderScreenshotCanvas = ({
     if (!selectionOnly) ctx.clearRect(x, y, w, h);
     const activeImg = overrideTranslatedImg || translatedImg;
     if (!selectionOnly && activeImg) ctx.drawImage(activeImg, x, y, w, h);
-    else if (!selectionOnly) {
-      const scaleX = image.naturalWidth / canvas.width;
-      const scaleY = image.naturalHeight / canvas.height;
-      ctx.drawImage(image, x * scaleX, y * scaleY, w * scaleX, h * scaleY, x, y, w, h);
+    else if (!selectionOnly && sourceImage) {
+      const scaleX = getImageWidth(sourceImage) / canvas.width;
+      const scaleY = getImageHeight(sourceImage) / canvas.height;
+      ctx.drawImage(sourceImage, x * scaleX, y * scaleY, w * scaleX, h * scaleY, x, y, w, h);
     }
     if (!selectionOnly) [...annotations, ...(draftAnnotation ? [draftAnnotation] : [])].forEach((annotation, index) => drawAnnotation(ctx, annotation, { index, selectedIndex: selectedAnnotationIndex }));
     ctx.strokeStyle = selectionBorderColor;

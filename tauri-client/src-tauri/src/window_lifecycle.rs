@@ -40,6 +40,8 @@ static MAIN_WINDOW_SCREENSHOT_STATE: OnceLock<Mutex<Option<MainWindowScreenshotS
     OnceLock::new();
 static HIDDEN_MAIN_WINDOW_POSITION: OnceLock<Mutex<Option<tauri::PhysicalPosition<i32>>>> =
     OnceLock::new();
+#[cfg(target_os = "windows")]
+static PRE_SCREENSHOT_FOREGROUND_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
 static SUPPRESS_NEXT_SCREENSHOT_RESTORE: AtomicBool = AtomicBool::new(false);
 
 fn get_main_window_screenshot_state() -> &'static Mutex<Option<MainWindowScreenshotState>> {
@@ -57,6 +59,79 @@ fn should_suppress_screenshot_restore() -> bool {
 fn get_hidden_main_window_position() -> &'static Mutex<Option<tauri::PhysicalPosition<i32>>> {
     HIDDEN_MAIN_WINDOW_POSITION.get_or_init(|| Mutex::new(None))
 }
+
+#[cfg(target_os = "windows")]
+fn get_pre_screenshot_foreground_hwnd() -> &'static Mutex<Option<isize>> {
+    PRE_SCREENSHOT_FOREGROUND_HWND.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn is_external_visible_window(hwnd: isize) -> bool {
+    if hwnd == 0 || unsafe { win32::IsWindowVisible(hwnd) } == 0 {
+        return false;
+    }
+    let mut pid: u32 = 0;
+    unsafe {
+        win32::GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+    }
+    pid != 0 && pid != std::process::id()
+}
+
+#[cfg(target_os = "windows")]
+pub fn remember_pre_screenshot_foreground(reason: &str) {
+    let hwnd = unsafe { win32::GetForegroundWindow() };
+    let target = if is_external_visible_window(hwnd) {
+        Some(hwnd)
+    } else {
+        None
+    };
+    if let Ok(mut guard) = get_pre_screenshot_foreground_hwnd().lock() {
+        *guard = target;
+    }
+    println!(
+        "[window-trace] source=pre-screenshot-foreground action=remember target={} valid={} reason={}",
+        hwnd,
+        target.is_some(),
+        reason
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn remember_pre_screenshot_foreground(_reason: &str) {}
+
+#[cfg(target_os = "windows")]
+fn set_pre_screenshot_foreground(reason: &str, consume: bool) -> bool {
+    let target = get_pre_screenshot_foreground_hwnd()
+        .lock()
+        .ok()
+        .and_then(|mut guard| if consume { guard.take() } else { *guard });
+    let Some(target) = target else {
+        return false;
+    };
+    if !is_external_visible_window(target) {
+        println!(
+            "[window-trace] source=pre-screenshot-foreground action=skip-invalid target={} reason={}",
+            target, reason
+        );
+        return false;
+    }
+    let ok = unsafe { win32::SetForegroundWindow(target) };
+    println!(
+        "[window-trace] source=pre-screenshot-foreground action=set-foreground target={} ok={} consume={} reason={}",
+        target, ok, consume, reason
+    );
+    ok != 0
+}
+
+#[cfg(target_os = "windows")]
+fn clear_pre_screenshot_foreground() {
+    if let Ok(mut guard) = get_pre_screenshot_foreground_hwnd().lock() {
+        *guard = None;
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn clear_pre_screenshot_foreground() {}
 
 fn peek_main_window_screenshot_state() -> Option<MainWindowScreenshotState> {
     get_main_window_screenshot_state()
@@ -136,6 +211,7 @@ pub fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::Webview
     }
     let _ = window.set_focus();
 }
+
 pub fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
     if window.label() == "main" {
         restore_parked_main_window_position(window, "activate-webview-window");
@@ -264,6 +340,7 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
         .ok()
         .and_then(|mut guard| guard.take());
     let Some(state) = state else {
+        clear_pre_screenshot_foreground();
         return;
     };
     if !state.was_visible {
@@ -272,6 +349,8 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
             reason, state.was_visible, state.was_minimized
         );
         keep_main_window_hidden_after_screenshot(app, reason);
+        #[cfg(target_os = "windows")]
+        let _ = set_pre_screenshot_foreground(reason, true);
         return;
     }
     if state.was_minimized {
@@ -282,6 +361,7 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.minimize();
         }
+        clear_pre_screenshot_foreground();
         return;
     }
     if let Some(main) = app.get_webview_window("main") {
@@ -293,6 +373,7 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
         let _ = main.show();
         let _ = main.unminimize();
     }
+    clear_pre_screenshot_foreground();
 }
 
 pub fn restore_parked_main_window_position<W: tauri::Runtime>(
@@ -487,32 +568,42 @@ pub fn prepare_focus_for_screenshot_overlay_close(app: &tauri::AppHandle, reason
     let Some(state) = peek_main_window_screenshot_state() else {
         return;
     };
-    if state.was_visible {
-        return;
-    }
 
-    if let Some(main) = app.get_webview_window("main") {
-        println!(
-            "[window-trace] source=prepare-screenshot-close-focus action=park-main-before-overlay-close label=main reason={}",
-            reason
-        );
-        park_hidden_main_window_for_screenshot(&main, reason);
+    if !state.was_visible {
+        if let Some(main) = app.get_webview_window("main") {
+            println!(
+                "[window-trace] source=prepare-screenshot-close-focus action=park-main-before-overlay-close label=main reason={}",
+                reason
+            );
+            park_hidden_main_window_for_screenshot(&main, reason);
+        }
     }
 
     #[cfg(target_os = "windows")]
     unsafe {
-        let target = find_foreground_handoff_target();
-        if target != 0 {
-            let ok = win32::SetForegroundWindow(target);
+        if set_pre_screenshot_foreground(reason, false) {
             println!(
-                "[window-trace] source=prepare-screenshot-close-focus action=set-foreground target={} ok={} reason={}",
-                target, ok, reason
-            );
-        } else {
-            println!(
-                "[window-trace] source=prepare-screenshot-close-focus action=no-foreground-target reason={}",
+                "[window-trace] source=prepare-screenshot-close-focus action=set-remembered-foreground reason={}",
                 reason
             );
+        } else {
+            let target = if state.was_visible {
+                0
+            } else {
+                find_foreground_handoff_target()
+            };
+            if target != 0 {
+                let ok = win32::SetForegroundWindow(target);
+                println!(
+                    "[window-trace] source=prepare-screenshot-close-focus action=set-foreground target={} ok={} reason={}",
+                    target, ok, reason
+                );
+            } else {
+                println!(
+                    "[window-trace] source=prepare-screenshot-close-focus action=no-foreground-target reason={} was_visible={}",
+                    reason, state.was_visible
+                );
+            }
         }
         let _ = win32::SetActiveWindow(0);
         let _ = win32::SetFocus(0);
@@ -576,7 +667,7 @@ pub async fn force_close_recording_controls(
         source_str, hide_main_for_cleanup
     );
 
-    // 1. force_close_recording_controls 鎵ц鍓嶈瘖鏂?
+    // 1. force_close_recording_controls 閹笛嗩攽閸撳秷鐦栭弬?
     dump_all_windows_state_internal(
         &app,
         format!("force_close_recording_controls-before({})", source_str),
@@ -624,10 +715,10 @@ pub async fn force_close_recording_controls(
         });
     }
 
-    // 2. force_close_recording_controls 鎵ц鍚?100ms 璇婃柇
-    // 褰曞埗鎺у埗鏉＄瓑琚嫢鏈夌殑绐楀彛鍦?close() 鏃讹紝Windows 浼氭妸鐒︾偣/婵€娲诲洖浜ょ粰 owner锛坢ain锛夛紝
-    // 鍙兘瀵艰嚧 main 鍦ㄥ叧闂悗琚噸鏂版縺娲诲苟鏄剧ず鍑虹櫧鑹茬獥鍙ｃ€?
-    // 鐢变簬鍏抽棴鏄欢杩?50ms 鎵ц鐨勶紝杩欓噷鍦ㄧ獥鍙ｇ‘瀹為攢姣佷箣鍚庡啀琛ヤ竴娆￠殣钘?main锛屾秷闄ゆ畫鐣欑櫧绐椼€?
+    // 2. force_close_recording_controls 閹笛嗩攽閸?100ms 鐠囧﹥鏌?
+    // 瑜版洖鍩楅幒褍鍩楅弶锛勭搼鐞氼偅瀚㈤張澶屾畱缁愭褰涢崷?close() 閺冭绱漌indows 娴兼碍濡搁悞锔惧仯/濠碘偓濞茶娲栨禍銈囩舶 owner閿涘潰ain閿涘绱?
+    // 閸欘垵鍏樼€佃壈鍤?main 閸︺劌鍙ч梻顓炴倵鐞氼偊鍣搁弬鐗堢负濞茶鑻熼弰鍓с仛閸戣櫣娅ч懝鑼崶閸欙絻鈧?
+    // 閻㈠彉绨崗鎶芥４閺勵垰娆㈡潻?50ms 閹笛嗩攽閻ㄥ嫸绱濇潻娆撳櫡閸︺劎鐛ラ崣锝団€樼€圭偤鏀㈠В浣风閸氬骸鍟€鐞涖儰绔村▎锟犳閽?main閿涘本绉烽梽銈嗙暙閻ｆ瑧娅х粣妞尖偓?
     let app_clone = app.clone();
     let source_str_clone = source_str.clone();
     tauri::async_runtime::spawn(async move {
@@ -807,7 +898,7 @@ pub fn set_webview_capture_excluded(
 /// Windows OS focus-fallback from activating any of them when a recording overlay closes.
 pub fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
     for (lbl, win) in app.webview_windows() {
-        // 鍙?hide main 鍜?screenshot 绯诲垪绐楀彛锛屼笉 hide 姝ｅ湪鍏抽棴涓殑 recording_control 鑷韩
+        // 閸?hide main 閸?screenshot 缁鍨粣妤€褰涢敍灞肩瑝 hide 濮濓絽婀崗鎶芥４娑擃厾娈?recording_control 閼奉亣闊?
         if lbl == "main" || lbl == "screenshot" || lbl.starts_with("screenshot_") {
             let is_visible = win.is_visible().unwrap_or(false);
             if is_visible {
@@ -865,7 +956,10 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             tauri::WindowEvent::Destroyed => {
                 crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
                 if !should_suppress_screenshot_restore() {
-                    restore_main_window_after_screenshot(window.app_handle(), "screenshot-destroyed");
+                    restore_main_window_after_screenshot(
+                        window.app_handle(),
+                        "screenshot-destroyed",
+                    );
                 }
             }
             _ => {}

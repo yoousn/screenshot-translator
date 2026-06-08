@@ -1,4 +1,4 @@
-pub mod app_paths;
+﻿pub mod app_paths;
 pub use app_paths::*;
 
 pub mod config_store;
@@ -14,6 +14,9 @@ pub use hotkeys::*;
 
 pub mod screenshot_commands;
 pub use screenshot_commands::*;
+
+pub mod screenshot_native;
+pub use screenshot_native::*;
 
 pub mod window_targets;
 pub use window_targets::*;
@@ -378,6 +381,7 @@ pub fn run() {
             show_save_feedback_toast,
             get_fullscreen_image,
             get_fullscreen_image_bytes,
+            get_fullscreen_rgba_bytes,
             capture_region,
             copy_image_to_clipboard,
             save_image_to_file,
@@ -428,6 +432,13 @@ pub fn run() {
                 eprintln!("Failed to write startup diagnostics probe: {}", error);
             }
             prewarm_screenshot_window(app.handle().clone());
+            if std::env::var("YSN_SCREENSHOT_LIFECYCLE_SMOKE").ok().as_deref() == Some("1") {
+                let smoke_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    run_screenshot_lifecycle_smoke(smoke_app).await;
+                });
+            }
             let readiness_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let probe_app = readiness_app.clone();

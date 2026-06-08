@@ -3,18 +3,20 @@ import { renderExportAnnotations } from "./renderAnnotations";
 
 type PhysicalSelectionInput = {
   canvas: HTMLCanvasElement | null;
-  image: HTMLImageElement | null;
+  image: (HTMLImageElement | HTMLCanvasElement) | null;
   rect: Rect;
 };
 
 export const getPhysicalSelection = ({ canvas, image, rect }: PhysicalSelectionInput) => {
   if (!canvas || !image || rect.w <= 0 || rect.h <= 0) throw new Error("选区范围无效");
-  const scaleX = image.naturalWidth / canvas.width;
-  const scaleY = image.naturalHeight / canvas.height;
-  const x = Math.max(0, Math.min(image.naturalWidth - 1, Math.round(rect.x * scaleX)));
-  const y = Math.max(0, Math.min(image.naturalHeight - 1, Math.round(rect.y * scaleY)));
-  const w = Math.max(1, Math.min(image.naturalWidth - x, Math.round(rect.w * scaleX)));
-  const h = Math.max(1, Math.min(image.naturalHeight - y, Math.round(rect.h * scaleY)));
+  const imageWidth = image instanceof HTMLImageElement ? image.naturalWidth : image.width;
+  const imageHeight = image instanceof HTMLImageElement ? image.naturalHeight : image.height;
+  const scaleX = imageWidth / canvas.width;
+  const scaleY = imageHeight / canvas.height;
+  const x = Math.max(0, Math.min(imageWidth - 1, Math.round(rect.x * scaleX)));
+  const y = Math.max(0, Math.min(imageHeight - 1, Math.round(rect.y * scaleY)));
+  const w = Math.max(1, Math.min(imageWidth - x, Math.round(rect.w * scaleX)));
+  const h = Math.max(1, Math.min(imageHeight - y, Math.round(rect.h * scaleY)));
   return { x, y, w, h };
 };
 
@@ -75,8 +77,8 @@ export const renderEditedSelectionBase64 = async ({
     selection: rect,
     canvasWidth: canvas?.width || window.innerWidth,
     canvasHeight: canvas?.height || window.innerHeight,
-    imageWidth: image.naturalWidth,
-    imageHeight: image.naturalHeight,
+    imageWidth: image instanceof HTMLImageElement ? image.naturalWidth : image.width,
+    imageHeight: image instanceof HTMLImageElement ? image.naturalHeight : image.height,
     fallbackColor,
     fallbackSize,
   });

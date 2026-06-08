@@ -1,4 +1,4 @@
-# 商业级改造执行记录
+﻿# 商业级改造执行记录
 
 > 本文档是唯一施工日志，但不再逐章保留超长全文。旧的 1–97 章已压缩为里程碑摘要；后续只记录“最近章节详情 + 当前交接状态”。主方向以 `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md` 为准。
 
@@ -5449,7 +5449,7 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 ### Goals
 
 - Refine save success feedback so it never opens the main window.
-- Change the save success feedback to a small modern white pill: green check plus `����ɹ�`, centered, with no file name.
+- Change the save success feedback to a small modern white pill: green check plus `����ɹ�`, centered, with no file name.
 - Simplify the main app brand surface to a single styled `Ysn Trans` wordmark.
 - Rework the About page into a centered large panel with the requested product name and description only.
 
@@ -5472,11 +5472,11 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 ### What Changed
 
 - Added a dedicated `save_toast` route/window for save success feedback instead of using the main app notification system.
-- Changed save success feedback to a compact top-center white pill with a green check and `����ɹ�` only.
+- Changed save success feedback to a compact top-center white pill with a green check and `����ɹ�` only.
 - Changed successful screenshot save close path to pass `restoreMain: false`, so saving no longer restores or pops the main window.
 - Moved toast triggering into the Rust `write_image_to_file` command immediately after the file write succeeds, improving perceived response time.
 - Simplified the side brand area to only show a styled `Ysn Trans` wordmark and removed the duplicate header app name/tagline.
-- Reworked About page content to centered display: `��ͼ����`, `Screenshot Translator`, and the requested product description in a large near-edge panel.
+- Reworked About page content to centered display: `��ͼ����`, `Screenshot Translator`, and the requested product description in a large near-edge panel.
 
 ### Explicit Non-Goals
 
@@ -5491,7 +5491,7 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 - `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import and large chunk size.
 - `cmd /c build.bat --no-pause` from repo root: passed and produced the portable release build.
 - Release save-flow automation: saved `tmp-runtime-logs/codex-save-pill-toast.png`, file existed with `13239` bytes.
-- Release save-toast automation: toast window titled `��ͼ�ѱ���` appeared at `219ms` after confirming the native Save dialog, at `168x46` near the top center, and disappeared automatically after the timeout.
+- Release save-toast automation: toast window titled `��ͼ�ѱ���` appeared at `219ms` after confirming the native Save dialog, at `168x46` near the top center, and disappeared automatically after the timeout.
 - Release save-flow automation: after save, only hidden 16x16 helper windows remained; the main window did not appear.
 
 ### Known Risks
@@ -5507,7 +5507,7 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 
 ### Goals
 
-- Apply the user's final save-toast direction: small white pill, green check, `����ɹ�`, no file name.
+- Apply the user's final save-toast direction: small white pill, green check, `����ɹ�`, no file name.
 - Keep save feedback independent from the main window.
 - Clean up residual UI risks found by sub-agent review: brand alignment, About page extra icon, dead brand label props, and multi-window screenshot close restore risk.
 
@@ -5524,12 +5524,12 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 
 ### What Changed
 
-- Changed the save toast to a compact white pill (`168x46`) with a green check and `����ɹ�` only.
+- Changed the save toast to a compact white pill (`168x46`) with a green check and `����ɹ�` only.
 - Removed file name display from the save toast.
 - Kept save success feedback in an independent `save_toast` window, not in the main app window.
 - Added `restoreMain: false` handling plus screenshot restore suppression so successful save does not restore the main window, including screenshot-window close event paths.
 - Changed the sidebar brand to a left-aligned styled `Ysn Trans` wordmark and removed unused `appName/tagline` layout props.
-- Removed the extra `��` icon from About so the page only shows the requested three text sections.
+- Removed the extra `��` icon from About so the page only shows the requested three text sections.
 
 ### Validation
 
@@ -5537,7 +5537,7 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 - `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed import/chunk size.
 - `cmd /c build.bat --no-pause` from repo root: passed and rebuilt portable release.
 - Release save-flow automation: saved `tmp-runtime-logs/codex-save-pill-final.png`, file existed with `27235` bytes.
-- Release save-toast automation: `��ͼ�ѱ���` toast appeared in `257ms`, at `168x46`, top-center, then auto-dismissed.
+- Release save-toast automation: `��ͼ�ѱ���` toast appeared in `257ms`, at `168x46`, top-center, then auto-dismissed.
 - Release save-flow automation: after successful save, no visible main window remained; only hidden `16x16` helper windows remained after toast dismissal.
 
 ### Deferred
@@ -5666,3 +5666,785 @@ pm run build 均已通过。已将 Tauri .hide() 升级为原生的 win32::ShowW
 - To approach Snow Shot smoothness further, the next chapter should evaluate lower-copy image transport, PNG encode/decode alternatives, idle RAF pausing, and first-paint canvas simplification.
 - The save-success hint settings toggle remains intentionally deferred and should be added later in the settings panel.
 - UI Automation-level candidate precision, per-monitor DPI regression, and deeper taskbar sub-region detection remain future chapters.
+
+## Chapter 174 - Screenshot Idle RAF And First-Paint Lightening (2026-06-08)
+
+### Goals
+
+- Continue `docs/SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md` from the current first-paint bottleneck after Chapter 173.
+- Reduce hidden screenshot WebView idle work without changing screenshot capture, save, OCR, copy, or candidate semantics.
+- Keep the existing no-flash sequencing: image decode and initial canvas draw happen before the overlay is shown to the user.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Replaced the always-running screenshot-page `requestAnimationFrame` polling loop with an on-demand render scheduler.
+  - `triggerRender()` now coalesces repeated render requests into one pending animation frame, then clears the pending state after drawing.
+  - Routed the screenshot annotation invalidation callback through `triggerRender()` so commit, undo, redo, delete, and draft changes still repaint immediately under on-demand RAF.
+  - Cleanup now cancels any pending render frame and resets the pending flag when the screenshot page unmounts.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Removed the unused `nextFrame` helper left from earlier first-paint experiments.
+
+### Deleted Files
+
+- None.
+
+### Explicit Non-Goals
+
+- Did not change PNG screenshot encoding, binary IPC transport, `Blob` / object URL loading, or `img.decode()` behavior.
+- Did not add SharedBuffer/raw RGBA/DXGI/WGC capture paths.
+- Did not change Save As, save toast, OCR, translation, copy, pin, recording, or scroll-capture behavior.
+- Did not implement UI Automation sub-control candidates, RTree indexing, or per-monitor DPI regression handling.
+
+### Validation
+
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import of `@tauri-apps/api/window` and large bundle chunk size.
+- `git diff --check`: passed after trimming trailing blank lines.
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- Manual release Alt+A timing smoke was not run in this chapter; next release smoke should compare hot hidden-window idle behavior and confirm first-paint phases remain stable.
+
+### Known Risks
+
+- This chapter reduces hidden/idle WebView RAF work, but it does not directly reduce PNG encode/decode or binary fetch cost; the previous `binary_fetch_end` and `first_paint` bottlenecks may remain close to prior values.
+- On-demand rendering depends on all interaction paths calling `triggerRender()` or drawing directly; the annotation invalidation callback was routed through `triggerRender()`, but manual smoke should still verify drag selection, hover candidate switching, annotation edits, recording selection mode, and scroll-capture overlays.
+- If a future path mutates drawing state without calling `triggerRender()`, it may not repaint until the next interaction-triggered draw.
+
+### Next Recommended Chapter
+
+- Run release smoke over repeated `Alt+A` sessions and compare `binary_fetch_end`, `image_decode_end`, `mask_canvas_ready`, `first_paint`, `overlay_ready_to_show_returned`, and `candidate_first_batch` against Chapter 173.
+- If first-paint still needs improvement, next isolate mask canvas construction and image decode cost: measure whether deferring `analysisImageData`, reusing the mask canvas, or testing `createImageBitmap` improves hot-path time without reintroducing flicker.
+
+## Chapter 175 - Compact About Panel Contact Polish (2026-06-08)
+
+### Goals
+
+- Make the About page more compact and less visually oversized.
+- Restore the product information required by the screenshot plan: version, author, repository, and contact email.
+- Keep this as a low-risk UI-only polish chapter without touching screenshot hot paths or OCR behavior.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src/pages/About.tsx`
+  - Rebuilt the About content into a compact product card with smaller title typography.
+  - Added version from `package.json`, author `犹少年`, contact email `gg1761229856@gmail.com`, and GitHub repository action.
+  - Added opener-backed buttons for `https://github.com/yoousn/screenshot-translator` and `mailto:gg1761229856@gmail.com`.
+- `tauri-client/src/index.css`
+  - Reduced About panel width, removed the full-height hero treatment, lowered title/subtitle/body font sizes, and added compact metadata rows and action spacing.
+
+### Deleted Files
+
+- None.
+
+### Explicit Non-Goals
+
+- Did not change navigation, layout shell, screenshot capture, save, OCR, translation, or recording behavior.
+- Did not add a new settings surface or long technical stack section.
+
+### Validation
+
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import of `@tauri-apps/api/window` and large bundle chunk size.
+- `git diff --check`: passed after trimming trailing blank lines.
+
+### Known Risks
+
+- Visual validation in the running desktop app was not performed in this chapter; the next manual smoke should open About and confirm the compact card matches the requested density.
+- The repository and email buttons depend on the Tauri opener plugin, already initialized in the app.
+
+### Next Recommended Chapter
+
+- If the About panel still feels too large after visual smoke, reduce the card width toward `560px` and tighten vertical spacing another `4-8px`.
+
+## Chapter 176 - Screenshot Raw RGBA Hot Path (2026-06-08)
+
+### Goals
+
+- Continue `docs/SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md` toward Snow Shot-like screenshot startup by removing PNG encode/decode from the visible overlay hot path.
+- Keep the owned Tauri/Rust/WebView architecture and avoid copying Snow Shot implementation code or resources.
+- Preserve existing PNG compatibility for save, copy, OCR, region crop, backup file, and fallback loading.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Added an in-memory raw RGBA screenshot store with width and height metadata.
+  - Changed `start_screenshot_impl` to capture raw RGBA first, emit an `rgba` payload, and defer PNG encoding/backup writing to a background task.
+  - Added `get_fullscreen_rgba_bytes` for binary IPC transfer of raw pixels.
+  - Kept `get_fullscreen_image`, `get_fullscreen_image_bytes`, and `capture_region` compatible by encoding PNG on demand if the background PNG is not ready yet.
+  - Added baseline phases for `format=rgba`, `png_encode_start`, and `png_encode_end` so release smoke can separate capture time from background PNG work.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Registered the new `get_fullscreen_rgba_bytes` command.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Added raw RGBA loading via `get_fullscreen_rgba_bytes`, direct `ImageData` to canvas construction, and `rgba_fetch_end` / `rgba_canvas_ready` baseline logs.
+  - Shared the existing no-flash image-ready sequence across PNG and RGBA paths.
+  - Preserved PNG and base64 fallback paths if raw loading fails.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Extended screenshot payload typing and event routing for `kind: "rgba"` with width/height metadata.
+- `tauri-client/src/utils/renderScreenshotCanvas.ts`
+  - Allowed the screenshot source to be either `HTMLImageElement` or `HTMLCanvasElement`.
+- `tauri-client/src/utils/screenshotImage.ts`
+  - Allowed crop/export selection math to use either image natural dimensions or canvas dimensions.
+- `tauri-client/src/hooks/useScreenshotRecording.ts`
+  - Loosened screenshot source typing so recording-region math remains valid with a canvas-backed screenshot source.
+
+### Deleted Files
+
+- None.
+
+### Explicit Non-Goals
+
+- Did not implement a shared-memory buffer, DXGI Desktop Duplication, Windows Graphics Capture, or full Snow Shot architecture.
+- Did not show an interactive selection UI before a current screenshot frame is available, to avoid reintroducing flicker or stale-frame selection.
+- Did not change save dialog semantics, OCR model routing, translation, recording process control, or candidate-detection policy.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import of `@tauri-apps/api/window` and large bundle chunk size.
+- `git diff --check`: passed after trimming trailing blank lines.
+- `cmd /c build.bat --no-pause` from repo root: passed and rebuilt the portable release at `release/YSN-Screenshot-Translator` plus root launcher `YsnTrans.exe`.
+
+### Known Risks
+
+- Raw RGBA removes PNG encode/decode from the first visible path, but it transfers more bytes than the previous PNG path. Release smoke must compare `rgba_fetch_end` + `rgba_canvas_ready` against the old `binary_fetch_end` + `image_decode_end` before declaring latency solved.
+- PNG encoding now happens in the background; on-demand PNG fallback should preserve save/OCR compatibility, but manual smoke should test immediate `Ctrl+S`, copy, OCR, pin, and recording-region selection after Alt+A.
+- Snow Shot-like near-instant behavior may still require the next strategic step: shared memory or a GPU/native capture display path, because WebView IPC still copies a full-frame buffer.
+
+### Next Recommended Chapter
+
+- Run release Alt+A baseline over 5-10 hot sessions and record `capture_end`, `payload_emit`, `rgba_fetch_end`, `rgba_canvas_ready`, `first_paint`, `overlay_ready_to_show_returned`, `png_encode_end`, and `candidate_first_batch`.
+- If raw IPC is still too slow, proceed to a shared-buffer/native texture chapter instead of further optimizing PNG or base64 paths.
+
+## Chapter 177 - Event-First Screenshot Shell (2026-06-08)
+
+### Goals
+
+- Move closer to Snow Shot's prewarmed Draw-window model by showing the already-created screenshot window immediately after the hotkey, before the screenshot frame is ready.
+- Make the first visible response fast without allowing users to select, save, OCR, translate, or record against an empty/stale frame.
+- Keep the existing raw RGBA frame path from Chapter 176 and preserve PNG compatibility/fallback behavior.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Added `prepare_screenshot_shell`, which positions/resizes the prewarmed screenshot WebView, marks it capture-excluded, emits `screenshot-shell`, and shows/focuses the shell before capture begins.
+  - Reordered `start_screenshot_impl` so the shell is shown after main-window preparation and before `capture_current_monitor_rgba`.
+  - Kept the actual `screenshot-updated` frame event as the point where the real current screenshot becomes available.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Added a `screenshot-shell` listener that clears selection/candidates, clears the old canvas/image refs to avoid stale-frame display, sets the mode, shows an initializing shell, and logs `shell_event_received`.
+  - Added `frameInteractiveRef`, which is true only when `overlayVisible && screenshotState === "ready"`.
+  - Changed the root screenshot class to distinguish hidden, shell, and ready states; pending shell shows a compact `Preparing screenshot...` status and wait cursor.
+  - Disabled canvas pointer events until the current screenshot frame is ready.
+  - Preserved the visible shell while the RGBA frame is fetched and converted, so frame arrival no longer hides the shell and re-shows the overlay.
+  - Skipped the second `overlay_ready_to_show` window show call when the shell is already visible, logging `overlay_already_visible` instead.
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+  - Added `frameInteractiveRef` to mouse/key interaction guards.
+  - Pending shell now permits cancel-style keys handled before the guard, but blocks Tab/Enter/Ctrl+C/Ctrl+S/Ctrl+D/Ctrl+Q/P and mouse selection until the frame is ready.
+- `tauri-client/src/index.css`
+  - Added visible shell styling and compact status pill for the pending screenshot state.
+
+### Deleted Files
+
+- None.
+
+### Explicit Non-Goals
+
+- Did not make the shell interactive before the current screenshot frame is available.
+- Did not implement shared memory, native texture rendering, DXGI Desktop Duplication, or Windows Graphics Capture.
+- Did not change Save As, OCR, translation, copy, pin, recording, scroll capture, or candidate-detection semantics.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import of `@tauri-apps/api/window` and large bundle chunk size.
+- `git diff --check`: passed after trimming trailing blank lines.
+
+### Known Risks
+
+- This chapter improves perceived response by showing a non-interactive shell early; it does not make the real frame interactive faster than the raw RGBA fetch/canvas path.
+- A review pass found and fixed two flicker risks: stale canvas content during shell display, and shell hide/re-show during frame loading.
+- The shell is capture-excluded before capture starts; manual smoke should confirm the shell is not captured into the screenshot and does not visibly flash.
+- Pending shell blocks most interactions by design; manual smoke should confirm Esc cancels, while selection/save/OCR shortcuts do nothing until the frame reaches ready.
+
+### Next Recommended Chapter
+
+- Build release and run 5-10 Alt+A sessions, recording `shell_show_returned`, `shell_event_received`, `capture_end`, `rgba_fetch_end`, `rgba_canvas_ready`, `first_paint`, and `candidate_first_batch`.
+- If the shell appears quickly but ready still lags, proceed to shared memory/native capture display instead of further WebView IPC tuning.
+
+## Chapter 178 - Shell Candidate Preview And Focus Handoff (2026-06-08)
+
+### Goals
+
+- Make the Snow Shot-like event-first shell show the window candidate under the cursor before the real screenshot frame finishes loading.
+- Keep screenshot interactions disabled until the real frame is ready, so users cannot confirm, copy, OCR, translate, save, or record against an empty frame.
+- Preserve the user's pre-screenshot foreground window so closing screenshot mode does not pollute Alt+Tab history or prevent switching back to the previous app.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - On `screenshot-shell`, immediately sizes and clears the canvas, reads the current pointer position from `get_screenshot_pointer_state`, and calls `loadWindowRects(true)` to compute native window/control/display candidates during the shell phase.
+  - Logs `shell_candidate_load_start` and `shell_candidate_first_batch` for latency comparison against the later ready-frame candidate load.
+  - Hides the shell status pill once a hover candidate is available, reducing the visible gray-first impression.
+- `tauri-client/src/utils/renderScreenshotCanvas.ts`
+  - Allows hover candidate outlines and labels to render even when the real screenshot image is not loaded yet.
+  - Skips image drawing in shell mode while still drawing the candidate border, handles, and label over the transparent shell canvas.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Records the external foreground window at screenshot start before the overlay takes focus.
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+  - Added a pre-screenshot foreground HWND store on Windows.
+  - `prepare_focus_for_screenshot_overlay_close` now prefers handing foreground back to the remembered external window before falling back to enumerated handoff candidates.
+  - `restore_main_window_after_screenshot` consumes or clears the remembered foreground target according to whether the main window was hidden/visible before capture.
+
+### Deleted Files
+
+- None.
+
+### Explicit Non-Goals
+
+- Did not make the shell frame interactive; confirmation and image-dependent actions still wait for `screenshotState === "ready"`.
+- Did not add visual candidate detection before `analysisImageData` is ready; shell-stage candidates are limited to native window/control/taskbar/display data.
+- Did not copy Snow Shot source code or switch to a native/GPU capture display path.
+
+### Validation
+
+- Pending local quality gates: `cargo check`, `npm run build`, and `git diff --check`.
+- Manual smoke still required: press `Alt+A` with the cursor over another app and confirm the candidate outline appears during shell before the real frame, then cancel/save and verify `Alt+Tab` can return to the previous app.
+
+### Known Risks
+
+- If Windows rejects `SetForegroundWindow` because of foreground-lock policy, the existing enumerated fallback still runs for close preparation, but manual Alt+Tab smoke is required.
+- Shell candidates depend on the screenshot overlay not being returned by native window enumeration; if the overlay becomes the top candidate, filtering should be added in `window_targets`.
+- Multi-monitor DPI should be manually checked because shell-stage candidate drawing uses current window-relative pointer coordinates before the real frame arrives.
+
+### Next Recommended Chapter
+
+- Run release Alt+A smoke over 5-10 sessions and compare `shell_candidate_first_batch` with `candidate_first_batch`.
+- If users still perceive a gray-first step, move to a native/shared-buffer display path or a deeper Win32 precomputed candidate overlay instead of further delaying shell display.
+
+## Chapter 179 - Transparent Shell And Repeat-Hotkey Cancellation (2026-06-08)
+
+### Goals
+
+- Remove the visible gray shell and `Preparing screenshot...` prompt from the `Alt+A` startup path.
+- Preserve the prewarmed screenshot WebView event path so the hidden/transparent page still receives `screenshot-updated` and can paint the real screenshot frame.
+- Fix repeated `Alt+A` while capture is active so stale capture frames cannot race back into the reused screenshot window and cause black/blank screens.
+- Add a non-keyboard lifecycle smoke path that exercises start, repeated-hotkey cancel, ready display, and final cancel without SendKeys or foreground mouse scripting.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Replaced the visible shell preparation with a transparent shell: the screenshot window is shown so the WebView remains active, but the frontend shell state is fully transparent and has no status prompt.
+  - Added `SCREENSHOT_RUN_GENERATION` to invalidate stale in-flight captures after cancel/repeat-hotkey/force-close.
+  - Changed repeated `Alt+A` behavior from "close then immediately start another capture" to "cancel the active capture and return".
+  - Added `run_screenshot_lifecycle_smoke`, which starts an in-flight capture, triggers a repeat-hotkey cancel, confirms stale capture discard, starts a normal capture, then cancels and exits.
+  - Changed the save-toast window title to an ASCII-safe `Screenshot saved` string after a local encoding pass exposed a broken mojibake title literal.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Added the `YSN_SCREENSHOT_LIFECYCLE_SMOKE=1` startup hook to run the internal lifecycle smoke without keyboard or mouse injection.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Removed the `Preparing screenshot...` shell prompt from the render path.
+- `tauri-client/src/index.css`
+  - Made `.screenshot-root.shell` fully transparent and removed the unused shell status styling.
+
+### Deleted Files
+
+- None.
+
+### Explicit Non-Goals
+
+- Did not implement native DXGI/Windows Graphics Capture texture rendering or shared-memory image display.
+- Did not remove the WebView overlay architecture; this chapter keeps the current frontend frame-loading pipeline.
+- Did not use PowerShell `SendKeys` or foreground mouse automation for validation.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed.
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import of `@tauri-apps/api/window` and large bundle size.
+- `git diff --check`: passed, with only CRLF normalization warnings.
+- `cmd /c build.bat --no-pause`: passed and rebuilt both the portable release directory and root launcher.
+- Internal lifecycle smoke via `YSN_SCREENSHOT_LIFECYCLE_SMOKE=1 npm run tauri dev`: passed.
+  - Repeat-hotkey cancel hid the screenshot window and left `capturing=false`.
+  - The stale first capture logged `capture_discarded_stale_generation` instead of emitting an old frame.
+  - A normal second capture reached `payload_emit`, then the screenshot window became visible.
+  - Final cancel hid the screenshot window and left `capturing=false`.
+
+### Known Risks
+
+- The transparent shell still shows the native screenshot window early so the WebView can receive events; it should be visually invisible, but manual eyes-on testing should confirm there is no DWM black flash on this machine.
+- This chapter removes visible gray/prompt startup feedback. If capture takes unusually long, the user will see no overlay until the real frame is ready.
+- True Snow Shot-level instant display still likely needs a native/GPU/shared-buffer display path; the current WebView RGBA path still copies a full frame through IPC.
+
+### Next Recommended Chapter
+
+- If any visible flash remains, replace the WebView first-paint path with a native capture surface or shared-memory frame presenter.
+- If Alt+Tab history still feels polluted, move screenshot shell show to a no-activate Win32 path and add a dedicated keyboard-event strategy for ready-state shortcuts.
+
+## Chapter 180 - Snow Shot Startup Comparison And 1x1 Prewarm Experiment (2026-06-08)
+
+### Goals
+
+- Re-check Snow Shot's public source instead of relying only on previous notes.
+- Explain why the current transparent shell still has higher latency and occasional flash compared with Snow Shot.
+- Test whether a Snow-like 1x1 prewarmed draw window can replace the full-screen transparent shell in the current Tauri/WebView pipeline.
+
+### Added Files
+
+- None.
+
+### Modified Files
+
+- None from the failed 1x1 experiment were intentionally retained.
+
+### Deleted Files
+
+- None.
+
+### Findings
+
+- Cloned `mg-chao/snow-shot` to `%TEMP%\snow-shot-src-current` for read-only comparison.
+- Snow Shot starts from a preloaded Draw page: hotkey emits `execute-screenshot` to an already loaded page instead of creating/reloading screenshot UI on demand.
+- Snow Shot's Draw page starts monitor capture and bounding-box/window preparation concurrently, then prepares image/draw/select layers before the capture is considered ready.
+- Snow Shot routes large image data through WebView2 shared buffer paths (`capture_all_monitors`, `create_webview_shared_buffer`, `getImageBufferFromSharedBuffer`) instead of a second large Tauri IPC fetch after metadata emit.
+- Snow Shot guards re-entry with capture state and release states; it does not race two full capture sessions into the same Draw window.
+- Snow Shot's candidate system is broader than this project: monitor bounding box, Flatbush/RTree, UIAutomation children, and cached element lookup.
+
+### Experiment Result
+
+- Tried a Snow-like offscreen/1x1 prewarmed screenshot WebView locally.
+- Fully offscreen 1x1 and screen-position 1x1 both kept the native window `visible=true`, but the Tauri/WebView event path did not process the screenshot ready flow reliably in this project.
+- The internal lifecycle smoke showed `payload_emit`, but `after ready visible=false`, meaning frontend first-paint/overlay-ready did not complete.
+- Reverted the failed 1x1 experiment to avoid shipping a broken screenshot path.
+
+### Validation
+
+- `cargo check` from `tauri-client/src-tauri`: passed after reverting the failed experiment.
+- `npm run build` from `tauri-client`: passed with existing Vite warnings.
+- `git diff --check`: passed, with only CRLF normalization warnings.
+
+### Known Risks
+
+- Current working path still uses a full-screen transparent shell, which can flash due to native WebView/DWM first show even when React shell opacity is zero.
+- Current RGBA path still needs a second frontend command to fetch the full frame bytes, so it cannot match Snow Shot's shared-buffer path.
+
+### Next Recommended Chapter
+
+- Implement a product-owned shared-buffer/native frame presenter path with capability detection and fallback, rather than trying more CSS-only or offscreen-window tricks.
+- Keep repeated-hotkey generation invalidation from Chapter 179 because it addresses a real stale-frame race independent of the display strategy.
+
+## Chapter 181 - C/E Native Screenshot Mainline Controlled Implementation Plan (2026-06-08)
+
+### Goals
+
+- Promote the screenshot latency work from WebView-shell tuning to a product-owned native screenshot mainline.
+- Define a controlled implementation path for方案 C「完整原生截图覆盖层」and方案 E「DXGI/WGC + GPU texture」before touching code.
+- Keep OCR and translation core systems out of scope while preserving their selected-image input contract.
+- Prevent new screenshot work from growing more 700/800-line monoliths.
+- Preserve the existing WebView screenshot path as a fallback until the native path passes real behavior validation.
+
+### Added Files
+
+- None in this planning chapter.
+
+### Modified Files
+
+- `docs/SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### Current Decision
+
+- The current WebView transparent-shell route is paused as the formal optimization mainline.
+- The old screenshot latency plan remains valid as a benchmark and acceptance index, not as the next coding sequence.
+- The next implementation should start with方案 C using the existing CPU/RGBA capture output, then move to方案 E once native overlay lifecycle and interaction are stable.
+- Direct copying of Snow Shot code or resources remains disallowed because this project needs an owned commercial implementation; only architecture patterns and public API concepts may be referenced.
+
+### Controlled Architecture
+
+- `screenshot_session`: owns generation, active/cancelled/ready state, repeated-hotkey cancellation, and stale-frame invalidation.
+- `screenshot_capture`: abstracts capture backends behind a common `CaptureFrameSource` contract.
+- `screenshot_overlay`: owns native Win32 overlay windows, no-activate/topmost behavior, DWM/window-display-affinity policy, and cleanup.
+- `screenshot_presenter`: owns frame presentation, first with CPU RGBA/native drawing and later with D3D11 texture presentation.
+- `screenshot_input`: owns mouse, keyboard, Esc/Enter, drag selection, and focus-safe cancellation.
+- `screenshot_candidates`: owns monitor/window/taskbar candidates first, with UIAutomation/RTree deferred.
+- `screenshot_output`: owns selected-rect crop, PNG/RGBA handoff, clipboard/save/OCR/translation bridge compatibility.
+- `screenshot_focus`: owns pre-screenshot foreground capture, Alt-Tab preservation, restore, and crash cleanup.
+- `screenshot_gpu`: owns WGC/DXGI/D3D11 device, texture, staging readback, and GPU fallback diagnostics.
+
+### Phase Plan
+
+1. Native module scaffolding and contracts only.
+   - Add the screenshot-domain module tree and shared types.
+   - Move state-machine concepts out of the current command monolith without changing runtime behavior.
+   - Gate with `cargo check`, `npm run build`, and a no-behavior-change smoke.
+2. Native overlay MVP with existing capture.
+   - Keep the current capture backend initially.
+   - Display the frozen frame in a native overlay instead of relying on WebView first paint.
+   - Implement Esc, repeated `Alt+A`, basic drag selection, and guaranteed cleanup.
+3. Output compatibility bridge.
+   - Convert selected native rect into the same image contract used by copy/save/OCR/translation.
+   - Verify OCR/translation callers receive equivalent cropped image data without touching OCR/translation core files.
+4. Focus and multi-monitor hardening.
+   - Validate Alt-Tab history, no taskbar pollution, no self-capture, mixed DPI, negative monitor coordinates, and taskbar/window candidates.
+5. WGC/DXGI GPU capture path.
+   - Add WGC D3D11 texture capture as the preferred backend.
+   - Add DXGI Desktop Duplication fallback where appropriate.
+   - Read back only the selected region for output actions.
+6. WebView path demotion.
+   - Keep WebView screenshot as an explicit fallback/debug route until native + GPU passes manual and automated gates.
+   - Remove or simplify obsolete shell code only after the native route is stable.
+
+### File Size And Modularity Gate
+
+- New screenshot files should stay focused and normally remain under 400 lines.
+- Any file approaching 600 lines must be reviewed for extraction before continuing the chapter.
+- No new screenshot module may exceed 700 lines without an explicit chapter note explaining why it cannot yet be split.
+- Existing hotspots to shrink over time:
+  - `tauri-client/src-tauri/src/window_lifecycle.rs`
+  - `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - `tauri-client/src/pages/ScreenshotPage.tsx`
+  - `tauri-client/src/hooks/useScreenshotInteraction.ts`
+
+### Explicit Non-Goals
+
+- Do not rewrite OCR recognition, RapidOCR runner, model routing, translation service, translation memory, or language configuration in this C/E chapter series.
+- Do not migrate annotation, pin-image, long screenshot, or full UIAutomation/RTree candidate features in the first native-overlay MVP.
+- Do not delete the current working WebView screenshot path until the native path has passed real end-to-end behavior.
+- Do not copy Snow Shot source code, assets, or license-sensitive implementation details.
+- Do not collapse the implementation into a single large Rust or frontend file.
+
+### Validation Requirements
+
+- Build gates: `cargo check` in `tauri-client/src-tauri`, `npm run build` in `tauri-client`, and `git diff --check`.
+- Lifecycle gates: first `Alt+A`, repeated `Alt+A`, `Esc`, selection confirm, save/copy/OCR/translation handoff, and forced cleanup after cancellation.
+- Visual gates: no gray shell, no `Preparing...`, no black flash, no visible WebView first-paint shell, no self-captured overlay.
+- Focus gates: Alt-Tab can return to the previous app after screenshot completion or cancellation; screenshot overlay should not permanently pollute task switch order.
+- Display gates: primary monitor, secondary monitor, negative coordinates, mixed DPI, taskbar edge, maximized window, and desktop-empty-area monitor candidate.
+- Compatibility gates: WGC unavailable, DXGI unavailable, remote desktop, protected content, and GPU readback failure must fall back or report clearly.
+
+### Known Risks
+
+- Native overlay and GPU texture work is Windows-specific and can expose driver, DPI, and focus issues that were hidden by WebView.
+- WGC/DXGI may not behave identically across Windows versions, RDP sessions, protected windows, HDR displays, and hybrid-GPU machines.
+- The first native overlay MVP may improve flicker before it improves every candidate/toolbar feature; feature parity should be restored chapter by chapter.
+- Real visual flicker cannot be fully proven by build checks; it needs repeated local eyes-on testing or reliable screen-recording evidence.
+
+### Next Recommended Chapter
+
+- Start Phase 1: create the screenshot-domain Rust module structure and extract session/capture/output contracts without changing user-visible behavior.
+- Keep the old WebView screenshot route as the fallback while adding native capability flags and diagnostics.
+
+## Chapter 182 - Native Screenshot Phase 1 Module Scaffolding And Contracts (2026-06-08)
+
+### Goals
+
+- Start Screenshot C/E Phase 1 from Chapter 181 by adding a product-owned native screenshot domain module structure.
+- Extract stable contracts for screenshot session generation, capture backends, output/crop bridge, focus restoration, overlay state, presenter state, candidate metadata, input events, and future GPU capability planning.
+- Keep the existing WebView screenshot path as the active visible runtime, while acknowledging that the current worktree already includes the earlier RGBA hot path, transparent shell, and repeated-hotkey changes from Chapters 176-180.
+- Preserve OCR, translation, recording, annotation, pin-image, long screenshot, and existing output behavior as explicit non-goals for this phase.
+
+### Added Files
+
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+- `tauri-client/src-tauri/src/screenshot_native/session.rs`
+- `tauri-client/src-tauri/src/screenshot_native/capture.rs`
+- `tauri-client/src-tauri/src/screenshot_native/output.rs`
+- `tauri-client/src-tauri/src/screenshot_native/focus.rs`
+- `tauri-client/src-tauri/src/screenshot_native/gpu.rs`
+- `tauri-client/src-tauri/src/screenshot_native/overlay.rs`
+- `tauri-client/src-tauri/src/screenshot_native/candidates.rs`
+- `tauri-client/src-tauri/src/screenshot_native/input.rs`
+- `tauri-client/src-tauri/src/screenshot_native/presenter.rs`
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `docs/SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md`
+
+### Deleted Files
+
+- None.
+
+### What Changed
+
+- Added the `screenshot_native` Rust domain module as the controlled home for方案 C native overlay and方案 E WGC/DXGI GPU texture work.
+- Moved screenshot session ID and run-generation contracts into `screenshot_native/session.rs`.
+- Rewired existing screenshot stale-frame and repeated-hotkey invalidation to use `ScreenshotRunGeneration` instead of local atomics in `screenshot_commands.rs`.
+- Added capture contracts for the existing CPU path, future Windows Graphics Capture, and future DXGI Desktop Duplication backends.
+- Added output bridge contracts for selected image crop semantics without changing the current OCR/translation image input boundary.
+- Added native overlay, focus, input, candidate, presenter, and GPU capability contracts for the next implementation chapters.
+- Kept the current WebView screenshot surface as the active visible behavior. This chapter adds C/E scaffolding and contract extraction on top of the already-present RGBA/WebView latency path; it is not a claim that native overlay or GPU capture is ready.
+
+### File Size Gate
+
+- All new `screenshot_native` files are under 500 lines.
+- Largest new file at this checkpoint is `tauri-client/src-tauri/src/screenshot_native/capture.rs`, under 300 lines after formatting.
+- Existing large files remain known debt and will be reduced only when their responsibilities are actually moved into the native screenshot domain.
+
+### Explicit Non-Goals
+
+- Did not implement the real native screenshot overlay window yet.
+- Did not implement WGC/DXGI/D3D11 capture yet.
+- Did not remove or demote the current WebView screenshot runtime path.
+- Did not rewrite OCR, RapidOCR, translation service, translation memory, model routing, or language configuration.
+- Did not migrate annotation, pin image, long screenshot, or full UIAutomation/RTree candidates.
+
+### Validation
+
+- `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml`: passed.
+- `git diff --check -- tauri-client/src-tauri/src/lib.rs tauri-client/src-tauri/src/screenshot_commands.rs tauri-client/src-tauri/src/screenshot_native`: passed with only LF/CRLF normalization warnings.
+- `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml session --lib`: passed in the session subtask.
+- Targeted `rustfmt --edition 2021` was run on `lib.rs`, `screenshot_commands.rs`, and `screenshot_native/*.rs`.
+- `npm run build` from `tauri-client`: passed. Existing Vite warnings remain for mixed static/dynamic import of `@tauri-apps/api/window` and the large `index` chunk.
+- Manual desktop smoke for first `Alt+A`, repeated `Alt+A`, `Esc`, selection confirm, save/copy/OCR/translation handoff, and focus restoration remains pending.
+
+### Known Risks
+
+- Native overlay and GPU files are contract/scaffold level only; they must not be presented as user-visible readiness.
+- Existing WebView screenshot surface and RGBA transfer are still the runtime path, so the previous flicker/latency class is not solved by this chapter alone.
+- Full `cargo fmt --check` still reports pre-existing formatting differences outside the narrow screenshot-native scope; this chapter intentionally avoided formatting unrelated OCR/translation/recording files.
+- Several pre-existing modified files remain in the worktree from earlier screenshot-latency work, including RGBA/WebView behavior changes; this chapter records only the C/E Phase 1 additions, direct session-generation wiring, and the fact that native overlay/GPU remain pending.
+
+### Next Recommended Chapter
+
+- Start Phase 2 behind an explicit capability/fallback flag: create a minimal native overlay MVP that can own lifecycle/focus/input while still consuming the existing CPU RGBA frame.
+- Keep OCR/translation image handoff unchanged and verify copy/save/OCR/translation against the existing WebView path before switching runtime defaults.
+- Add a native-overlay smoke that checks repeated `Alt+A`, `Esc`, no orphan overlay, and Alt-Tab foreground restoration.
+
+## Chapter 183 - Native Overlay MVP Contracts And WGC Placeholder Backends (2026-06-08)
+
+### Goals
+
+- Continue方案 C by adding the first native overlay MVP building blocks without switching the default runtime away from the existing WebView/RGBA path.
+- Continue方案 E by adding WGC/DXGI placeholder backend contracts that can be compiled and extended later without touching OCR or translation.
+- Make Phase 2 helper files part of the Rust module tree so `cargo check` covers them instead of leaving untracked drafts uncompiled.
+- Keep every new screenshot-native module below the 500-line file-size gate.
+
+### Added Files
+
+- `tauri-client/src-tauri/src/screenshot_native/capability.rs`
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
+- `tauri-client/src-tauri/src/screenshot_native/overlay_renderer.rs`
+- `tauri-client/src-tauri/src/screenshot_native/selection_state.rs`
+- `tauri-client/src-tauri/src/screenshot_native/win32_input.rs`
+- `tauri-client/src-tauri/src/screenshot_native/wgc_capture.rs`
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+- `tauri-client/src-tauri/src/screenshot_native/gpu.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### What Changed
+
+- Added a native overlay capability/fallback plan that defaults to `webview-rgba` and `Disabled`, so current screenshot behavior remains recoverable while C/E modules are prepared.
+- Added `win32_overlay.rs` with Win32 overlay handle/config/lifecycle/error types plus create/show/hide/destroy helpers using the existing `crate::win32` FFI.
+- Added `overlay_renderer.rs` with CPU RGBA to GDI/top-down DIB rendering contracts and a `render_rgba_frame_to_overlay` entry point.
+- Added `selection_state.rs` with a drag-selection state machine for mouse, pointer, cancel, confirm, repeated-hotkey cancel, and basic keyboard adjustments.
+- Added `win32_input.rs` to translate Win32 mouse/keyboard messages into `ScreenshotInputEvent` without installing low-level hooks.
+- Added `wgc_capture.rs` with WGC and DXGI placeholder backend traits/types; these return not-implemented capability states and do not call real WGC/DXGI APIs yet.
+- Exported the new modules through `screenshot_native/mod.rs` so they are compiled and available for the next integration chapter.
+
+### File Size Gate
+
+- All `screenshot_native` files remain below 500 lines.
+- The largest files after this chapter are the native overlay/selection/renderer helpers, all still under the agreed limit.
+- No new OCR, translation, or recording file was intentionally changed in this chapter.
+
+### Explicit Non-Goals
+
+- Did not switch runtime default to the native overlay.
+- Did not implement real WGC/DXGI/D3D11 capture yet.
+- Did not implement DirectComposition, swap chain, or GPU texture presentation yet.
+- Did not rewrite copy, save, OCR, translation, RapidOCR, translation memory, or language routing.
+- Did not claim native overlay or GPU capture is user-visible ready.
+
+### Validation
+
+- `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml`: passed after exporting the Phase 2 modules.
+- Subtasks also ran targeted `cargo check` while developing `overlay_renderer.rs`, `win32_input.rs`, `selection_state.rs`, `win32_overlay.rs`, and `wgc_capture.rs`.
+- Prior Phase 1 `npm run build` remains valid for frontend compile, but this chapter still needs a final post-Phase-2 frontend build before release packaging.
+- `git diff --check` remains required after final Chapter 183 text is added.
+- Manual desktop smoke remains pending: first `Alt+A`, repeated `Alt+A`, `Esc`, selection confirm, copy/save/OCR/translation handoff, and Alt-Tab focus restoration.
+
+### Known Risks
+
+- `win32_overlay.rs` is compiled but not yet called by `screenshot_commands.rs`, so方案 C is not runtime-active.
+- `wgc_capture.rs` is a placeholder backend only, so方案 E has not reached real WGC/DXGI frame acquisition.
+- Output bridging still needs a safe one-shot selected-image handoff so native overlay can reuse current copy/save/OCR/translation hooks instead of duplicating business logic.
+- Native no-activate overlay may not receive all keyboard events; Phase 2 integration must decide whether Esc/Enter use foreground handling, global hotkeys, or a lightweight fallback.
+- Multi-monitor and DPI coordinate conversion remain the largest correctness risk before enabling native overlay by default.
+
+### Next Recommended Chapter
+
+- Wire a guarded native overlay smoke path behind the existing disabled capability flag, using current CPU `RgbaFrame` and falling back to WebView/RGBA on any error.
+- Add selected-image bridge output that returns PNG/base64 from the latest `RgbaFrame` plus `SelectionRect`, while leaving OCR/translation core unchanged.
+- Add WGC/DXGI real API preparation in separate small modules: D3D11 device, WGC item/framepool, DXGI duplication, and capture router.
+
+## Chapter 184 - GPU/D3D11 Capture Preparation And Capability Routing (2026-06-08)
+
+### Goals
+
+- Continue方案 E by preparing D3D11/WGC/DXGI contracts, Cargo features, and routing decisions without switching the default screenshot backend.
+- Keep GPU capture disabled/not-ready by construction while the existing CPU/WebView/RGBA path remains the recoverable runtime path.
+- Keep the implementation modular, with each new GPU/native file below the 500-line gate.
+- Preserve OCR/translation core systems while acknowledging that screenshot output and translation-rendering adjacent paths still require regression smoke.
+
+### Added Files
+
+- `tauri-client/src-tauri/src/screenshot_native/gpu_device.rs`
+- `tauri-client/src-tauri/src/screenshot_native/d3d11_frame.rs`
+- `tauri-client/src-tauri/src/screenshot_native/capture_router.rs`
+- `tauri-client/src-tauri/src/screenshot_native/native_overlay_smoke.rs`
+
+### Modified Files
+
+- `tauri-client/src-tauri/Cargo.toml`
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### What Changed
+
+- Added Windows crate features needed for future WGC/D3D11/DXGI work, including Graphics Capture, Direct3D11, DXGI, and WinRT interop feature groups.
+- Added `gpu_device.rs` with D3D11 feature-level, adapter, device-handle, and device-creation option contracts; device creation is still explicitly `NotImplemented`.
+- Added `d3d11_frame.rs` with pure Rust metadata contracts for D3D11 texture frames, shared handles, staging readback, row/depth pitch, CPU-readback state, and validation.
+- Added `capture_router.rs` with backend preference and route-decision contracts; the default route remains `ExistingCpu`, and WGC/DXGI decisions fall back to CPU placeholder paths.
+- Added `native_overlay_smoke.rs` with a side-effect-free native overlay smoke plan/report contract; the default report is `Planned`, not `Passed`.
+- Exported the new modules through `screenshot_native/mod.rs` so `cargo check` compiles them.
+
+### File Size Gate
+
+- All `screenshot_native` files remain below 500 lines.
+- The largest new files in this chapter are `d3d11_frame.rs`, `capture_router.rs`, and `native_overlay_smoke.rs`, all under the limit.
+- GPU implementation remains split across small modules instead of being added to `overlay_renderer.rs` or `wgc_capture.rs`.
+
+### Explicit Non-Goals
+
+- Did not implement real `D3D11CreateDevice` execution.
+- Did not implement real WGC framepool/session capture.
+- Did not implement DXGI Desktop Duplication capture.
+- Did not implement DirectComposition, swap chain, or GPU texture presentation.
+- Did not change the default screenshot runtime away from existing CPU/WebView/RGBA.
+- Did not modify OCR, RapidOCR, translation service, translation memory, model routing, or language routing core files.
+
+### Validation
+
+- `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml`: passed after exporting `capture_router`, `gpu_device`, `d3d11_frame`, and `native_overlay_smoke`.
+- `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`: passed in the route audit subtask.
+- `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml defaults_to_existing_cpu`: passed in the route audit subtask.
+- `npm run build` from `tauri-client`: passed after Phase 2; existing Vite warnings remain for mixed static/dynamic `@tauri-apps/api/window` import and the large `index` chunk.
+- `git diff --check`: passed with only LF/CRLF normalization warnings.
+
+### Known Risks
+
+- `create_d3d11_capture_device` returns `NotImplemented`; D3D11 is not ready.
+- WGC/DXGI backends remain placeholders and explicitly report blocked/not-implemented capability; GPU capture is not ready.
+- `capture_router` defaults to `ExistingCpu`, and WGC/DXGI routes fall back to CPU placeholder paths.
+- Screenshot output compatibility and translation-rendering adjacent paths were touched by earlier screenshot latency chapters; OCR/translation core was not rewritten, but copy/save/OCR/translation handoff still needs smoke.
+- `D3d11RawHandle` is an opaque non-owning handle contract; future real API work must define ownership, COM reference lifetime, and handle cleanup explicitly.
+
+### Next Recommended Chapter
+
+- Implement a guarded one-frame WGC probe module that can initialize API objects and immediately fall back to `ExistingCpu` on any HRESULT, empty frame, size mismatch, or access-loss condition.
+- Keep the probe disabled by default and expose only diagnostics until first-frame capture is proven on this machine.
+- Add selected-region output bridge from `RgbaFrame + SelectionRect` to PNG/base64 so native overlay can reuse current copy/save/OCR/translation flow without touching OCR/translation core.
+
+## Chapter 185 - WGC Probe Placeholder And Selected Image Bridge Contracts (2026-06-08)
+
+### Goals
+
+- Continue方案 E with a disabled-by-default WGC one-frame probe contract and a separate DXGI Desktop Duplication placeholder module.
+- Continue方案 C output preparation with a selected-image bridge from `RgbaFrame + SelectionRect` to PNG/base64, without calling OCR or translation business logic.
+- Keep the default screenshot route unchanged and recoverable through the existing CPU/WebView/RGBA path.
+- Keep all new screenshot-native files below the 500-line module-size gate.
+
+### Added Files
+
+- `tauri-client/src-tauri/src/screenshot_native/wgc_probe.rs`
+- `tauri-client/src-tauri/src/screenshot_native/dxgi_capture.rs`
+- `tauri-client/src-tauri/src/screenshot_native/selected_image_bridge.rs`
+
+### Modified Files
+
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+- `tauri-client/src-tauri/src/screenshot_native/capture_router.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+
+- None.
+
+### What Changed
+
+- Added `wgc_probe.rs` with one-frame WGC probe status, fallback, error, and plan contracts; the default probe remains disabled and does not call real WGC APIs.
+- Added `dxgi_capture.rs` with a separate DXGI Desktop Duplication placeholder contract; `start` and `capture_frame` return placeholder errors instead of calling real DXGI APIs.
+- Added `selected_image_bridge.rs` to crop a `SelectionRect` from a `RgbaFrame`, encode PNG, and produce PNG base64/data URL metadata for future native overlay output handoff.
+- Extended `capture_router.rs` with more specific fallback reasons for WGC probe, DXGI placeholder, and selected-image bridge boundaries while preserving `ExistingCpu` as the default route.
+- Exported the new modules through `screenshot_native/mod.rs` so they are compiled by the Rust module tree.
+
+### File Size Gate
+
+- All `screenshot_native` files remain below 500 lines.
+- The largest files remain the native overlay and selection-state helpers, still under the agreed module limit.
+- No large monolithic C/E implementation file was introduced.
+
+### Explicit Non-Goals
+
+- Did not enable WGC, DXGI, D3D11, or native overlay by default.
+- Did not implement real WGC framepool/session capture.
+- Did not implement real DXGI Desktop Duplication capture.
+- Did not wire selected-image bridge into Tauri commands or frontend hooks yet.
+- Did not modify OCR, RapidOCR, translation service, translation memory, model routing, or language routing core files.
+
+### Validation
+
+- `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml`: passed after exporting `wgc_probe`, `dxgi_capture`, and `selected_image_bridge`.
+- `cargo test selected_image_bridge --locked --target-dir %TEMP%\ysntrans-codex-audit-target`: passed in the selected-image bridge audit subtask, with `2 passed; 0 failed`.
+- `npm run build` from `tauri-client`: passed in the final handoff run; existing Vite warnings remain for mixed static/dynamic `@tauri-apps/api/window` imports and the large `index` chunk.
+- `git diff --check`: passed with only LF/CRLF normalization warnings.
+
+### Known Risks
+
+- `selected_image_bridge` is compiled but not yet called by the native overlay or frontend; it is a contract/utility, not a completed user flow.
+- `wgc_probe` and `dxgi_capture` are compiled placeholders; GPU capture is still not ready.
+- Existing screenshot output and translation-rendering adjacent paths were changed by earlier latency chapters, so copy/save/OCR/translation handoff still needs real smoke testing.
+- `screenshot_native` files are currently untracked until staged for commit.
+
+### Next Recommended Chapter
+
+- Add one thin Tauri command for native selected-image bridge output, returning `{ pngBase64, dataUrl, description }`, and use it only from the guarded native overlay path.
+- Keep WebView/RGBA as the default runtime and fallback until native overlay lifecycle, selection, output bridge, and Alt-Tab restoration pass manual smoke.
+- Start a real WGC API probe only after the disabled diagnostics path and CPU fallback are verified on this machine.

@@ -36,7 +36,7 @@ export type RecordingTargets = {
 interface UseScreenshotRecordingProps {
   rectRef: React.MutableRefObject<Rect>;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  imageRef: React.MutableRefObject<HTMLImageElement | null>;
+  imageRef: React.MutableRefObject<(HTMLImageElement | HTMLCanvasElement) | null>;
   screenshotModeRef: React.MutableRefObject<string>;
   triggerRender: () => void;
   setCurrentRect: (next: Rect, syncState?: boolean) => void;
@@ -134,8 +134,10 @@ export function useScreenshotRecording({
     const canvas = canvasRef.current;
     const image = imageRef.current;
     const origin = await getCurrentWindow().outerPosition().catch(() => ({ x: 0, y: 0 }));
-    const scaleX = image && canvas ? image.naturalWidth / canvas.width : 1;
-    const scaleY = image && canvas ? image.naturalHeight / canvas.height : 1;
+    const imageWidth = image instanceof HTMLImageElement ? image.naturalWidth : image?.width;
+    const imageHeight = image instanceof HTMLImageElement ? image.naturalHeight : image?.height;
+    const scaleX = imageWidth && canvas ? imageWidth / canvas.width : 1;
+    const scaleY = imageHeight && canvas ? imageHeight / canvas.height : 1;
     return {
       x: Math.round((target.x - origin.x) / scaleX),
       y: Math.round((target.y - origin.y) / scaleY),

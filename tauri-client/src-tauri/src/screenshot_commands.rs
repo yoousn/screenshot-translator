@@ -1,19 +1,13 @@
 use crate::*;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+static SCREENSHOT_RGBA: OnceLock<Mutex<Option<ScreenshotRgba>>> = OnceLock::new();
 static LATEST_SCREENSHOT_PAYLOAD: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
-static SCREENSHOT_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-fn next_screenshot_session_id() -> String {
-    format!(
-        "ss-{}",
-        SCREENSHOT_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
-}
+type ScreenshotRgba = crate::screenshot_native::RgbaFrame;
 
 fn now_epoch_millis_local() -> u64 {
     SystemTime::now()
@@ -47,8 +41,40 @@ fn log_screenshot_baseline(session_id: &str, phase: &str, started_at: &Instant, 
     );
 }
 
+fn log_native_overlay_launch_plan(
+    session_id: &str,
+    started_at: &Instant,
+    plan: crate::screenshot_native::NativeOverlayLaunchPlan,
+) {
+    let fallback_reason = plan
+        .fallback_reason
+        .map(|reason| reason.as_str())
+        .unwrap_or("none");
+    log_screenshot_baseline(
+        session_id,
+        "native_overlay_capability",
+        started_at,
+        &format!(
+            "runtime={} enabled={} fallback_reason={}",
+            plan.runtime.as_str(),
+            plan.capability.is_enabled(),
+            fallback_reason
+        ),
+    );
+}
+
+fn native_overlay_mvp_fallback_plan() -> crate::screenshot_native::NativeOverlayLaunchPlan {
+    crate::screenshot_native::NativeOverlayLaunchPlan::fallback(
+        crate::screenshot_native::NativeOverlayFallbackReason::MvpNotWired,
+    )
+}
+
 fn get_screenshot_image() -> &'static Mutex<Option<Vec<u8>>> {
     SCREENSHOT_IMAGE.get_or_init(|| Mutex::new(None))
+}
+
+fn get_screenshot_rgba() -> &'static Mutex<Option<ScreenshotRgba>> {
+    SCREENSHOT_RGBA.get_or_init(|| Mutex::new(None))
 }
 
 fn get_latest_screenshot_payload_store() -> &'static Mutex<Option<serde_json::Value>> {
@@ -67,21 +93,45 @@ fn clear_latest_screenshot_payload() {
     }
 }
 
-fn capture_current_monitor_png() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
-    match capture_current_monitor_png_xcap() {
+fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        &mut buffer,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::NoFilter,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        rgba,
+        width,
+        height,
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|error| format!("Encode PNG failed: {error}"))?;
+    Ok(buffer.into_inner())
+}
+
+fn capture_current_monitor_rgba() -> Result<(ScreenshotRgba, (i32, i32, u32, u32)), String> {
+    match capture_current_monitor_rgba_xcap() {
         Ok(result) => Ok(result),
         Err(xcap_error) => {
             eprintln!(
                 "[screenshot] xcap capture failed, falling back to screenshots crate: {xcap_error}"
             );
-            capture_current_monitor_png_legacy().map_err(|legacy_error| {
+            capture_current_monitor_rgba_legacy().map_err(|legacy_error| {
                 format!("xcap capture failed: {xcap_error}; legacy capture failed: {legacy_error}")
             })
         }
     }
 }
 
-fn capture_current_monitor_png_xcap() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
+fn capture_current_monitor_png() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
+    let (rgba, screen_info) = capture_current_monitor_rgba()?;
+    let png = encode_rgba_png(&rgba.bytes, rgba.width, rgba.height)?;
+    Ok((png, screen_info))
+}
+
+fn capture_current_monitor_rgba_xcap() -> Result<(ScreenshotRgba, (i32, i32, u32, u32)), String> {
     let monitors =
         xcap::Monitor::all().map_err(|error| format!("xcap enumerate displays failed: {error}"))?;
     if monitors.is_empty() {
@@ -107,24 +157,17 @@ fn capture_current_monitor_png_xcap() -> Result<(Vec<u8>, (i32, i32, u32, u32)),
     let image = monitor
         .capture_image()
         .map_err(|error| format!("xcap screenshot failed: {error}"))?;
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    let encoder = xcap::image::codecs::png::PngEncoder::new_with_quality(
-        &mut buffer,
-        xcap::image::codecs::png::CompressionType::Fast,
-        xcap::image::codecs::png::FilterType::NoFilter,
-    );
-    xcap::image::ImageEncoder::write_image(
-        encoder,
-        image.as_raw(),
-        width,
-        height,
-        xcap::image::ColorType::Rgba8.into(),
-    )
-    .map_err(|error| format!("xcap encode PNG failed: {error}"))?;
-    Ok((buffer.into_inner(), (x, y, width, height)))
+    Ok((
+        ScreenshotRgba {
+            bytes: image.as_raw().to_vec(),
+            width,
+            height,
+        },
+        (x, y, width, height),
+    ))
 }
 
-fn capture_current_monitor_png_legacy() -> Result<(Vec<u8>, (i32, i32, u32, u32)), String> {
+fn capture_current_monitor_rgba_legacy() -> Result<(ScreenshotRgba, (i32, i32, u32, u32)), String> {
     let screens =
         Screen::all().map_err(|error| format!("Failed to enumerate displays: {error}"))?;
     if screens.is_empty() {
@@ -140,21 +183,14 @@ fn capture_current_monitor_png_legacy() -> Result<(Vec<u8>, (i32, i32, u32, u32)
     let image = screen
         .capture()
         .map_err(|error| format!("Screenshot failed: {error}"))?;
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
-        &mut buffer,
-        screenshots::image::codecs::png::CompressionType::Fast,
-        screenshots::image::codecs::png::FilterType::NoFilter,
-    );
-    screenshots::image::ImageEncoder::write_image(
-        encoder,
-        image.as_raw(),
-        info.width,
-        info.height,
-        screenshots::image::ColorType::Rgba8,
-    )
-    .map_err(|error| format!("Encode PNG failed: {error}"))?;
-    Ok((buffer.into_inner(), screen_info))
+    Ok((
+        ScreenshotRgba {
+            bytes: image.into_raw(),
+            width: info.width,
+            height: info.height,
+        },
+        screen_info,
+    ))
 }
 
 fn write_fullscreen_capture_backup(png_bytes: Vec<u8>) -> Result<PathBuf, String> {
@@ -176,15 +212,24 @@ fn write_fullscreen_capture_backup(png_bytes: Vec<u8>) -> Result<PathBuf, String
 fn persist_fullscreen_capture_backup(session_id: String, started_at: Instant, png_bytes: Vec<u8>) {
     tauri::async_runtime::spawn(async move {
         let backup_started_at = started_at.elapsed().as_millis();
-        log_screenshot_baseline(&session_id, "backup_write_start", &started_at, "background=true");
-        match tokio::task::spawn_blocking(move || write_fullscreen_capture_backup(png_bytes)).await {
+        log_screenshot_baseline(
+            &session_id,
+            "backup_write_start",
+            &started_at,
+            "background=true",
+        );
+        match tokio::task::spawn_blocking(move || write_fullscreen_capture_backup(png_bytes)).await
+        {
             Ok(Ok(path)) => log_screenshot_baseline(
                 &session_id,
                 "backup_write_end",
                 &started_at,
                 &format!(
                     "background=true write_ms={} path={}",
-                    started_at.elapsed().as_millis().saturating_sub(backup_started_at),
+                    started_at
+                        .elapsed()
+                        .as_millis()
+                        .saturating_sub(backup_started_at),
                     path.to_string_lossy()
                 ),
             ),
@@ -192,6 +237,68 @@ fn persist_fullscreen_capture_backup(session_id: String, started_at: Instant, pn
             Err(error) => eprintln!("[screenshot] fullscreen backup task failed: {error}"),
         }
     });
+}
+
+fn encode_and_store_fullscreen_png(session_id: String, started_at: Instant, rgba: ScreenshotRgba) {
+    tauri::async_runtime::spawn(async move {
+        let encode_started_at = started_at.elapsed().as_millis();
+        log_screenshot_baseline(
+            &session_id,
+            "png_encode_start",
+            &started_at,
+            "background=true",
+        );
+        match tokio::task::spawn_blocking(move || {
+            encode_rgba_png(&rgba.bytes, rgba.width, rgba.height)
+        })
+        .await
+        {
+            Ok(Ok(png_bytes)) => {
+                log_screenshot_baseline(
+                    &session_id,
+                    "png_encode_end",
+                    &started_at,
+                    &format!(
+                        "background=true encode_ms={} bytes={}",
+                        started_at
+                            .elapsed()
+                            .as_millis()
+                            .saturating_sub(encode_started_at),
+                        png_bytes.len()
+                    ),
+                );
+                if let Ok(mut guard) = get_screenshot_image().lock() {
+                    *guard = Some(png_bytes.clone());
+                }
+                persist_fullscreen_capture_backup(session_id, started_at, png_bytes);
+            }
+            Ok(Err(error)) => eprintln!("[screenshot] failed to encode fullscreen PNG: {error}"),
+            Err(error) => eprintln!("[screenshot] fullscreen PNG encode task failed: {error}"),
+        }
+    });
+}
+
+fn get_or_encode_screenshot_png() -> Result<Vec<u8>, String> {
+    if let Ok(guard) = get_screenshot_image().lock() {
+        if let Some(ref bytes) = *guard {
+            return Ok(bytes.clone());
+        }
+    }
+    if let Ok(guard) = get_screenshot_rgba().lock() {
+        if let Some(ref rgba) = *guard {
+            let png = encode_rgba_png(&rgba.bytes, rgba.width, rgba.height)?;
+            if let Ok(mut image_guard) = get_screenshot_image().lock() {
+                *image_guard = Some(png.clone());
+            }
+            return Ok(png);
+        }
+    }
+    let mut path = app_data_dir();
+    path.push("fullscreen_temp.png");
+    if !path.exists() {
+        return Err("No display detected".to_string());
+    }
+    fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))
 }
 
 pub fn ensure_screenshot_window(
@@ -235,9 +342,57 @@ pub fn prewarm_screenshot_window(app: tauri::AppHandle) {
     });
 }
 
+fn prepare_screenshot_overlay_window(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    started_at: &Instant,
+    screenshot_mode: &str,
+) -> Result<tauri::WebviewWindow, String> {
+    let screenshot_win = ensure_screenshot_window(app, "ready-overlay").map_err(|error| {
+        crate::window_lifecycle::restore_main_window_after_screenshot(
+            app,
+            "create-screenshot-overlay-error",
+        );
+        error
+    })?;
+    disable_windows_transition(&screenshot_win);
+    let (x, y, width, height) = current_screen_origin();
+    let safe_width = width.max(1) as u32;
+    let safe_height = height.max(1) as u32;
+    let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = screenshot_win.set_size(tauri::PhysicalSize::new(safe_width, safe_height));
+    let _ = screenshot_win.set_always_on_top(true);
+    let _ = screenshot_win.set_skip_taskbar(true);
+    let _ = crate::window_lifecycle::set_webview_capture_excluded(app, "screenshot", true);
+    let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.to_string());
+    let _ = screenshot_win.emit(
+        "screenshot-shell",
+        serde_json::json!({
+            "mode": screenshot_mode,
+            "sessionId": session_id,
+            "transparent": true,
+            "screen": {
+                "x": x,
+                "y": y,
+                "width": safe_width,
+                "height": safe_height
+            }
+        }),
+    );
+    crate::window_lifecycle::show_screenshot_overlay_window(&screenshot_win);
+    log_screenshot_baseline(
+        session_id,
+        "transparent_shell_show_returned",
+        started_at,
+        &format!("screen={}x{}@{},{}", safe_width, safe_height, x, y),
+    );
+    Ok(screenshot_win)
+}
+
 pub async fn start_screenshot_impl(
     app: tauri::AppHandle,
     mode: Option<String>,
+    run_generation: crate::screenshot_native::ScreenshotRunGeneration,
 ) -> Result<(), String> {
     let started_at = Instant::now();
     let session_id = next_screenshot_session_id();
@@ -252,6 +407,16 @@ pub async fn start_screenshot_impl(
         mode
     );
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
+    let native_overlay_plan = crate::screenshot_native::default_native_overlay_launch_plan();
+    log_native_overlay_launch_plan(&session_id, &started_at, native_overlay_plan);
+    if native_overlay_plan.uses_native_overlay() {
+        log_native_overlay_launch_plan(
+            &session_id,
+            &started_at,
+            native_overlay_mvp_fallback_plan(),
+        );
+    }
+    crate::window_lifecycle::remember_pre_screenshot_foreground("start-screenshot");
     let _ = crate::window_lifecycle::set_webview_capture_excluded(&app, "main", false);
     start_text_source_snapshot_capture(&app);
 
@@ -263,21 +428,24 @@ pub async fn start_screenshot_impl(
         &format!("hidden_for_capture={}", main_hidden_for_capture),
     );
 
-    if let Some(screenshot_win) = app.get_webview_window("screenshot") {
-        if screenshot_win.is_visible().unwrap_or(false) {
-            let _ = screenshot_win.set_always_on_top(false);
-            crate::window_lifecycle::hide_window_without_activation(&screenshot_win);
-        }
-    }
     close_screenshot_windows(&app, false);
-    if main_hidden_for_capture && crate::window_lifecycle::current_screenshot_capture_needs_settle() {
+    let screenshot_win =
+        prepare_screenshot_overlay_window(&app, &session_id, &started_at, &screenshot_mode)?;
+    log_screenshot_baseline(
+        &session_id,
+        "overlay_window_prepared_hidden",
+        &started_at,
+        &format!("generation={}", run_generation),
+    );
+    if main_hidden_for_capture && crate::window_lifecycle::current_screenshot_capture_needs_settle()
+    {
         crate::window_lifecycle::wait_for_hidden_main_capture_settle().await;
         log_screenshot_baseline(&session_id, "main_hidden_settled", &started_at, "");
     }
 
     // Capture and encode on a blocking thread to avoid blocking the async runtime.
     log_screenshot_baseline(&session_id, "capture_start", &started_at, "");
-    let (png_bytes, screen_info) = match tokio::task::spawn_blocking(capture_current_monitor_png)
+    let (rgba_image, screen_info) = match tokio::task::spawn_blocking(capture_current_monitor_rgba)
         .await
         .map_err(|error| format!("Screenshot task failed: {error}"))
         .and_then(|result| result)
@@ -293,8 +461,8 @@ pub async fn start_screenshot_impl(
         "capture_end",
         &started_at,
         &format!(
-            "bytes={} screen={}x{}@{},{}",
-            png_bytes.len(),
+            "format=rgba bytes={} screen={}x{}@{},{}",
+            rgba_image.bytes.len(),
             screen_info.2,
             screen_info.3,
             screen_info.0,
@@ -302,59 +470,52 @@ pub async fn start_screenshot_impl(
         ),
     );
     println!(
-        "[screenshot-perf] capture ready {}ms bytes={}",
+        "[screenshot-perf] capture ready {}ms format=rgba bytes={}",
         started_at.elapsed().as_millis(),
-        png_bytes.len()
+        rgba_image.bytes.len()
     );
 
-    // Store lossless screenshot bytes in memory for OCR/cropping quality and speed.
-    if let Ok(mut guard) = get_screenshot_image().lock() {
-        *guard = Some(png_bytes.clone());
-    }
-
-    // Write backup in the background only. Do not block payload emission or overlay readiness.
-    persist_fullscreen_capture_backup(session_id.clone(), started_at, png_bytes.clone());
-
-    let screenshot_win = if let Some(win) = app.get_webview_window("screenshot") {
-        let is_visible = win.is_visible().unwrap_or(false);
+    if crate::screenshot_native::is_stale_generation(run_generation) {
         log_screenshot_baseline(
             &session_id,
-            "window_reused",
+            "capture_discarded_stale_generation",
             &started_at,
-            &format!("visible={}", is_visible),
+            &format!("generation={}", run_generation),
         );
-        println!("[screenshot-trace] start_screenshot_impl: reusing screenshot window, visible={is_visible}");
-        let _ = win.set_skip_taskbar(true);
-        win
-    } else {
-        ensure_screenshot_window(&app, "start-screenshot").map_err(|e| {
-            crate::window_lifecycle::restore_main_window_after_screenshot(
-                &app,
-                "create-screenshot-window-error",
-            );
-            e
-        })?
-    };
+        return Ok(());
+    }
 
-    // Disable transition animation to avoid windows rendering delay/flicker
-    disable_windows_transition(&screenshot_win);
+    if let Ok(mut guard) = get_screenshot_rgba().lock() {
+        *guard = Some(rgba_image.clone());
+    }
+    if let Ok(mut guard) = get_screenshot_image().lock() {
+        *guard = None;
+    }
+
+    // Encode PNG in the background for compatibility and backup only. Do not block payload emission or overlay readiness.
+    encode_and_store_fullscreen_png(session_id.clone(), started_at, rgba_image.clone());
 
     let (x, y, width, height) = screen_info;
-
-    // Position and configure the window while still hidden
-    println!(
-        "[screenshot-trace] start_screenshot_impl: configuring window, url={:?}, title={:?}",
-        screenshot_win.url(),
-        screenshot_win.title()
-    );
     let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = screenshot_win.set_always_on_top(true);
 
+    if crate::screenshot_native::is_stale_generation(run_generation) {
+        log_screenshot_baseline(
+            &session_id,
+            "payload_discarded_stale_generation",
+            &started_at,
+            &format!("generation={}", run_generation),
+        );
+        return Ok(());
+    }
+
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.clone());
     let payload = serde_json::json!({
-        "kind": "memory",
-        "bytes": png_bytes.len(),
+        "kind": "rgba",
+        "bytes": rgba_image.bytes.len(),
+        "width": rgba_image.width,
+        "height": rgba_image.height,
         "mode": screenshot_mode,
         "sessionId": session_id.clone(),
     });
@@ -429,8 +590,8 @@ pub fn show_save_feedback_toast(app: tauri::AppHandle, path: String) -> Result<(
     let screen = match Screen::from_point(cursor.0, cursor.1) {
         Ok(screen) => screen,
         Err(_) => {
-            let screens = Screen::all()
-                .map_err(|error| format!("Resolve toast display failed: {error}"))?;
+            let screens =
+                Screen::all().map_err(|error| format!("Resolve toast display failed: {error}"))?;
             *screens
                 .first()
                 .ok_or_else(|| "Resolve toast display failed: no screen".to_string())?
@@ -444,7 +605,7 @@ pub fn show_save_feedback_toast(app: tauri::AppHandle, path: String) -> Result<(
         label.clone(),
         tauri::WebviewUrl::App(format!("index.html?save_toast=1&path={encoded_path}").into()),
     )
-    .title("截图已保存")
+    .title("Screenshot saved")
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
@@ -490,14 +651,19 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
         return Err("Recording is already running".to_string());
     }
 
-    // Restart cleanly on repeated hotkey presses instead of racing two overlay sessions.
     if CAPTURING.swap(true, Ordering::SeqCst) {
-        println!("[screenshot-trace] start_screenshot: CAPTURING was already true, closing existing windows");
+        println!("[screenshot-trace] start_screenshot: CAPTURING was already true, canceling active screenshot");
+        crate::screenshot_native::advance_run_generation();
         close_screenshot_windows(&app, true);
+        CAPTURING.store(false, Ordering::SeqCst);
+        clear_latest_screenshot_payload();
+        crate::window_lifecycle::restore_main_window_after_screenshot(&app, "repeat-hotkey-cancel");
+        return Ok(());
     }
+    let run_generation = crate::screenshot_native::begin_run_generation();
     println!("[screenshot-trace] start_screenshot: CAPTURING is now true");
 
-    match start_screenshot_impl(app, mode).await {
+    match start_screenshot_impl(app, mode, run_generation).await {
         Ok(()) => Ok(()),
         Err(e) => {
             CAPTURING.store(false, Ordering::SeqCst);
@@ -509,6 +675,7 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
 #[tauri::command]
 pub async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
     println!("[screenshot-trace] enter force_close_screenshots");
+    crate::screenshot_native::advance_run_generation();
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
     crate::window_lifecycle::restore_main_window_after_screenshot(&app, "force-close-screenshots");
@@ -562,6 +729,7 @@ pub async fn cancel_screenshot(
         close_screenshot_windows(&app, true);
     }
     CAPTURING.store(false, Ordering::SeqCst);
+    crate::screenshot_native::advance_run_generation();
     clear_latest_screenshot_payload();
     if should_restore_main {
         crate::window_lifecycle::restore_main_window_after_screenshot(&app, "cancel-screenshot");
@@ -571,35 +739,22 @@ pub async fn cancel_screenshot(
 
 #[tauri::command]
 pub fn get_fullscreen_image() -> Result<String, String> {
-    // Try memory first (fast), fall back to disk
-    if let Ok(guard) = get_screenshot_image().lock() {
-        if let Some(ref bytes) = *guard {
-            return Ok(BASE64_STANDARD.encode(bytes));
-        }
-    }
-    let mut path = app_data_dir();
-    path.push("fullscreen_temp.png");
-    if !path.exists() {
-        return Err("No display detected".to_string());
-    }
-    let bytes = fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?;
-    Ok(BASE64_STANDARD.encode(&bytes))
+    Ok(BASE64_STANDARD.encode(get_or_encode_screenshot_png()?))
 }
 
 #[tauri::command]
 pub fn get_fullscreen_image_bytes() -> Result<tauri::ipc::Response, String> {
-    if let Ok(guard) = get_screenshot_image().lock() {
-        if let Some(ref bytes) = *guard {
-            return Ok(tauri::ipc::Response::new(bytes.clone()));
+    Ok(tauri::ipc::Response::new(get_or_encode_screenshot_png()?))
+}
+
+#[tauri::command]
+pub fn get_fullscreen_rgba_bytes() -> Result<tauri::ipc::Response, String> {
+    if let Ok(guard) = get_screenshot_rgba().lock() {
+        if let Some(ref rgba) = *guard {
+            return Ok(tauri::ipc::Response::new(rgba.bytes.clone()));
         }
     }
-    let mut path = app_data_dir();
-    path.push("fullscreen_temp.png");
-    if !path.exists() {
-        return Err("No display detected".to_string());
-    }
-    let bytes = fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?;
-    Ok(tauri::ipc::Response::new(bytes))
+    Err("No display detected".to_string())
 }
 
 #[tauri::command]
@@ -608,24 +763,7 @@ pub fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> 
         return Err("Invalid selection region".to_string());
     }
 
-    // Try memory first (fast), fall back to disk
-    let screenshot_bytes = {
-        let guard = get_screenshot_image().lock().map_err(|e| e.to_string())?;
-        if let Some(ref bytes) = *guard {
-            bytes.clone()
-        } else {
-            let mut path = app_data_dir();
-            path.push("fullscreen_temp.png");
-            if !path.exists() {
-                path = app_data_dir();
-                path.push("fullscreen_temp.jpg");
-            }
-            if !path.exists() {
-                return Err("No display detected".to_string());
-            }
-            fs::read(&path).map_err(|e| format!("Read fullscreen image failed: {}", e))?
-        }
-    };
+    let screenshot_bytes = get_or_encode_screenshot_png()?;
 
     let img = screenshots::image::load_from_memory(&screenshot_bytes)
         .map_err(|e| format!("Load fullscreen image failed: {}", e))?;
@@ -797,6 +935,54 @@ pub fn write_image_to_file(
     Ok(saved_path)
 }
 
+pub async fn run_screenshot_lifecycle_smoke(app: tauri::AppHandle) {
+    println!("[screenshot-smoke] start lifecycle smoke");
+    let first_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = start_screenshot(first_app, None).await {
+            eprintln!("[screenshot-smoke] first start failed: {error}");
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(90)).await;
+    if let Err(error) = start_screenshot(app.clone(), None).await {
+        eprintln!("[screenshot-smoke] repeat cancel failed: {error}");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    let visible_after_cancel = app
+        .get_webview_window("screenshot")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    println!(
+        "[screenshot-smoke] after repeat cancel visible={} capturing={}",
+        visible_after_cancel,
+        CAPTURING.load(Ordering::SeqCst)
+    );
+    if let Err(error) = start_screenshot(app.clone(), None).await {
+        eprintln!("[screenshot-smoke] second start failed: {error}");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let visible_after_ready = app
+        .get_webview_window("screenshot")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    println!(
+        "[screenshot-smoke] after ready visible={} capturing={}",
+        visible_after_ready,
+        CAPTURING.load(Ordering::SeqCst)
+    );
+    let _ = cancel_screenshot(app.clone(), Some("screenshot".to_string()), Some(true)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let visible_after_final_cancel = app
+        .get_webview_window("screenshot")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    println!(
+        "[screenshot-smoke] after final cancel visible={} capturing={}",
+        visible_after_final_cancel,
+        CAPTURING.load(Ordering::SeqCst)
+    );
+    app.exit(0);
+}
 #[tauri::command]
 pub fn log_screenshot_perf(message: String) {
     println!("[screenshot-perf] {message}");

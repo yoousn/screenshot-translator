@@ -18,6 +18,7 @@ interface UseScreenshotInteractionProps {
   hasSelected: boolean;
   hasSelectedRef: React.RefObject<boolean>;
   overlayVisibleRef: React.RefObject<boolean>;
+  frameInteractiveRef: React.RefObject<boolean>;
   isSelecting: boolean;
   setIsSelecting: (selected: boolean) => void;
   isSelectingRef: React.RefObject<boolean>;
@@ -109,6 +110,7 @@ export function useScreenshotInteraction({
   hasSelected,
   hasSelectedRef,
   overlayVisibleRef,
+  frameInteractiveRef,
   isSelecting,
   setIsSelecting,
   isSelectingRef,
@@ -242,7 +244,7 @@ export function useScreenshotInteraction({
   };
 
   const startPlainSelectionAt = (cx: number, cy: number) => {
-    if (!overlayVisibleRef.current) return false;
+    if (!frameInteractiveRef.current) return false;
     if (hasSelectedRef.current || isSelectingRef.current || isDraggingRef.current || isResizingRef.current) return false;
     if (isEditingRef.current || recordingPickerModeRef.current || scrollCaptureModeRef.current !== "idle") return false;
     pendingDetectionRef.current = null;
@@ -297,7 +299,7 @@ export function useScreenshotInteraction({
   };
 
   const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!overlayVisibleRef.current) return;
+    if (!frameInteractiveRef.current) return;
     focusScreenshotWindow();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -397,7 +399,7 @@ export function useScreenshotInteraction({
   };
 
   const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!overlayVisibleRef.current) return;
+    if (!frameInteractiveRef.current) return;
     const cx = e.clientX;
     const cy = e.clientY;
     if (
@@ -560,7 +562,7 @@ export function useScreenshotInteraction({
   };
 
   const handleMouseUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!overlayVisibleRef.current) return;
+    if (!frameInteractiveRef.current) return;
     if (e) releaseCanvasPointer(e.currentTarget, e.pointerId);
     const wasSelecting = isSelectingRef.current;
     const pendingDetection = pendingDetectionRef.current;
@@ -618,7 +620,7 @@ export function useScreenshotInteraction({
   };
 
   const handleDoubleClick = () => {
-    if (!overlayVisibleRef.current) return;
+    if (!frameInteractiveRef.current) return;
     const canConfirm = getSelectionConfirmDelayMs();
     if (canConfirm === 0) confirmScreenshot("copy");
   };
@@ -668,6 +670,7 @@ export function useScreenshotInteraction({
         forceCloseScreenshots();
         return;
       }
+      if (!frameInteractiveRef.current) return;
       if (e.key === "Tab" && hoverCandidatesRef.current.length > 1) {
         e.preventDefault();
         hoverCandidateIndexRef.current = (hoverCandidateIndexRef.current + (e.shiftKey ? -1 : 1) + hoverCandidatesRef.current.length) % hoverCandidatesRef.current.length;

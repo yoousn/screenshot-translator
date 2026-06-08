@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Space, Button } from "antd";
@@ -32,10 +32,12 @@ const RECORDING_BORDER_YELLOW = "#f59e0b";
 const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
 
 type ScreenshotUpdatedPayload = string | {
-  kind?: "file" | "base64" | "memory";
+  kind?: "file" | "base64" | "memory" | "rgba";
   path?: string;
   base64?: string;
   bytes?: number;
+  width?: number;
+  height?: number;
   mode?: string;
   sessionId?: string;
 };
@@ -59,6 +61,7 @@ export default function ScreenshotPage() {
 
   const renderNeededRef = useRef(false);
   const requestRef = useRef<number | null>(null);
+  const renderFramePendingRef = useRef(false);
   const selectionStartedAtRef = useRef(0);
   const selectionCompletedAtRef = useRef(0);
   const selectionDragDistanceRef = useRef(0);
@@ -73,6 +76,7 @@ export default function ScreenshotPage() {
   const isSelectingRef = useRef(false);
   const isEditingRef = useRef(false);
   const screenshotModeRef = useRef("normal");
+  const frameInteractiveRef = useRef(false);
   const drawRef = useRef(draw);
 
   // Break circular dependency
@@ -92,8 +96,22 @@ export default function ScreenshotPage() {
     get isSelecting() { return isSelectingRef.current; },
   });
 
+  const scheduleRenderFrame = () => {
+    if (renderFramePendingRef.current) return;
+    renderFramePendingRef.current = true;
+    requestRef.current = requestAnimationFrame(() => {
+      requestRef.current = null;
+      renderFramePendingRef.current = false;
+      if (!renderNeededRef.current) return;
+      renderNeededRef.current = false;
+      drawRef.current(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
+      if (renderNeededRef.current) scheduleRenderFrame();
+    });
+  };
+
   const triggerRender = () => {
     renderNeededRef.current = true;
+    scheduleRenderFrame();
   };
 
   const setCurrentRect = (next: Rect, syncState = false) => {
@@ -143,7 +161,7 @@ export default function ScreenshotPage() {
     pushAnnotationHistory, undoAnnotation, redoAnnotation, commitAnnotation,
     cancelTextDraft, commitTextDraft, deleteSelectedAnnotation, resetAnnotations
   } = useScreenshotAnnotation(() => {
-    renderNeededRef.current = true;
+    triggerRender();
   });
 
   // 3. useScreenshotWindowRects
@@ -258,10 +276,14 @@ export default function ScreenshotPage() {
     maskedCanvasRef,
     analysisImageDataRef,
     overlayVisibleRef,
+    setScreenshotState,
+    setOverlayVisible,
+    setDbgStatus,
     loadConfig,
     loadFullscreen,
     loadFullscreenFromBase64,
     loadFullscreenFromFile,
+    loadFullscreenFromRgba,
     resetScreenshotState,
     cancelScreenshot,
   } = useScreenshotLoader({
@@ -293,6 +315,8 @@ export default function ScreenshotPage() {
     textSourceSnapshotPromiseRef,
     pendingConfirmTimerRef,
   });
+
+  frameInteractiveRef.current = overlayVisible && screenshotState === "ready";
 
   // 7. useScreenshotOcr (Initialized before actions to avoid temporal dead zone)
   const {
@@ -331,7 +355,7 @@ export default function ScreenshotPage() {
     confirmScreenshot,
   } = useScreenshotActions({
     canvasRef,
-    imageRef,
+    imageRef: imageRef as any,
     rectRef,
     rect,
     hasSelected,
@@ -418,6 +442,7 @@ export default function ScreenshotPage() {
     hasSelected,
     hasSelectedRef,
     overlayVisibleRef,
+    frameInteractiveRef,
     isSelecting,
     setIsSelecting,
     isSelectingRef,
@@ -559,15 +584,6 @@ export default function ScreenshotPage() {
   }
 
   useEffect(() => {
-    const tick = () => {
-      if (renderNeededRef.current) {
-        drawRef.current(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
-        renderNeededRef.current = false;
-      }
-      requestRef.current = requestAnimationFrame(tick);
-    };
-    requestRef.current = requestAnimationFrame(tick);
-
     loadConfig();
     document.body.style.setProperty("margin", "0", "important");
     document.body.style.setProperty("overflow", "hidden", "important");
@@ -576,6 +592,7 @@ export default function ScreenshotPage() {
     window.setTimeout(() => loadWindowRects(), 120);
 
     let unlistenMode: (() => void) | null = null;
+    let unlistenShell: (() => void) | null = null;
     let unlistenEvent: (() => void) | null = null;
     let unlistenRecordingEnded: (() => void) | null = null;
 
@@ -588,6 +605,10 @@ export default function ScreenshotPage() {
       }
       if (payload?.kind === "file" && payload.path) {
         loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal", payload.sessionId);
+        return;
+      }
+      if (payload?.kind === "rgba" && payload.width && payload.height) {
+        loadFullscreenFromRgba(payload.width, payload.height, payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.bytes);
         return;
       }
       if (payload?.kind === "memory") {
@@ -624,6 +645,58 @@ export default function ScreenshotPage() {
       .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
+    listen<any>("screenshot-shell", (event) => {
+      const payload = event.payload || {};
+      const nextMode = payload.mode || screenshotModeRef.current || "normal";
+      const sessionId = payload.sessionId || "shell";
+      screenshotModeRef.current = nextMode;
+      setScreenshotMode(nextMode);
+      setCurrentRect(EMPTY_RECT, true);
+      setSelection(false);
+      setHasSelected(false);
+      hoverRectRef.current = null;
+      hoverCandidatesRef.current = [];
+      hoverCandidateIndexRef.current = 0;
+      imageRef.current = null;
+      maskedCanvasRef.current = null;
+      analysisImageDataRef.current = null;
+      const shellCanvas = canvasRef.current;
+      const shellCtx = shellCanvas?.getContext("2d");
+      if (shellCanvas && shellCtx) {
+        const width = Math.max(1, window.innerWidth);
+        const height = Math.max(1, window.innerHeight);
+        shellCanvas.width = width;
+        shellCanvas.height = height;
+        shellCanvas.style.width = `${width}px`;
+        shellCanvas.style.height = `${height}px`;
+        shellCtx.clearRect(0, 0, shellCanvas.width, shellCanvas.height);
+      }
+      setHoverCandidate(null);
+      setHoverCandidateList([]);
+      overlayVisibleRef.current = true;
+      setOverlayVisible(true);
+      setScreenshotState("initializing");
+      setDbgStatus({ imageLoaded: false, imageWidth: payload.screen?.width || 0, imageHeight: payload.screen?.height || 0, screenshotBytes: 0, errorMsg: "" });
+      invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_event_received elapsed_ms=0 source=screenshot-shell mode=${nextMode}` }).catch(() => {});
+      invoke<any>("get_screenshot_pointer_state", { label: getCurrentWindow().label })
+        .then((pointer) => {
+          const nextMouse = {
+            x: Number(pointer?.x) || 0,
+            y: Number(pointer?.y) || 0,
+          };
+          lastMouseRef.current = nextMouse;
+          invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_candidate_load_start elapsed_ms=0 x=${Math.round(nextMouse.x)} y=${Math.round(nextMouse.y)}` }).catch(() => {});
+          return loadWindowRects(true);
+        })
+        .then(() => {
+          invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_candidate_first_batch elapsed_ms=0 count=${hoverCandidatesRef.current.length}` }).catch(() => {});
+          triggerRender();
+        })
+        .catch(() => {});
+    })
+      .then((unsub) => { unlistenShell = unsub; })
+      .catch(() => {});
+
     listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => handleScreenshotPayload(event.payload, "screenshot-updated"))
       .then((unsub) => {
         unlistenEvent = unsub;
@@ -636,10 +709,13 @@ export default function ScreenshotPage() {
       .catch(() => {});
 
     return () => {
+      if (unlistenShell) unlistenShell();
       if (unlistenEvent) unlistenEvent();
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      requestRef.current = null;
+      renderFramePendingRef.current = false;
       if (liveToolbarFrameRef.current !== null) cancelAnimationFrame(liveToolbarFrameRef.current);
     };
   }, []);
@@ -685,7 +761,7 @@ export default function ScreenshotPage() {
   ];
 
   return (
-    <div className={`screenshot-root ${overlayVisible && screenshotState === "ready" ? "ready" : "initializing"}`} style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: hasSelected ? "default" : "crosshair" }}>
+    <div className={`screenshot-root ${overlayVisible && screenshotState === "ready" ? "ready" : overlayVisible ? "shell" : "initializing"}`} style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: overlayVisible && screenshotState === "ready" ? (hasSelected ? "default" : "crosshair") : "wait" }}>
       {overlayVisible && !hasSelected && (
         <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px", display: "none" }}>0, 0</div>
       )}
@@ -709,7 +785,7 @@ export default function ScreenshotPage() {
         onPointerUp={handleMouseUp}
         onPointerCancel={handlePointerCancel}
         onDoubleClick={handleDoubleClick}
-        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible ? "auto" : "none" }}
+        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible && screenshotState === "ready" ? "auto" : "none" }}
       />
 
       {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (
