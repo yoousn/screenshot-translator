@@ -17,6 +17,7 @@ pub use screenshot_commands::*;
 
 pub(crate) mod screenshot_diagnostics_json;
 pub(crate) mod screenshot_dxgi_diagnostics_json;
+pub(crate) mod screenshot_shared_buffer;
 pub(crate) mod screenshot_win32_diagnostics_json;
 
 pub mod screenshot_diagnostics_requests;
@@ -357,6 +358,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    configure_webview2_default_background();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -405,10 +407,12 @@ pub fn run() {
             set_autostart_enabled,
             start_screenshot,
             get_latest_screenshot_payload,
+            get_latest_screenshot_shell_payload,
             show_save_feedback_toast,
             get_fullscreen_image,
             get_fullscreen_image_bytes,
             get_fullscreen_rgba_bytes,
+            post_fullscreen_rgba_shared_buffer,
             capture_region,
             copy_image_to_clipboard,
             save_image_to_file,
@@ -490,7 +494,11 @@ pub fn run() {
             if std::env::var("YSN_SCREENSHOT_AUTO_START_SMOKE").ok().as_deref() == Some("1") {
                 let smoke_app = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    let delay_ms = std::env::var("YSN_SCREENSHOT_AUTO_START_SMOKE_DELAY_MS")
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(900);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     if let Err(error) = start_screenshot(smoke_app, None).await {
                         eprintln!("[screenshot-smoke] auto start failed: {error}");
                     }
@@ -607,6 +615,23 @@ pub fn run() {
         .on_window_event(|window, event| { crate::window_lifecycle::handle_window_event(window, event); })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn configure_webview2_default_background() {
+    #[cfg(target_os = "windows")]
+    {
+        let opaque_requested = std::env::var("YSN_SCREENSHOT_OPAQUE_WINDOW")
+            .ok()
+            .as_deref()
+            == Some("1")
+            || std::env::var("YSN_SCREENSHOT_TRANSPARENT_WINDOW")
+                .ok()
+                .as_deref()
+                == Some("0");
+        if !opaque_requested && std::env::var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR").is_err() {
+            std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "00000000");
+        }
+    }
 }
 
 #[cfg(test)]

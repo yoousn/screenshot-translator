@@ -45,10 +45,19 @@ if (label === "main") {
   }
 }
 
-// Set transparent background BEFORE React renders for screenshot windows
-if (label === "screenshot" || label.startsWith("recording_control") || label === "recording_notice" || label === "save_toast") {
-  document.body.style.backgroundColor = "transparent";
-  document.documentElement.style.backgroundColor = "transparent";
+// Keep the screenshot helper visually transparent before React renders. The
+// native window is shown only after a real canvas frame is ready, so an empty
+// WebView backing surface should not flash black or white.
+if (label === "screenshot") {
+  document.body.style.background = "transparent";
+  document.documentElement.style.background = "transparent";
+  document.getElementById("root")?.style.setProperty("background", "transparent", "important");
+  document.body.classList.add("transparent-window");
+  document.documentElement.classList.add("transparent-window");
+} else if (label.startsWith("recording_control") || label === "recording_notice" || label === "save_toast") {
+  document.body.style.background = "transparent";
+  document.documentElement.style.background = "transparent";
+  document.getElementById("root")?.style.setProperty("background", "transparent", "important");
   document.body.classList.add("transparent-window");
   document.documentElement.classList.add("transparent-window");
 }

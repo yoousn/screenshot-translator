@@ -337,8 +337,8 @@ export function useScreenshotActions({
     const segments = [...recordingSegmentsRef.current];
     invoke("cancel_recording_process").catch(() => {});
     if (segments.length > 0) invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
-    resetScreenshotState();
     await invoke("force_close_screenshots").catch(() => {});
+    resetScreenshotState();
   };
 
   const confirmScreenshot = async (action: "copy" | "save" | "both") => {
@@ -387,8 +387,8 @@ export function useScreenshotActions({
         logScreenshotPerf(`save-as total=${Math.round(performance.now() - actionStartedAt)}ms choose=${chooseMs}ms output=${outputMs}ms write=${writeMs}ms path=${savedPath}`);
         await emit("screenshot-captured", base64);
         message.destroy();
-        resetScreenshotState();
         await invoke("cancel_screenshot", { label: screenshotWindow?.label || getCurrentWindow().label, restoreMain: false });
+        resetScreenshotState();
         logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt);
         return;
       }
@@ -399,8 +399,8 @@ export function useScreenshotActions({
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
       }
       message.destroy();
-      resetScreenshotState();
       await invoke("cancel_screenshot", { label: getCurrentWindow().label });
+      resetScreenshotState();
 
     } catch (e: any) {
       if (action === "save") {

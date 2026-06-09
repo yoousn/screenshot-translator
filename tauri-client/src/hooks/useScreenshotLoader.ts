@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "antd";
@@ -44,6 +44,8 @@ interface UseScreenshotLoaderProps {
   clearScrollCaptureState: () => void;
   clearRecordingState: () => void;
   resetAnnotations: () => void;
+  rectRef: React.MutableRefObject<Rect>;
+  hasSelectedRef: React.MutableRefObject<boolean>;
   setCurrentRect: (next: Rect, syncState?: boolean) => void;
   setSelection: (selected: boolean) => void;
   setHasSelected: (selected: boolean) => void;
@@ -67,10 +69,25 @@ interface UseScreenshotLoaderProps {
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
 type ScreenshotImageSource = HTMLImageElement | HTMLCanvasElement;
+type WebViewSharedBufferEvent = {
+  getBuffer: () => ArrayBuffer;
+  additionalData?: Record<string, unknown>;
+};
+type WebViewSharedBufferHost = {
+  addEventListener: (type: "sharedbufferreceived", handler: (event: WebViewSharedBufferEvent) => void) => void;
+  removeEventListener: (type: "sharedbufferreceived", handler: (event: WebViewSharedBufferEvent) => void) => void;
+  releaseBuffer?: (buffer: ArrayBuffer) => void;
+};
+type PendingSharedBuffer = { buffer: ArrayBuffer; receivedAt: number };
+type SharedBufferReceiver = {
+  promise: Promise<ArrayBuffer | undefined>;
+  cancel: () => void;
+  release: (buffer: ArrayBuffer) => void;
+  source: "pending" | "waiter";
+};
 
 const getScreenshotImageWidth = (image: ScreenshotImageSource) => image instanceof HTMLImageElement ? image.naturalWidth : image.width;
 const getScreenshotImageHeight = (image: ScreenshotImageSource) => image instanceof HTMLImageElement ? image.naturalHeight : image.height;
-const waitForAnimationFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 export function useScreenshotLoader({
   screenshotModeRef,
@@ -81,6 +98,8 @@ export function useScreenshotLoader({
   clearScrollCaptureState,
   clearRecordingState,
   resetAnnotations,
+  rectRef,
+  hasSelectedRef,
   setCurrentRect,
   setSelection,
   setHasSelected,
@@ -116,6 +135,9 @@ export function useScreenshotLoader({
   const overlayVisibleRef = useRef(false);
   const nativeOverlayVisibleRef = useRef(false);
   const frontendSessionStartedAtRef = useRef<number>(0);
+  const sharedBufferHostRef = useRef<WebViewSharedBufferHost | null>(null);
+  const pendingSharedBuffersRef = useRef<Map<string, PendingSharedBuffer>>(new Map());
+  const sharedBufferWaitersRef = useRef<Map<string, (buffer: ArrayBuffer | undefined) => void>>(new Map());
 
   const reportOverlayFailure = (reason: string) => {
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: reason });
@@ -133,6 +155,9 @@ export function useScreenshotLoader({
     clearPendingConfirm();
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
+    const preserveShellSelection = preserveVisibleShell && (
+      hasSelectedRef.current || rectRef.current.w > 0 || rectRef.current.h > 0
+    );
     displayedSessionIdRef.current = remoteSessionId == null ? null : String(remoteSessionId);
     displayedPhysicalBoundsRef.current = physicalBounds ?? null;
     frontendSessionStartedAtRef.current = performance.now();
@@ -167,8 +192,10 @@ export function useScreenshotLoader({
       nativeOverlayVisibleRef.current = false;
     }
 
-    setCurrentRect(EMPTY_RECT, true);
-    setSelection(false);
+    if (!preserveShellSelection) {
+      setCurrentRect(EMPTY_RECT, true);
+      setSelection(false);
+    }
     setScreenshotMode(mode);
     screenshotModeRef.current = mode;
     setScreenshotState("initializing");
@@ -196,8 +223,8 @@ export function useScreenshotLoader({
 
   const cancelScreenshot = async (reason?: string) => {
     if (reason) reportOverlayFailure(reason);
-    resetScreenshotState();
     await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
+    resetScreenshotState();
   };
 
   const captureAnalysisImageData = (img: ScreenshotImageSource, sessionId: number, remoteSessionId?: string | number) => {
@@ -220,6 +247,68 @@ export function useScreenshotLoader({
     }, 0);
   };
 
+  const recoverPreShowDrag = async (sessionKey: string | number, sessionId: number) => {
+    let loggedStart = false;
+    const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+    const clampToViewport = (value: number, max: number) => Math.max(0, Math.min(max, value));
+    const applyPreShowRect = (preCapture: any, finalize: boolean) => {
+      const maxW = Math.max(1, window.innerWidth);
+      const maxH = Math.max(1, window.innerHeight);
+      const startX = clampToViewport(Math.round(Number(preCapture.x) || 0), maxW - 1);
+      const startY = clampToViewport(Math.round(Number(preCapture.y) || 0), maxH - 1);
+      const currentX = clampToViewport(Math.round(Number(preCapture.currentX) || startX), maxW - 1);
+      const currentY = clampToViewport(Math.round(Number(preCapture.currentY) || startY), maxH - 1);
+      const next = {
+        x: Math.min(startX, currentX),
+        y: Math.min(startY, currentY),
+        w: Math.abs(currentX - startX),
+        h: Math.abs(currentY - startY),
+      };
+      setCurrentRect(next, true);
+      draw(next.x, next.y, next.w, next.h);
+      const valid = next.w > 5 && next.h > 5;
+      setSelection(finalize && valid);
+      return { next, valid };
+    };
+
+    for (let index = 0; index < 48; index += 1) {
+      if (sessionId !== captureIdRef.current) return;
+      if (!overlayVisibleRef.current) return;
+      if (!loggedStart && (hasSelectedRef.current || rectRef.current.w > 5 || rectRef.current.h > 5)) return;
+      const pointerState = await invoke<any>("get_screenshot_pointer_state", { label: getCurrentWindow().label, sessionId: String(sessionKey) }).catch(() => null);
+      const preCapture = pointerState?.preCapture;
+      if (!preCapture || preCapture.available !== true || String(preCapture.sessionId) !== String(sessionKey)) return;
+      const dragDistance = Number(preCapture.dragDistance) || 0;
+      const leftDown = preCapture.leftDown === true;
+      const completed = preCapture.completed === true;
+      if (dragDistance < 3 && leftDown) {
+        await wait(16);
+        continue;
+      }
+      if (dragDistance < 3 && !completed) return;
+      const { next, valid } = applyPreShowRect(preCapture, !leftDown);
+      if (!loggedStart) {
+        loggedStart = true;
+        logScreenshotBaseline(
+          sessionKey,
+          "pre_show_drag_recovered",
+          performance.now() - frontendSessionStartedAtRef.current,
+          `left_down=${leftDown} completed=${completed} drag=${Math.round(dragDistance)} rect=${Math.round(next.x)},${Math.round(next.y)},${Math.round(next.w)},${Math.round(next.h)}`
+        );
+      }
+      if (!leftDown) {
+        logScreenshotBaseline(
+          sessionKey,
+          "pre_show_drag_finalized",
+          performance.now() - frontendSessionStartedAtRef.current,
+          `valid=${valid} drag=${Math.round(dragDistance)}`
+        );
+        return;
+      }
+      await wait(16);
+    }
+  };
+
   const initCanvas = (img: ScreenshotImageSource, sessionId?: number, remoteSessionId?: string | number) => {
     const width = Math.max(1, window.innerWidth);
     const height = Math.max(1, window.innerHeight);
@@ -235,9 +324,14 @@ export function useScreenshotLoader({
     }
     maskedCanvasRef.current = offscreen;
     if (sessionId) logScreenshotBaseline(remoteSessionId || sessionId, "mask_canvas_ready", performance.now() - frontendSessionStartedAtRef.current, `width=${width} height=${height}`);
-    setCurrentRect(EMPTY_RECT, true);
-    setSelection(false);
-    draw(0, 0, 0, 0);
+    const preservedRect = rectRef.current;
+    if (!hasSelectedRef.current && preservedRect.w <= 0 && preservedRect.h <= 0) {
+      setCurrentRect(EMPTY_RECT, true);
+      setSelection(false);
+      draw(0, 0, 0, 0);
+      return;
+    }
+    draw(preservedRect.x, preservedRect.y, preservedRect.w, preservedRect.h);
   };
   const completeImageLoad = (img: ScreenshotImageSource, sessionId: number, bytes: number | undefined, remoteSessionId?: string | number) => {
     if (sessionId !== captureIdRef.current) return;
@@ -253,6 +347,7 @@ export function useScreenshotLoader({
     });
     const wasNativeOverlayVisible = nativeOverlayVisibleRef.current;
     logScreenshotPerf(`frontend image ready bytes=${bytes || 0}`);
+    logScreenshotBaseline(remoteSessionId || sessionId, "image_ready", performance.now() - frontendSessionStartedAtRef.current, `bytes=${bytes || 0}`);
 
     const canvas = document.querySelector("canvas");
     if (canvas) {
@@ -270,50 +365,55 @@ export function useScreenshotLoader({
     setOverlayVisible(true);
 
     requestAnimationFrame(() => {
-      if (sessionId !== captureIdRef.current || imageRef.current === null || maskedCanvasRef.current === null) {
-        logScreenshotBaseline(remoteSessionId || sessionId, "first_paint_guard_blocked", performance.now() - frontendSessionStartedAtRef.current);
-        return;
-      }
-      logScreenshotBaseline(remoteSessionId || sessionId, "first_paint", performance.now() - frontendSessionStartedAtRef.current);
-      logNativeScreenshotDiagnostics(remoteSessionId || sessionId, "native_diagnostics_status", performance.now() - frontendSessionStartedAtRef.current);
-      void (async () => {
-        if (sessionId !== captureIdRef.current) return;
-        if (!wasNativeOverlayVisible) {
-          try {
-            logScreenshotBaseline(remoteSessionId || sessionId, "pre_show_candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
-            await loadWindowRects(true);
-            logScreenshotBaseline(remoteSessionId || sessionId, "pre_show_candidate_first_batch", performance.now() - frontendSessionStartedAtRef.current);
-            draw(0, 0, 0, 0);
-            await waitForAnimationFrame();
-            logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_called", performance.now() - frontendSessionStartedAtRef.current);
-            await invoke("overlay_ready_to_show", { label: getCurrentWindow().label, sessionId: String(remoteSessionId || sessionId) });
-            nativeOverlayVisibleRef.current = true;
-            logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_returned", performance.now() - frontendSessionStartedAtRef.current);
-          } catch (error: any) {
-            throw new Error(error?.message || String(error));
-          }
-        } else {
-          logScreenshotBaseline(remoteSessionId || sessionId, "overlay_already_visible", performance.now() - frontendSessionStartedAtRef.current);
+      window.setTimeout(() => {
+        if (sessionId !== captureIdRef.current || imageRef.current === null || maskedCanvasRef.current === null) {
+          logScreenshotBaseline(remoteSessionId || sessionId, "first_paint_guard_blocked", performance.now() - frontendSessionStartedAtRef.current);
+          return;
         }
-        const focusCanvas = () => {
-          const canvasEl = document.querySelector("canvas");
-          if (canvasEl) canvasEl.focus({ preventScroll: true });
-        };
-        focusCanvas();
-        window.setTimeout(focusCanvas, 60);
-        captureAnalysisImageData(img, sessionId, remoteSessionId);
-        window.setTimeout(() => {
-          if (sessionId === captureIdRef.current) {
-            logScreenshotBaseline(remoteSessionId || sessionId, "candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
-            loadWindowRects(true).then(() => {
-              logScreenshotBaseline(remoteSessionId || sessionId, "candidate_first_batch", performance.now() - frontendSessionStartedAtRef.current);
-            }).catch(() => {});
+        logScreenshotBaseline(remoteSessionId || sessionId, "first_paint", performance.now() - frontendSessionStartedAtRef.current, "gate=post-paint-task");
+        void (async () => {
+          if (sessionId !== captureIdRef.current) return;
+          if (!wasNativeOverlayVisible) {
+            try {
+              logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_called", performance.now() - frontendSessionStartedAtRef.current);
+              await invoke("overlay_ready_to_show", { label: getCurrentWindow().label, sessionId: String(remoteSessionId || sessionId) });
+              nativeOverlayVisibleRef.current = true;
+              logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_returned", performance.now() - frontendSessionStartedAtRef.current);
+              void recoverPreShowDrag(remoteSessionId || sessionId, sessionId);
+              window.setTimeout(() => {
+                logNativeScreenshotDiagnostics(remoteSessionId || sessionId, "native_diagnostics_status", performance.now() - frontendSessionStartedAtRef.current);
+              }, 120);
+            } catch (error: any) {
+              throw new Error(error?.message || String(error));
+            }
+          } else {
+            logScreenshotBaseline(remoteSessionId || sessionId, "overlay_already_visible", performance.now() - frontendSessionStartedAtRef.current);
+            void recoverPreShowDrag(remoteSessionId || sessionId, sessionId);
+            window.setTimeout(() => {
+              logNativeScreenshotDiagnostics(remoteSessionId || sessionId, "native_diagnostics_status", performance.now() - frontendSessionStartedAtRef.current);
+            }, 120);
           }
-        }, 48);
-      })().catch((error) => {
-        if (sessionId !== captureIdRef.current) return;
-        cancelScreenshot(error?.message || "Screenshot overlay failed");
-      });
+          const focusCanvas = () => {
+            const canvasEl = document.querySelector("canvas");
+            if (canvasEl) canvasEl.focus({ preventScroll: true });
+          };
+          focusCanvas();
+          window.setTimeout(focusCanvas, 60);
+          captureAnalysisImageData(img, sessionId, remoteSessionId);
+          window.setTimeout(() => {
+            if (sessionId === captureIdRef.current) {
+              logScreenshotBaseline(remoteSessionId || sessionId, "candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
+              loadWindowRects(true).then(() => {
+                logScreenshotBaseline(remoteSessionId || sessionId, "candidate_first_batch", performance.now() - frontendSessionStartedAtRef.current);
+                draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
+              }).catch(() => {});
+            }
+          }, 48);
+        })().catch((error) => {
+          if (sessionId !== captureIdRef.current) return;
+          cancelScreenshot(error?.message || "Screenshot overlay failed");
+        });
+      }, 0);
     });
   };
 
@@ -398,6 +498,167 @@ export function useScreenshotLoader({
     return typeof raw;
   };
 
+  const getWebViewSharedBufferHost = (): WebViewSharedBufferHost | null => {
+    const host = (window as any)?.chrome?.webview;
+    if (!host || typeof host.addEventListener !== "function" || typeof host.removeEventListener !== "function") {
+      return null;
+    }
+    return host as WebViewSharedBufferHost;
+  };
+
+  const getSharedBufferSessionId = (event: WebViewSharedBufferEvent) => {
+    const data = event.additionalData || {};
+    const rawSessionId = data.session_id ?? data.sessionId;
+    return rawSessionId == null ? "" : String(rawSessionId);
+  };
+
+  const getSharedBufferTransferType = (event: WebViewSharedBufferEvent) => {
+    const data = event.additionalData || {};
+    const rawTransferType = data.transfer_type ?? data.transferType;
+    return rawTransferType == null ? "" : String(rawTransferType);
+  };
+
+  const releaseWebViewSharedBuffer = (buffer: ArrayBuffer) => {
+    try {
+      (sharedBufferHostRef.current || getWebViewSharedBufferHost())?.releaseBuffer?.(buffer);
+    } catch {
+      // SharedBuffer release is best-effort; the fallback path remains valid.
+    }
+  };
+
+  const prunePendingSharedBuffers = (preserveSessionId?: string) => {
+    const entries = Array.from(pendingSharedBuffersRef.current.entries());
+    const staleBefore = performance.now() - 5000;
+    for (const [sessionId, pending] of entries) {
+      if (preserveSessionId && sessionId === preserveSessionId) continue;
+      if (pending.receivedAt < staleBefore || entries.length > 6) {
+        pendingSharedBuffersRef.current.delete(sessionId);
+        releaseWebViewSharedBuffer(pending.buffer);
+      }
+    }
+  };
+
+  const clearPendingSharedBuffers = () => {
+    for (const pending of pendingSharedBuffersRef.current.values()) {
+      releaseWebViewSharedBuffer(pending.buffer);
+    }
+    pendingSharedBuffersRef.current.clear();
+    for (const resolve of sharedBufferWaitersRef.current.values()) {
+      resolve(undefined);
+    }
+    sharedBufferWaitersRef.current.clear();
+  };
+
+  useEffect(() => {
+    const host = getWebViewSharedBufferHost();
+    sharedBufferHostRef.current = host;
+    if (!host) return;
+
+    const handleSharedBufferReceived = (event: WebViewSharedBufferEvent) => {
+      if (getSharedBufferTransferType(event) !== "screenshot") return;
+      const sessionId = getSharedBufferSessionId(event);
+      if (!sessionId) return;
+
+      let buffer: ArrayBuffer | undefined;
+      try {
+        buffer = event.getBuffer();
+      } catch {
+        logScreenshotBaseline(sessionId, "shared_buffer_direct_get_failed", performance.now() - (frontendSessionStartedAtRef.current || performance.now()));
+        return;
+      }
+
+      const waiter = sharedBufferWaitersRef.current.get(sessionId);
+      if (waiter) {
+        sharedBufferWaitersRef.current.delete(sessionId);
+        waiter(buffer);
+        return;
+      }
+
+      const previous = pendingSharedBuffersRef.current.get(sessionId);
+      if (previous) {
+        releaseWebViewSharedBuffer(previous.buffer);
+      }
+      pendingSharedBuffersRef.current.set(sessionId, { buffer, receivedAt: performance.now() });
+      logScreenshotBaseline(sessionId, "shared_buffer_direct_pending", 0, `bytes=${buffer.byteLength}`);
+      prunePendingSharedBuffers(sessionId);
+    };
+
+    host.addEventListener("sharedbufferreceived", handleSharedBufferReceived);
+    return () => {
+      host.removeEventListener("sharedbufferreceived", handleSharedBufferReceived);
+      clearPendingSharedBuffers();
+      sharedBufferHostRef.current = null;
+    };
+  }, []);
+
+  const createScreenshotSharedBufferReceiver = (expectedSessionId: string | number, timeoutMs = 3000): SharedBufferReceiver | null => {
+    const host = getWebViewSharedBufferHost();
+    if (!host) {
+      return null;
+    }
+
+    const sessionId = String(expectedSessionId);
+    const pending = pendingSharedBuffersRef.current.get(sessionId);
+    if (pending) {
+      pendingSharedBuffersRef.current.delete(sessionId);
+      return {
+        promise: Promise.resolve(pending.buffer),
+        cancel: () => {},
+        release: releaseWebViewSharedBuffer,
+        source: "pending",
+      };
+    }
+
+    let settled = false;
+    let timeoutId: number | null = null;
+    const cleanup = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      sharedBufferWaitersRef.current.delete(sessionId);
+    };
+
+    let resolveReceiver: (buffer: ArrayBuffer | undefined) => void = () => {};
+    const promise = new Promise<ArrayBuffer | undefined>((resolve) => {
+      resolveReceiver = resolve;
+      const finish = (buffer?: ArrayBuffer) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(buffer);
+      };
+      sharedBufferWaitersRef.current.set(sessionId, finish);
+      timeoutId = window.setTimeout(() => finish(undefined), timeoutMs);
+    });
+
+    return {
+      promise,
+      cancel: () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolveReceiver(undefined);
+      },
+      release: releaseWebViewSharedBuffer,
+      source: "waiter",
+    };
+  };
+
+  const getSharedBufferImageInfo = (buffer: ArrayBuffer, fallbackWidth: number, fallbackHeight: number) => {
+    if (buffer.byteLength >= 8) {
+      const imageBytes = buffer.byteLength - 8;
+      const dataView = new DataView(buffer, imageBytes, 8);
+      const width = dataView.getUint32(0, true);
+      const height = dataView.getUint32(4, true);
+      const expected = width * height * 4;
+      if (width > 0 && height > 0 && expected > 0 && expected <= imageBytes) {
+        return { width, height, imageBytes };
+      }
+    }
+    return { width: fallbackWidth, height: fallbackHeight, imageBytes: fallbackWidth * fallbackHeight * 4 };
+  };
+
   const loadImageFromBytes = (raw: unknown, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
     if (sessionId !== captureIdRef.current) return false;
     const data = normalizeScreenshotBytes(raw);
@@ -433,8 +694,87 @@ export function useScreenshotLoader({
     return true;
   };
 
+  const tryLoadFullscreenFromSharedBuffer = async (
+    width: number,
+    height: number,
+    sessionId: number,
+    remoteSessionId?: string | number,
+  ) => {
+    if (remoteSessionId == null) {
+      logScreenshotBaseline(sessionId, "shared_buffer_skipped", performance.now() - frontendSessionStartedAtRef.current, "reason=missing_remote_session_id");
+      return false;
+    }
+
+    const directReceiver = createScreenshotSharedBufferReceiver(remoteSessionId, 24);
+    if (!directReceiver) {
+      logScreenshotBaseline(remoteSessionId, "shared_buffer_skipped", performance.now() - frontendSessionStartedAtRef.current, "reason=window_chrome_webview_unavailable");
+      return false;
+    }
+
+    const directBuffer = await directReceiver.promise;
+    if (sessionId !== captureIdRef.current) return false;
+    if (directBuffer) {
+      try {
+        const info = getSharedBufferImageInfo(directBuffer, width, height);
+        logScreenshotBaseline(remoteSessionId, "shared_buffer_received", performance.now() - frontendSessionStartedAtRef.current, `source=direct bytes=${directBuffer.byteLength} image_bytes=${info.imageBytes} size=${info.width}x${info.height}`);
+        return loadImageFromRgbaBytes(directBuffer, info.width, info.height, sessionId, info.imageBytes, remoteSessionId);
+      } finally {
+        directReceiver.release(directBuffer);
+      }
+    }
+    directReceiver.cancel();
+    logScreenshotBaseline(remoteSessionId, "shared_buffer_direct_wait_miss", performance.now() - frontendSessionStartedAtRef.current);
+    if (sessionId !== captureIdRef.current) return false;
+
+    const receiver = createScreenshotSharedBufferReceiver(remoteSessionId);
+    if (!receiver) {
+      logScreenshotBaseline(remoteSessionId, "shared_buffer_skipped", performance.now() - frontendSessionStartedAtRef.current, "reason=window_chrome_webview_unavailable_after_direct_wait");
+      return false;
+    }
+
+    if (receiver.source !== "pending") {
+      try {
+        const postStartedAt = performance.now();
+        const postResult = await invoke<any>("post_fullscreen_rgba_shared_buffer", { sessionId: String(remoteSessionId) });
+        logScreenshotBaseline(
+          remoteSessionId,
+          "shared_buffer_post_returned",
+          performance.now() - frontendSessionStartedAtRef.current,
+          `post_ms=${Math.round(performance.now() - postStartedAt)} posted=${postResult?.posted === true} bytes=${postResult?.bytes || 0}`
+        );
+        if (postResult?.posted !== true) {
+          receiver.cancel();
+          return false;
+        }
+      } catch (error: any) {
+        receiver.cancel();
+        logScreenshotBaseline(remoteSessionId, "shared_buffer_invoke_failed", performance.now() - frontendSessionStartedAtRef.current, `reason=${error?.message || String(error)}`);
+        return false;
+      }
+    }
+
+    const buffer = await receiver.promise;
+    if (sessionId !== captureIdRef.current) {
+      if (buffer) receiver.release(buffer);
+      return false;
+    }
+    if (!buffer) {
+      logScreenshotBaseline(remoteSessionId, "shared_buffer_receive_timeout", performance.now() - frontendSessionStartedAtRef.current);
+      return false;
+    }
+
+    try {
+      const info = getSharedBufferImageInfo(buffer, width, height);
+      logScreenshotBaseline(remoteSessionId, "shared_buffer_received", performance.now() - frontendSessionStartedAtRef.current, `source=${receiver.source === "pending" ? "late-direct" : "requested"} bytes=${buffer.byteLength} image_bytes=${info.imageBytes} size=${info.width}x${info.height}`);
+      return loadImageFromRgbaBytes(buffer, info.width, info.height, sessionId, info.imageBytes, remoteSessionId);
+    } finally {
+      receiver.release(buffer);
+    }
+  };
+
   const loadFullscreenFromRgba = async (width: number, height: number, mode = "normal", remoteSessionId?: string | number, bytes?: number, physicalBounds?: ScreenshotPhysicalBounds | null) => {
     const sessionId = startNewCaptureSession(mode, remoteSessionId, overlayVisibleRef.current, physicalBounds);
+    if (await tryLoadFullscreenFromSharedBuffer(width, height, sessionId, remoteSessionId)) return;
     try {
       const rawStartedAt = performance.now();
       const raw = await invoke<unknown>("get_fullscreen_rgba_bytes", { sessionId: remoteSessionId == null ? null : String(remoteSessionId) });
@@ -501,6 +841,7 @@ export function useScreenshotLoader({
   };
 
   function resetScreenshotState() {
+    captureIdRef.current += 1;
     clearPendingConfirm();
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
@@ -535,9 +876,11 @@ export function useScreenshotLoader({
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
     imageRef.current = null;
     translatedImgRef.current = null;
+    maskedCanvasRef.current = null;
     analysisImageDataRef.current = null;
     displayedSessionIdRef.current = null;
     displayedPhysicalBoundsRef.current = null;
+    clearPendingSharedBuffers();
   }
 
   return {

@@ -110,6 +110,50 @@
 - OCR 结果窗口的主按钮应为“复制并关闭”。
 - 截图、OCR、翻译失败时要有明确错误和恢复路径。
 
+#### P1 当前截图架构优先级（2026-06-10）
+
+当前截图主流程的下一阶段路线调整为 **Native First Frame Screenshot Session**，目标不再只是“WebView 更早显示”或“低级 hook 记录鼠标后恢复”，而是把截图启动首阶段整体搬到 Rust/Win32 原生快速路径：
+
+- 第一帧：Native 负责。
+- 后续 UI：WebView 负责。
+- 第一优先级：native input overlay + native first frame。
+- 第二优先级：low-level mouse hook 兜底最早几十毫秒输入。
+- 第三优先级：WebView 后置接管复杂 UI。
+
+目标链路：
+
+```text
+Alt+A
+  ↓
+Rust/Win32 立即接管
+  ↓
+原生截图 + 原生遮罩 + 原生窗口识别 + 原生鼠标输入
+  ↓
+用户立刻可拖
+  ↓
+WebView 后面再接管工具栏、OCR、翻译、编辑
+```
+
+最终推荐架构：
+
+- 常驻预热 hidden native overlay HWND。
+- 预初始化 D3D/Direct2D/GDI 绘制资源。
+- 预初始化截图 backend。
+- 预初始化窗口枚举/候选框服务。
+- WebView 截图页保持隐藏预热。
+- `Alt+A` 触发后，Rust 收到全局热键，立即进入 native screenshot session。
+- native session 立即捕获屏幕、枚举窗口/控件候选区域，并由原生 overlay 绘制截图画面、半透明遮罩、鼠标下窗口候选框。
+- native overlay 直接处理 `WM_LBUTTONDOWN`、`WM_MOUSEMOVE`、`WM_LBUTTONUP`、`ESC`。
+- WebView 后台 ready 后只接管工具栏、OCR、翻译、编辑按钮、复制/保存。
+
+验收目标：
+
+- P95 `hotkey -> 鼠标可拖`：`<= 50ms`。
+- P95 `hotkey -> 遮罩首帧出现`：`<= 60ms`。
+- P95 `hotkey -> 窗口候选框出现`：`<= 60ms`。
+- P95 `hotkey -> WebView 工具栏 ready`：`<= 120ms`。
+- 体感目标是 `Alt+A -> 画面冻结/遮罩出现/马上能拖`，不是 `Alt+A -> 等 WebView -> 闪一下 -> 再遮罩 -> 再能拖`。
+
 ### P2：Snow Shot 风格录制闭环
 
 - `Alt+A` 框选后点击录制，退出普通截图工具栏，只保留蓝色区域框和底部控制条。

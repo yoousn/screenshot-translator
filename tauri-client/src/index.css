@@ -109,9 +109,10 @@ html, body, #root {
 }
 
 .screenshot-root.shell {
-  opacity: 0;
-  pointer-events: none;
+  opacity: 1;
+  pointer-events: auto;
   background: transparent;
+  cursor: crosshair;
 }
 
 .screenshot-root.ready {

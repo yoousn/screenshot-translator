@@ -2,7 +2,7 @@
 
 > This file is the single execution-history document for the project. It is intentionally optimized for fast resume: keep the current status and recent implementation chapters detailed, and keep older history as a compact ledger inside this same file instead of scattering archive docs.
 
-## Current Resume Snapshot - 2026-06-09
+## Current Resume Snapshot - 2026-06-10
 
 ### Product State
 - C/E selected-output technical acceptance is complete as of Chapter 250: Overall 100%, Plan C 100%, Plan E 100%.
@@ -12,33 +12,57 @@
 - Chapter 253 changed the default screenshot helper show path to Windows no-activate presentation and removed the frontend first-frame `setFocus()` call. `build.bat` now auto-launches the portable exe after a successful ordinary build, while `pack_release.ps1 -Build` passes `--no-launch`.
 - Chapter 254 release-level `Alt+A` check found and fixed the no-activate `Esc` cancellation gap by registering a temporary global Escape shortcut only while screenshot capture is active.
 - Chapter 255 researched the `Alt+A` sub-50ms target. The next speed slice should measure and optimize `hotkey -> visible/interactable shell` separately from `hotkey -> real RGBA image ready` and `hotkey -> detailed window candidates ready`.
-- Normal users still keep transparent screenshot windows by default; automation/diagnostic behavior remains guarded by explicit env flags.
+- Chapters 256-261 tested the early shell / opaque deferred / pre-show drag recovery route, then fixed repeated screenshot lifecycle races that could resurrect stale frames after several runs.
+- Chapter 262 tried a native first-frame shield for WebView2 white flash, but Chapter 263 disabled it by default after manual feedback showed black/color-shift artifacts; the shield remains diagnostic only.
+- Chapters 264-265 moved screenshot image delivery to the Snow Shot-style WebView2 SharedBuffer path, then shortened it to direct Rust-to-WebView SharedBuffer push before the frontend asks for pixels.
+- Chapter 266 changed the final default back to a transparent screenshot helper and transparent WebView2 backing, but only after the real screenshot canvas has been painted and a post-paint task has run. It also starts capture before WebView/window prep, caches unchanged fullscreen bounds, and session-filters pre-show pointer recovery.
+- Chapter 267 removed the last default black-background fallback from the earliest HTML/CSS path and made screenshot-window `WDA_EXCLUDEFROMCAPTURE` opt-in. Before the change, ffmpeg desktop recording saw full black frames during screenshots; after the change, the same visual smoke reported `black_frame_count=0` and `white_frame_count=0`.
+- Chapter 268 changed the default again from hidden-until-real-canvas to a transparent input shell before screenshot pixels. The shell is visible/interactable earlier but draws no black/white/gray placeholder; real screenshot pixels still arrive through direct WebView2 SharedBuffer.
+- Chapter 269 is now explicitly planned as **Native First Frame Screenshot Session**. The next implementation target is no longer only a low-level mouse recovery hook; it is a Snow Shot-style native first-frame entry where Rust/Win32 owns the first screenshot frame, native mask, native candidate/window recognition, and native mouse input, while WebView joins later for toolbar, OCR, translation, editing, copy, and save.
+- Normal users now use direct WebView2 SharedBuffer delivery, transparent screenshot helper/WebView backing, transparent input-shell presentation before pixels, post-paint real-image confirmation, no native full-screen shield, and no screenshot-window capture exclusion by default. Rollbacks/diagnostics remain behind explicit env flags.
 
 ### Current Hot Paths
-- `Alt+A` screenshot startup now routes through hidden shell prep -> RGBA payload -> frontend paint/candidate readiness -> `overlay_ready_to_show`.
-- The current default path still waits for real image paint and a pre-show `loadWindowRects(true)` candidate pass before first visible show; that protects first-frame polish but prevents a stable 50ms visible-shell target.
-- The frontend now deduplicates same-session screenshot payloads before starting another image-load session, and RGBA byte payloads accept boxed Tauri response shapes before falling back to PNG/base64.
+- `Alt+A` default screenshot startup now starts native capture first, prepares the screenshot WebView/window in parallel, shows a transparent input shell when the shell has painted, pushes captured RGBA through direct WebView2 SharedBuffer, paints the real screenshot to canvas, then keeps the already-visible overlay on top.
+- The screenshot helper and WebView2 backing are transparent by default. The early shell is allowed to receive mouse input, but its canvas is cleared and it does not draw the dim mask until real screenshot pixels are ready.
+- Rollbacks/diagnostics: `YSN_SCREENSHOT_DEFER_VISIBLE_SHELL=1` or `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=0` restores deferred-show behavior; `YSN_SCREENSHOT_OPAQUE_WINDOW=1` or `YSN_SCREENSHOT_TRANSPARENT_WINDOW=0` forces the opaque helper path; `YSN_NATIVE_FIRST_FRAME_SHIELD=1` enables the diagnostic-only native shield; `YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE=1` opts the screenshot helper back into Windows capture exclusion; request-style SharedBuffer and old IPC/PNG/base64 payloads remain fallbacks.
+- Native pre-show mouse drag recovery records the first left-button drag after `Alt+A` and now filters pointer state by session id before the frontend recovers it.
+- Repeated screenshots reuse unchanged fullscreen helper bounds instead of calling `set_position` / `set_size` every run, reducing later-run window-compositor churn.
+- Frontend shell mode no longer displays a gray layer before screenshot pixels arrive. The default `screenshot-shell` event now presents a transparent input shell only, clears the shell canvas, and defers toolbar/mask UI until `screenshotState === "ready"`.
+- Screenshot close/copy/save/cancel still asks native to hide or cancel before clearing frontend state, so a WebView cannot be left visible with a cleared canvas during repeated runs.
+- The frontend now deduplicates same-session screenshot payloads, preserves the current session SharedBuffer during pruning, and releases stale pending SharedBuffers during reset/unmount.
+- The earliest `index.html` and global `html/body/#root` fallback backgrounds are transparent, so a not-yet-hydrated screenshot WebView no longer has a project-created black fallback surface.
 - `overlay_ready_to_show` now defaults to `ShowWindow(SW_SHOWNOACTIVATE)` plus `SetWindowPos(... SWP_NOACTIVATE ...)` for the screenshot helper, with `YSN_SCREENSHOT_FOCUS_ON_READY=1` as a diagnostic rollback.
 - Because the screenshot helper is now shown without activation, screenshot capture temporarily registers global `Escape` as a cancellation fallback and removes it on cancel/force-close/repeat-hotkey cleanup.
 - WGC/DXGI selected-output diagnostics and copy/save candidates remain guarded and should not become default production behavior without a rollout chapter.
-- Manual QA still needs rebuilt-release validation for first visible frame, hand drag, copy/save/OCR/translate, focus cleanup, Alt-Tab cleanup, multi-monitor, DPI, and scaling.
+- Manual QA is still needed to prove human-visible feel parity with QQ/WeChat/Snow Shot; automated smoke can prove timing/order/stability and no recorded black/white frames, but not every compositor frame seen by the eye.
+- The next intended hot path is `Alt+A -> native screenshot session -> native first frame/mask/candidate/input -> WebView toolbar handoff`, with a low-level/global mouse hook only as the earliest input fallback. The old diagnostic `YSN_NATIVE_FIRST_FRAME_SHIELD` is not the target architecture and must not be re-enabled as the production solution.
 
 ### Latest Validation Snapshot
 - Passed recently: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
 - Passed recently: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
 - Passed recently: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture`.
+- Passed recently: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_shared_buffer -- --nocapture`.
 - Passed recently: `cd tauri-client; npx tsc --noEmit`.
 - Passed recently: `cd tauri-client; npm run build`.
 - Passed recently: `cd tauri-client; npm run check:i18n`.
 - Passed recently: `cd tauri-client; npm run check:ocr-processing`.
-- Passed recently: `cmd /c "build.bat --no-pause"`; it rebuilt the portable output and auto-launched `release\YSN-Screenshot-Translator\YsnTrans.exe`.
-- Passed recently: release-level automated `Alt+A` check against `release\YSN-Screenshot-Translator\YsnTrans.exe`: start screenshot, show-noactivate, RGBA ready, foreground retained, and Esc cancellation confirmed.
 - Passed recently: `git diff --check` with existing LF-to-CRLF warnings only.
+- Passed recently: `cmd /c "build.bat --no-pause"`; it rebuilt the portable output and auto-launched `release\YSN-Screenshot-Translator\YsnTrans.exe`.
+- Passed recently: packaged six-round transparent/post-paint/bounds-cache smoke against `release\YSN-Screenshot-Translator\YsnTrans.exe` showed all rounds used direct SharedBuffer, no `rgba_fetch`, no SharedBuffer timeout, empty stderr, `capture_end` `36-46ms`, `payload_emit` `47-55ms`, `image_ready` `5-8ms`, `first_paint` `7-11ms`, and `overlay_ready_to_show_returned` `20-29ms`.
+- Passed recently: the same six-round smoke showed no third/fourth-run timing climb; rounds 4-6 remained stable with `capture_end` `37-41ms`, `payload_emit` `48-51ms`, and `first_paint` `7ms`.
+- Passed recently: pre-fix visual recording smoke `tmp-runtime-logs\visual-flash-smoke-20260610-034351.mp4` captured black frames while the screenshot helper used Windows capture exclusion, matching `WDA_EXCLUDEFROMCAPTURE` behavior for external capture tools.
+- Passed recently: post-fix visual recording smoke `tmp-runtime-logs\visual-flash-post-exclusion-20260610-035131.mp4` plus `visual-analysis.json` reported `black_frame_count=0`, `white_frame_count=0`, `luma_min=88.54`, `luma_max=161.67`, and `diff_avg=1.15`.
+- Passed recently: post-fix release log `tmp-runtime-logs\visual-flash-post-exclusion-20260610-035101-out.log` showed 4 rounds with `overlay_capture_exclusion excluded=false`, direct SharedBuffer, no `rgba_fetch`, no `shared_buffer_direct_wait_miss`, no native shield, `image_ready` `7-11ms`, `first_paint` `12-15ms`, and `overlay_ready_to_show_returned` `37-71ms`.
+- Passed recently: Chapter 268 transparent-input-shell release smoke `tmp-runtime-logs\transparent-input-shell-smoke-20260610-043120-out.log` showed 4 rounds with `transparent_input_shell=true`, direct SharedBuffer, no `rgba_fetch`, no `shared_buffer_direct_wait_miss`, no timeout/error/panic matches, and empty stderr.
+- Passed recently: Chapter 268 visual recording smoke `tmp-runtime-logs\transparent-input-shell-visual-20260610-043245.mp4` plus `transparent-input-shell-visual-20260610-043245-visual-analysis.json` reported `black_frame_count=0`, `white_frame_count=0`, `high_diff_frame_count=0`, `luma_min=29.22`, `luma_max=68.77`, and `diff_max=23.95`.
 
 ### Next Recommended Chapter
-- Chapter 256: implement a guarded fast-visible-shell experiment for `Alt+A`: show a polished dim/crosshair shell first, keep RGBA image and detailed window candidates asynchronous, and log `hotkey -> shell_show_returned`, `shell_event -> overlay_ready_to_show_returned`, `image_ready`, and `candidate_ready`.
-- OCR/translation should remain a quick regression smoke only, not a development focus, unless manual QA proves the screenshot lifecycle broke them.
-- After the speed slice, rerun manual release QA for no white/black/gray flash, no taskbar helper flash, no focus steal before user interaction, accurate first drag, repeat `Alt+A/Esc`, copy, and Save As.
+- Chapter 269 should implement **Native First Frame Screenshot Session** as the next screenshot architecture chapter.
+- Do not make Chapter 269 a WebView-only timing patch and do not stop at low-level mouse recovery. The goal is native first frame plus native input overlay first, with low-level/global mouse hook as a 0-50ms fallback and WebView as the later complex-UI layer.
+- Chapter 269 target metrics: P95 `hotkey -> 鼠标可拖 <= 50ms`, P95 `hotkey -> 遮罩首帧出现 <= 60ms`, P95 `hotkey -> 窗口候选框出现 <= 60ms`, and P95 `hotkey -> WebView 工具栏 ready <= 120ms`.
+- Chapter 269 must keep the old native GDI first-frame shield disabled by default; the new route must be a real native screenshot session that paints actual screenshot pixels, mask, candidates, and input state rather than a temporary black/gray/opaque cover.
+- OCR/translation should remain a quick regression smoke only, not a development focus, unless the new native session handoff breaks the screenshot lifecycle.
+- For future recording evidence, keep `YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE` unset unless specifically testing Windows capture exclusion; otherwise recording tools can show synthetic black frames that are not the same as human-visible compositor frames.
 
 ## Documentation Maintenance Policy
 
@@ -63,7 +87,7 @@ Older chapters are intentionally summarized here to keep this file fast to open 
 | 193-207 | WGC command contracts and file-size audits | WGC one-frame report commands, screenshot_native audits, and diagnostic request/response contracts were tightened. | Older line-count records here are stale; use latest chapter audits instead. |
 | 208-229 | DXGI/WGC selected-output runway | DXGI acquire timeout evidence, selected-output ranking/readback plans, desktop pulse diagnostics, and guarded live WGC/DXGI experiments prepared the final acceptance path. | Detailed evidence resumes at Chapter 230 and should be used for current decisions. |
 
-## Detailed Current Chapters - 230-251
+## Detailed Current Chapters - 230-269
 
 ## Chapter 230 - Diagnostic Request DTO Split And WGC Real-API Test Guards (2026-06-09)
 
@@ -2051,3 +2075,1296 @@ Older chapters are intentionally summarized here to keep this file fast to open 
   - keep RGBA image fill and detailed candidates asynchronous;
   - block or await image-dependent actions until image readiness;
   - log the new speed markers and then rebuild for release QA.
+
+## Chapter 256 - Guarded Fast Visible Shell Experiment (2026-06-09)
+
+> Chapter status: completed for the frontend fast-visible-shell experiment and local quality gates. This chapter does not claim the product has reached a stable 50ms release target because the guarded dev auto-smoke could not capture screenshot baseline logs while an existing release `YsnTrans.exe` was already running.
+
+### Goals
+- Turn the existing `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=1` Rust guard into a real frontend experiment instead of showing an invisible/non-interactive shell.
+- Remove detailed window candidate loading from the first visible show blocker.
+- Keep copy, save, OCR, translate, pin, and selected-image output safe when the user drags before RGBA image readiness.
+- Preserve early shell selections when the RGBA screenshot payload arrives.
+
+### External Findings
+- No new online research was needed for this implementation chapter. Chapter 255 already recorded the relevant Microsoft, Tauri, WebView2, and Snow Shot findings; this chapter applied that approved local design to the current code.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/index.css`
+  - Changes `.screenshot-root.shell` from fully transparent/non-interactive to an intentional dim crosshair shell.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Adds `imageReadyRef` and computes `canInteractWithOverlay` so early-visible shell can accept pointer interaction while the default hidden path stays non-interactive until show.
+  - Stores shell session and physical bounds from the `screenshot-shell` event before RGBA arrives.
+  - Defers shell candidate loading by 32ms and keeps it asynchronous.
+  - Hides toolbars until `screenshotState === "ready"` so shell-only selection does not expose image-dependent buttons.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Preserves user selection/drag geometry across the transition from shell-only to RGBA-ready.
+  - Logs `image_ready`.
+  - Removes `loadWindowRects(true)` from the pre-show blocking path.
+  - Redraws after async candidate readiness without clearing the preserved selection.
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+  - Adds `first_pointer_down` baseline logging.
+  - Queues image-dependent keyboard/double-click actions until `imageReadyRef` becomes true, with pending/resumed/timeout logs.
+  - Fixes the crowded `Ctrl+Alt+W` / `Ctrl+D` branch formatting while preserving behavior.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 256 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not enable early-visible shell by default for all users; it remains guarded by `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=1`.
+- Did not change Rust capture backend, WGC/DXGI default routing, OCR runtime, translation provider, recording, or packaging behavior.
+- Did not claim final QQ/WeChat/PixPin-grade startup parity without release/manual QA and a visible-frame recording.
+- Did not kill the already-running release `YsnTrans.exe` during dev smoke, to avoid interrupting the user's active app state.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Attempted: guarded `tauri dev` auto-start smoke with `YSN_SCREENSHOT_AUTO_START_SMOKE=1` and `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=1`. It reached `target\debug\YsnTrans.exe`, but no screenshot baseline logs were captured. Current machine still had `release\YSN-Screenshot-Translator\YsnTrans.exe` running, so this smoke remains inconclusive.
+
+### Known Risks
+- The fast-visible shell still needs a rebuilt-release human-visible QA pass; current validation proves build/type safety, not visual smoothness.
+- If the shell image arrives after a user drag, the preserved selection should survive, but manual testing must verify no jump, lost pointer capture, or toolbar misplacement.
+- Default path is faster because candidate preload no longer blocks `overlay_ready_to_show`, but actual release timing must be measured again.
+- `ScreenshotPage.tsx`, `useScreenshotLoader.ts`, and `useScreenshotInteraction.ts` remain large hot-path files. Further screenshot work should extract focused lifecycle/metrics/action-gate helpers.
+
+### Next Recommended Chapter
+- Chapter 257 should rebuild release and run manual QA on both paths:
+  - default path with no early-visible env;
+  - guarded fast-visible path with `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=1`;
+  - repeat `Alt+A/Esc`, first drag before RGBA readiness, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, and no white/black/gray flash.
+- If the guarded path feels stable and logs confirm a large win, decide whether to keep it as opt-in, expose it as an experimental setting, or graduate it behind a staged default rollout.
+
+## Chapter 257 - Default Fast Shell And Warm WebView Preload (2026-06-09)
+
+> Chapter status: completed for the default fast-shell startup path, automated warm dev/release evidence, and local release rebuild. This chapter proves the release can accept a first drag before RGBA image readiness, but it still needs human-visible QA for subjective flash/smoothness.
+
+### Goals
+- Reduce `Alt+A` perceived latency by showing an intentional dim/crosshair shell before the full RGBA screenshot image is ready.
+- Fix the missed `screenshot-shell` event discovered in dev smoke when the screenshot WebView listener was not ready.
+- Make the normal warm app path closer to Snow Shot: preloaded window/listener first, screenshot image and detailed candidates later.
+- Preserve no-activate/taskbar protections and safe image-action gating.
+
+### External Findings
+- The user-provided Snow Shot repository remains the peer reference for this chapter. Its draw flow prepares/show the capture window and bounding-box layers concurrently with monitor capture, then feeds image data afterward.
+- This chapter applies that pattern locally without copying code: WebView shell readiness and image/candidate readiness are separate stages, and large image transfer remains a future optimization.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Enables fast visible shell by default unless `YSN_SCREENSHOT_DEFER_VISIBLE_SHELL=1` or `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=0` is set.
+  - Changes the shell payload to `nativeVisible=false`, `showOnShellReady=true`, and lets the frontend call `overlay_ready_to_show` after its shell frame is prepared.
+  - Adds a cached latest `screenshot-shell` payload and `get_latest_screenshot_shell_payload` so a late React listener can recover missed shell events.
+  - Adds an offscreen 1x1 no-activate startup prewarm pulse, disabled by `YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW=0`, to mount the screenshot WebView before normal user hotkeys.
+  - Clears cached shell/image payloads on force close and normal cancel paths.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Registers `get_latest_screenshot_shell_payload`.
+  - Adds `YSN_SCREENSHOT_AUTO_START_SMOKE_DELAY_MS` for warm-path screenshot startup smoke tests.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Handles direct and pending shell payloads with duplicate/stale guards.
+  - Marks fast-shell sessions interactable before RGBA readiness so first pointer-down can be accepted immediately after no-activate show.
+  - Calls `overlay_ready_to_show` from the shell path after a frontend paint/short timeout.
+  - Moves shell candidate loading to a later async 96ms pass and logs shell show/candidate timings.
+  - Logs screenshot page mount for startup/prewarm diagnostics.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Preserves shell selection across RGBA arrival and skips image-ready native show when the shell path already made the helper visible.
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+  - Keeps Chapter 256 image-action queueing and first pointer-down logging, now validated against the default release path.
+- `tauri-client/src/index.css`
+  - Keeps the shell state visible/interactable as a deliberate dim/crosshair first frame.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 257 evidence, validation, risks, and next chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Initial dev smoke reproduced the root cause: backend logged `visible_shell_show_delegated`, but the frontend did not receive `screenshot-shell`; it fell back to image-ready show. Adding pending shell payload recovery fixed this failure mode.
+- Warm dev smoke with `YSN_SCREENSHOT_AUTO_START_SMOKE_DELAY_MS=3000` showed the desired order:
+  - `startup offscreen screenshot prewarm shown/hidden`.
+  - `screenshot-page phase=mounted` before the screenshot run.
+  - direct `shell_event_received source=screenshot-shell`.
+  - `visible_shell_show_delegated elapsed_ms=30`.
+  - `shell_ready_to_show_returned elapsed_ms=24`.
+  - `first_pointer_down image_ready=false`.
+  - `capture_end elapsed_ms=248`.
+- Release warm smoke against `release\YSN-Screenshot-Translator\YsnTrans.exe` showed:
+  - `screenshot-page phase=mounted` before the screenshot run.
+  - direct `shell_event_received source=screenshot-shell`.
+  - `visible_shell_show_delegated elapsed_ms=33`.
+  - `shell_ready_to_show_returned elapsed_ms=28`.
+  - `capture_end elapsed_ms=73`.
+  - `first_pointer_down image_ready=false`.
+  - `image_ready elapsed_ms=143` from frontend session start after RGBA fetch/build.
+- The release smoke confirms first drag can be accepted before RGBA image readiness; image-dependent actions still queue and resume after `image_ready`.
+- `cmd /c "build.bat --no-pause"` rebuilt `release\YSN-Screenshot-Translator\YsnTrans.exe` and auto-launched it successfully.
+
+### Explicit Non-Goals
+- Did not implement WebView2 SharedBuffer or native first-frame rendering in this chapter.
+- Did not change OCR, translation, recording, selected-output, or model/runtime strategy.
+- Did not remove the image-ready action gates; copy/save/OCR/translate must still wait for RGBA readiness when the user acts during shell-only state.
+- Did not claim final QQ/WeChat/Snow Shot parity without a human-visible recording/manual QA pass.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: dev warm auto-smoke with delayed auto-start and synthetic first drag.
+- Passed: release warm auto-smoke with delayed auto-start and synthetic first drag.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild and auto-launch.
+
+### Known Risks
+- Automated synthetic drag proves event ordering and pointer acceptance, not subjective visual smoothness. Human QA must still judge flicker/flash and image pop.
+- The startup offscreen prewarm pulse is intentionally no-activate/offscreen, but it is still a window show/hide lifecycle action. Keep `YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW=0` as the rollback.
+- Default fast shell means free selection can start before the screenshot pixels exist. This is now guarded for image actions, but manual testing should verify selection geometry does not jump when RGBA arrives.
+- `screenshot_commands.rs` and `ScreenshotPage.tsx` remain large. Further latency work should extract lifecycle/payload helpers before adding more behavior.
+
+### Next Recommended Chapter
+- Chapter 258 should be a human-visible release QA pass on the rebuilt default path: `Alt+A`, immediate drag, repeat `Alt+A/Esc`, copy, Save As, OCR, translate, taskbar/Alt-Tab behavior, focus restore, and no white/black/gray flash.
+- If the user still sees flashing or delayed image fill, compare a short screen recording against the new logs and then choose between WebView2 SharedBuffer transfer or a thin native first-frame overlay.
+
+## Chapter 258 - Transparent Fast Shell No-Gray-Flash Pass (2026-06-09)
+
+> Chapter status: completed for removing the product-created gray shell flash and rebuilding release. This chapter keeps immediate drag before image readiness, but human-visible QA is still needed for display-driver/WebView compositor black/white flash judgment.
+
+### Goals
+- Respond to manual feedback that the Chapter 257 build still black-screened/flashed and showed a gray overlay before screenshot pixels.
+- Preserve the Chapter 257 win: `Alt+A` should still accept first drag before RGBA image readiness.
+- Remove visible shell/candidate prepaint before the real screenshot image arrives.
+- Reduce Windows WebView2 default-background black/white flash risk at the earliest app initialization point.
+
+### External Findings
+- Microsoft WebView2 documentation says the default WebView background is white unless `DefaultBackgroundColor` is changed; transparent background is supported by the controller background-color API.
+- Microsoft WebView2 controller-options documentation also describes setting initialization properties before WebView creation to avoid white flash during loading. This maps to setting `WEBVIEW2_DEFAULT_BACKGROUND_COLOR` before Tauri creates the screenshot WebView.
+- Snow Shot remains the peer UX target, but this chapter intentionally avoids a visible placeholder shell. The shell is now an invisible interaction capture layer until the real screenshot pixels arrive.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/index.css`
+  - Changes `.screenshot-root.shell` from the Chapter 257 dim layer to `background: transparent`.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Removes shell-stage candidate loading and candidate preview drawing before RGBA readiness.
+  - Keeps shell-stage `overlay_ready_to_show` and immediate pointer acceptance.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Calls `configure_webview2_transparent_background()` before creating the Tauri builder.
+  - Sets `WEBVIEW2_DEFAULT_BACKGROUND_COLOR=00000000` if the user/environment has not already configured it.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Updates the fast-shell unit test to match the current default-on behavior and rollback envs.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 258 evidence, validation, risks, and next chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Release transparent-shell smoke against `release\YSN-Screenshot-Translator\YsnTrans.exe` showed:
+  - `screenshot-page phase=mounted` before the screenshot run.
+  - direct `shell_event_received source=screenshot-shell`.
+  - `visible_shell_show_delegated elapsed_ms=30`.
+  - `shell_ready_to_show_returned elapsed_ms=30`.
+  - `capture_end elapsed_ms=74`.
+  - `first_pointer_down image_ready=false`.
+  - `image_ready elapsed_ms=130`.
+  - no `shell_candidate_load_start` or `shell_candidate_first_batch` before image readiness.
+- This proves the transparent shell still accepts first drag before RGBA readiness while removing the app-created gray shell/candidate prepaint path.
+
+### Explicit Non-Goals
+- Did not implement WebView2 SharedBuffer transfer.
+- Did not implement a native first-frame overlay.
+- Did not change OCR, translation, recording, selected-output, or model/runtime behavior.
+- Did not claim final no-flash acceptance without human-visible QA.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: release transparent-shell warm auto-smoke with delayed auto-start and synthetic first drag.
+
+### Known Risks
+- The app-created gray shell flash is removed, but Windows/WebView2 compositor behavior can still only be finally judged with a human-visible recording.
+- If black/white flash remains after `WEBVIEW2_DEFAULT_BACKGROUND_COLOR=00000000`, the next likely fix is either WebView2 SharedBuffer to make RGBA arrive sooner or a thin native overlay for the first interactive frame.
+- A transparent pre-image shell means the user may see only the existing desktop plus cursor/selection border until RGBA arrives. This is intentional to avoid gray preflash.
+- `screenshot_commands.rs` and `ScreenshotPage.tsx` remain large hot-path files.
+
+### Next Recommended Chapter
+- Chapter 259 should perform human-visible release QA of the rebuilt transparent fast shell: `Alt+A`, immediate drag, repeat `Alt+A/Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, and no white/black/gray flash.
+- If black/white flash remains, continue with a native first-frame overlay or WebView2 SharedBuffer transfer; do not reintroduce a visible gray WebView shell.
+
+## Chapter 259 - Opaque Deferred WebView Default For No-Black-Flash (2026-06-09)
+
+> Chapter status: completed for changing the release default away from early transparent WebView show. This chapter prioritizes eliminating black/flash over preserving the experimental pre-image WebView drag path; immediate-drag parity should continue through a native first-frame overlay or mouse pre-capture chapter, not by showing an empty WebView.
+
+### Goals
+- Respond to continued manual feedback that the transparent early-shell build still black-screened/flashed.
+- Remove the default empty WebView-on-screen path.
+- Make screenshot overlay windows opaque by default because the screenshot canvas covers the whole window after image readiness.
+- Keep fast-shell and transparent-window routes available only as explicit diagnostic opt-ins.
+
+### External Findings
+- The previous WebView2 findings still apply: transparent WebView backgrounds are configurable, but compositor/display-driver behavior can still produce visible black/white frames on some machines.
+- For the current product default, the safer peer-style route is not to show an empty transparent WebView at all. Future zero-latency interaction should use a native first-frame overlay or native mouse pre-capture instead.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Changes `screenshot_early_visible_shell_enabled()` back to opt-in: only `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=1` shows the shell before image readiness.
+  - Changes `screenshot_window_transparency_enabled()` to opt-in: only `YSN_SCREENSHOT_TRANSPARENT_WINDOW=1` keeps the screenshot helper transparent.
+  - Updates screenshot window policy tests for opt-in early shell and opt-in transparent window behavior.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 259 evidence, validation, risks, and next chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Release default smoke against `release\YSN-Screenshot-Translator\YsnTrans.exe` showed:
+  - startup prewarm rebuilt the preconfigured transparent screenshot helper into the default opaque helper.
+  - direct `shell_event_received source=screenshot-shell mode=normal native_visible=false show_on_shell_ready=false`.
+  - `shell_deferred_until_ready elapsed_ms=33`.
+  - `capture_end elapsed_ms=66`.
+  - `rgba_canvas_ready elapsed_ms=127`.
+  - `image_ready elapsed_ms=128`.
+  - `first_paint elapsed_ms=128`.
+  - `overlay_ready_to_show_called elapsed_ms=133`.
+  - no `visible_shell_show_delegated` in the default screenshot run.
+- This proves the default release path no longer shows the empty WebView shell before the screenshot image is ready.
+
+### Explicit Non-Goals
+- Did not implement native first-frame overlay or low-level mouse pre-capture in this chapter.
+- Did not re-enable immediate pre-image WebView dragging by default, because that is the path still causing black/flash on the user's machine.
+- Did not change OCR, translation, recording, selected-output, or model/runtime behavior.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: release default opaque/deferred smoke with delayed auto-start.
+
+### Known Risks
+- This should remove the black/flash source from the normal path, but it likely regresses the Chapter 257 synthetic `first_pointer_down image_ready=false` evidence because the WebView is intentionally hidden until image readiness.
+- If manual QA confirms no flash but still feels too slow, the next path should be native first-frame overlay or native mouse pre-capture, not a visible empty WebView.
+- Opaque WebView helper requires the screenshot canvas to cover the full viewport before show. The current deferred path does this via RGBA canvas ready, mask canvas ready, first paint, then `overlay_ready_to_show`.
+
+### Next Recommended Chapter
+- Chapter 260 should perform human-visible release QA on the opaque/deferred default path: `Alt+A`, repeat `Alt+A/Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, and no white/black/gray flash.
+- If black/flash is fixed, continue with a native first-frame overlay or low-level mouse pre-capture chapter to regain immediate-drag parity without WebView early-show.
+
+## Chapter 260 - No-Flicker Default And Pre-Show Drag Recovery (2026-06-09)
+
+> Chapter status: completed for removing the remaining default startup flicker sources, rebuilding release, and proving that a drag beginning before the WebView becomes visible is recovered into a valid selection. This is not yet a full QQ/WeChat-grade native first-frame renderer: the first visible screenshot frame still waits for RGBA delivery to the WebView, but early user drag input is no longer discarded.
+
+### Goals
+- Respond to continued manual feedback that the rebuilt release still flashed/black-screened and had startup drag delay.
+- Remove the default window lifecycle actions most likely to create black/flash frames: transparent preconfigured helper rebuild, transparent WebView2 background, and offscreen show/hide prewarm.
+- Preserve the no-empty-WebView default from Chapter 259.
+- Recover left-button drag input that starts before the screenshot WebView is visible, so `Alt+A` followed immediately by dragging can still produce a selection.
+- Keep early visible shell and transparent-window experiments opt-in only.
+
+### External Findings
+- Snow Shot remains the peer reference: its screenshot flow separates draw-window creation, monitor capture, and image delivery, and its Windows capture path supports WebView shared-buffer delivery. This reinforces that showing an empty WebView is the wrong default route for no-flicker startup.
+- WebView2 transparent background remains useful only for an explicit transparent-window experiment. For the product default, an opaque hidden helper shown only after real pixels are drawn is the safer route.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/tauri.conf.json`
+  - Changes the preconfigured `screenshot` helper window from transparent to opaque, preventing the default runtime from destroying/rebuilding the preconfigured helper at startup.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Renames the WebView2 background setup to default-background policy and only sets `WEBVIEW2_DEFAULT_BACKGROUND_COLOR=00000000` when `YSN_SCREENSHOT_TRANSPARENT_WINDOW=1`.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Removes the default preconfigured transparent-window rebuild path.
+  - Makes offscreen show/hide WebView prewarm opt-in with `YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW=1`; default startup prewarm is hidden-only.
+  - Adds screenshot pointer pre-capture state that records the first left-button drag after `Alt+A`, including down point, latest point, completion state, and drag distance.
+  - Extends `get_screenshot_pointer_state` with `preCapture` diagnostics for frontend recovery.
+  - Adds policy test coverage for opt-in offscreen prewarm show.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Removes the second pre-show animation-frame wait after first paint.
+  - Moves native diagnostics off the immediate show/recovery path.
+  - Adds `recoverPreShowDrag`, which restores a drag started before the WebView was visible and keeps polling briefly until mouse release.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 260 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Default release smoke against `release\YSN-Screenshot-Translator\YsnTrans.exe` showed:
+  - no `ensure_screenshot_window: rebuilding preconfigured transparent window`;
+  - `startup offscreen screenshot prewarm show disabled; hidden WebView prewarm only`;
+  - `shell_event_received ... native_visible=false show_on_shell_ready=false`;
+  - `shell_deferred_until_ready elapsed_ms=26`;
+  - `capture_end elapsed_ms=73`;
+  - `rgba_canvas_ready elapsed_ms=125`;
+  - `image_ready elapsed_ms=126`;
+  - `first_paint elapsed_ms=126`;
+  - `overlay_ready_to_show_called elapsed_ms=126`;
+  - `overlay_show_result elapsed_ms=12`;
+  - `overlay_ready_to_show_returned elapsed_ms=145`.
+- Pre-show drag release smoke simulated mouse down and drag beginning about 50ms after the auto hotkey:
+  - `capture_end elapsed_ms=64`;
+  - `rgba_canvas_ready elapsed_ms=139`;
+  - `first_paint elapsed_ms=140`;
+  - `overlay_ready_to_show_returned elapsed_ms=154`;
+  - `pre_show_drag_recovered elapsed_ms=187 left_down=true completed=false drag=154 rect=548,445,129,84`;
+  - `pre_show_drag_finalized elapsed_ms=550 valid=true drag=373`;
+  - `native_diagnostics_status` moved later to `elapsed_ms=275`, so it no longer blocks pre-show drag recovery.
+
+### Explicit Non-Goals
+- Did not re-enable the default empty/transparent WebView shell.
+- Did not implement WebView2 SharedBuffer transfer.
+- Did not implement a full native first-frame overlay or native-drawn selection UI.
+- Did not change OCR, translation, recording, selected-output, or model/runtime behavior.
+- Did not claim final QQ/WeChat/Snow Shot parity without human-visible manual QA.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `3 passed`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: release default opaque/deferred smoke with no transparent-window rebuild and no default offscreen prewarm show/hide.
+- Passed: release pre-show drag smoke proving a drag started before overlay visibility is recovered and finalized into a valid selection.
+
+### Known Risks
+- Human-visible QA is still required. Automated logs prove lifecycle ordering and recovered selection, not subjective absence of every display-driver/WebView compositor flash.
+- The first visible WebView screenshot frame still arrives around `140-155ms` in release smoke on this machine. The new pointer pre-capture preserves early drag input but does not make the screenshot pixels visible in under 50ms.
+- Pre-show drag recovery uses short Win32 polling and frontend IPC recovery; it is intentionally a conservative bridge, not the long-term native first-frame architecture.
+- If the user still perceives visible-frame delay after black/flash is fixed, the next real speed route is WebView shared buffer or a native first-frame overlay, not showing an empty WebView.
+
+### Next Recommended Chapter
+- Chapter 261 should be human-visible release QA on the rebuilt default: repeated `Alt+A` immediate hand drag, `Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, multi-monitor/DPI, and no white/black/gray flash.
+- If manual QA confirms no flash but first visible frame still feels behind QQ/WeChat/Snow Shot, implement the next architecture slice: WebView shared-buffer RGBA delivery or native first-frame overlay, with visual recording evidence before claiming parity.
+
+## Chapter 261 - Repeated Screenshot White-Frame Lifecycle Fix (2026-06-10)
+
+> Chapter status: completed for the repeated-screenshot lifecycle race reported after the third/fourth screenshot. Automated release smoke no longer shows timing climb, delayed stale drag recovery, stderr errors, transparent-window rebuilds, or default early-shell presentation. Human-visible QA is still required before claiming complete QQ/WeChat/Snow Shot parity.
+
+### Goals
+- Diagnose why the first one or two screenshots could feel fine, while the third or fourth run became very laggy and showed white screen/flash.
+- Keep the Chapter 260 default: opaque screenshot helper, hidden until real screenshot pixels are painted, with early visible shell and transparent helper paths as diagnostics only.
+- Prevent the frontend from clearing the visible canvas while the native screenshot WebView is still on screen.
+- Prevent late async work from an already closed screenshot session from restoring selection/canvas state in a later run.
+- Rebuild release and run repeated `Alt+A -> drag -> Ctrl+C` smoke evidence.
+
+### External Findings
+- Snow Shot remains the peer reference. Its repository separates draw-window creation, monitor capture, and image delivery, and its Windows path includes WebView shared-buffer delivery. This reinforces that peer-grade latency should reduce data transfer and avoid empty WebView first frames rather than showing a blank/transparent WebView early.
+- WebView2 default-background behavior remains relevant: transparent/white/opaque first-frame policy is a compositor concern. For this product default, the safer path is to keep the WebView hidden until real pixels are drawn, and reserve transparent WebView experiments for explicit diagnostics.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Stores the latest shell payload for missed-listener recovery.
+  - In the default deferred path, hides the screenshot helper before emitting `screenshot-shell`.
+  - Emits shell payloads with `nativeVisible=false` and `showOnShellReady` as the explicit early-shell gate.
+  - Clears latest screenshot payload, latest shell payload, and pre-capture pointer state on force close.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Adds pending `screenshot-shell` payload recovery.
+  - Computes `shouldPresentShell = nativeVisible || showOnShellReady`.
+  - Does not clear/present the shell canvas or overlay in the default hidden/deferred path.
+  - Deduplicates shell payloads and skips late shell payloads if the image for that session is already ready.
+  - Calls native `cancel_screenshot` before frontend reset when recording ends.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Calls native `cancel_screenshot` before resetting frontend state.
+  - Increments `captureIdRef` during reset to invalidate delayed async loaders/recovery tasks.
+  - Clears `maskedCanvasRef` during reset.
+  - Preserves an already recovered shell selection when the real image arrives.
+  - Stops `recoverPreShowDrag` if the overlay is hidden or a real selection already exists.
+- `tauri-client/src/hooks/useScreenshotActions.ts`
+  - Calls native cancel/force-close before clearing frontend screenshot state for copy/save/force close exits.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 261 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Before this hardening, the repeated drag/copy smoke did not show a pure timing climb, but did expose a delayed `pre_show_drag_finalized` after copy/close on one run. That was enough to explain sporadic later-run state resurrection.
+- Release 8-round smoke against `release\YSN-Screenshot-Translator\YsnTrans.exe` after the fixes used `Alt+A -> start drag about 50ms later -> Ctrl+C -> Esc fallback`:
+  - `ss-1`: `image_ready elapsed_ms=136`, `first_paint elapsed_ms=137`, `overlay_ready_to_show_returned elapsed_ms=150`, `pre_show_drag_finalized elapsed_ms=551`.
+  - `ss-2`: `image_ready elapsed_ms=129`, `first_paint elapsed_ms=132`, `overlay_ready_to_show_returned elapsed_ms=141`, `pre_show_drag_finalized elapsed_ms=561`.
+  - `ss-3`: `image_ready elapsed_ms=125`, `first_paint elapsed_ms=126`, `overlay_ready_to_show_returned elapsed_ms=139`, `pre_show_drag_finalized elapsed_ms=528`.
+  - `ss-4`: `image_ready elapsed_ms=127`, `first_paint elapsed_ms=127`, `overlay_ready_to_show_returned elapsed_ms=137`, `pre_show_drag_finalized elapsed_ms=497`.
+  - `ss-5`: `image_ready elapsed_ms=125`, `first_paint elapsed_ms=127`, `overlay_ready_to_show_returned elapsed_ms=140`, `pre_show_drag_finalized elapsed_ms=526`.
+  - `ss-6`: `image_ready elapsed_ms=125`, `first_paint elapsed_ms=127`, `overlay_ready_to_show_returned elapsed_ms=139`, `pre_show_drag_finalized elapsed_ms=522`.
+  - `ss-7`: `image_ready elapsed_ms=126`, `first_paint elapsed_ms=128`, `overlay_ready_to_show_returned elapsed_ms=137`, `pre_show_drag_finalized elapsed_ms=504`.
+  - `ss-8`: `image_ready elapsed_ms=128`, `first_paint elapsed_ms=128`, `overlay_ready_to_show_returned elapsed_ms=139`, `pre_show_drag_finalized elapsed_ms=514`.
+- Memory during the same release smoke stayed bounded: private memory moved from `45.6 MB` to `51.2 MB`, peaking at `52.5 MB`; working set moved from `57.2 MB` to `63.5 MB`, peaking at `63.6 MB`.
+- The same smoke had empty stderr and no default logs for preconfigured transparent-window rebuild, offscreen screenshot prewarm show, visible shell show, or shell payload skipped after image-ready churn.
+
+### Explicit Non-Goals
+- Did not re-enable the default empty/transparent WebView shell.
+- Did not implement WebView2 SharedBuffer transfer.
+- Did not implement a full native first-frame renderer or native-drawn selection UI.
+- Did not change OCR, translation, recording, selected-output, or model/runtime behavior.
+- Did not claim final no-flash parity without a human-visible recording/manual QA pass.
+
+### Validation
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `3 passed`.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: release 8-round repeated drag/copy smoke; no third/fourth-run timing climb, no stderr errors, and stable memory.
+
+### Known Risks
+- Automated logs prove lifecycle ordering, bounded repeated-run latency, and no stale recovery after close; they still cannot prove the user's display driver never shows a one-frame visual flash.
+- The first visible WebView screenshot frame still arrives around `137-150ms` in this release smoke. The current fix prevents lost early drag and repeated-run white frames, but it does not make real screenshot pixels visible in under `50ms`.
+- The product is still using frontend canvas presentation for the first visible screenshot frame. If the user still sees a subjective delay after this lifecycle fix, the next real architecture step is WebView SharedBuffer RGBA delivery or a thin native first-frame overlay.
+
+### Next Recommended Chapter
+- Chapter 262 should perform human-visible release QA on the rebuilt release now left running: repeat hand `Alt+A` immediate drag, repeat `Alt+A/Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, multi-monitor/DPI, and no white/black/gray flash.
+- If the user still sees a flash, capture a short screen recording and correlate the visible frame with logs before choosing between WebView SharedBuffer transfer and a native first-frame overlay.
+
+## Chapter 262 - Native First-Frame Shield For WebView2 White Flash (2026-06-10)
+
+> Chapter status: completed for the root-cause code hardening after continued manual feedback that the screenshot overlay still flashed white. This chapter fixes the native shield ordering and Win32 ownership bugs found during automated smoke. Human-visible QA is still required before claiming final QQ/WeChat/Snow Shot parity.
+
+### Goals
+- Explain and fix why white flash could still appear even after the WebView was hidden until `image_ready`.
+- Cover the WebView2 first visible frame with a native window that paints the real screenshot frame, then dismiss it after the WebView canvas is visible.
+- Prevent the native shield itself from leaking or failing to destroy across repeated screenshots.
+- Keep the default no-empty-WebView path and pre-show drag recovery from Chapters 260-261.
+
+### External Findings
+- WebView2 first-frame/default-background behavior remains a relevant white-flash source; DOM/CSS changes after navigation are not enough to guarantee that no default backing frame is ever composited.
+- Snow Shot remains the peer reference: its Windows screenshot path avoids a visible empty WebView and uses lower-level image delivery patterns such as WebView SharedBuffer. This chapter implements the smaller near-term equivalent: native first-frame coverage while retaining the current WebView canvas UI.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Enables the native first-frame shield by default, with opt-out `YSN_NATIVE_FIRST_FRAME_SHIELD=0`.
+  - Logs shield visible/fallback/disabled states.
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
+  - Stores the captured RGBA frame for `WM_PAINT`.
+  - Paints the real screenshot frame with GDI `StretchDIBits`.
+  - Handles `WM_NCHITTEST`, `WM_ERASEBKGND`, and `WM_PAINT` to avoid default empty erase frames.
+  - Flushes the DWM compositor after show/update to reduce native first-frame blanking.
+- `tauri-client/src-tauri/src/screenshot_native/native_overlay_session.rs`
+  - Moves native shield create/show/raise/destroy onto a dedicated owner thread.
+  - Uses channel commands for raise/cancel so `DestroyWindow` runs on the creating thread.
+  - Adds session-matched cancel support to avoid an older dismiss timer killing a newer screenshot shield.
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+  - Exports the shield raise and session-matched cancel helpers.
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+  - After the WebView screenshot window is shown, raises the native shield back above it before scheduling dismissal.
+  - Dismisses only the matching shield session after the configured delay.
+- `tauri-client/index.html`
+  - Adds a non-white initial background before the JS bundle runs.
+  - Marks transparent recording/save-toast routes early so their transparent windows stay transparent.
+- `tauri-client/src/index.css`
+  - Changes the default `html/body/#root` background from transparent to `#0b0f14`; transparent windows still override it.
+- `tauri-client/src/main.tsx`
+  - Sets screenshot `html/body/#root` fallback background to `#0b0f14` before React renders.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Keeps screenshot page fallback background non-white while the overlay is hidden/initializing.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records Chapter 262 evidence, validation, known risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Root-cause inspection found three independent white/lag sources:
+  - The WebView can still have a default white backing frame before DOM/CSS/React draw a screenshot canvas.
+  - The first native shield attempt was shown before the WebView; `overlay_ready_to_show` later made the WebView topmost again, putting the shield underneath the WebView first frame.
+  - The first native shield attempt destroyed the Win32 window from a different thread than the creator thread, producing `native_first_frame_shield_dismissed ... state=failed`, which could leak native windows and explain repeated-run degradation.
+- First release smoke after the topmost fix proved the shield was raised, but exposed the destroy failure:
+  - `native_first_frame_shield_raised session=ss-1 ... visible=true`
+  - `native_first_frame_shield_dismissed session=ss-1 delay_ms=64 state=failed active=false visible=false`
+- Second release smoke after moving the shield onto an owner thread used 6 rounds of `Alt+A -> start drag about 50ms later -> Ctrl+C -> Esc fallback`:
+  - Each round logged `native_first_frame_shield_raised ... active=true visible=true`.
+  - Each round logged `native_first_frame_shield_dismissed ... state=cancelled active=false visible=false`.
+  - `ss-2`: `image_ready elapsed_ms=128`, `first_paint elapsed_ms=130`, `overlay_ready_to_show_returned elapsed_ms=146`.
+  - `ss-3`: `image_ready elapsed_ms=133`, `first_paint elapsed_ms=133`, `overlay_ready_to_show_returned elapsed_ms=144`.
+  - `ss-4`: `image_ready elapsed_ms=131`, `first_paint elapsed_ms=131`, `overlay_ready_to_show_returned elapsed_ms=146`.
+  - `ss-5`: `image_ready elapsed_ms=129`, `first_paint elapsed_ms=130`, `overlay_ready_to_show_returned elapsed_ms=145`.
+  - `ss-6`: `image_ready elapsed_ms=129`, `first_paint elapsed_ms=129`, `overlay_ready_to_show_returned elapsed_ms=142`.
+  - The same smoke had empty stderr and no third/fourth-run timing climb.
+
+### Explicit Non-Goals
+- Did not implement WebView2 SharedBuffer RGBA delivery.
+- Did not implement a full native interactive renderer or native-drawn selection UI.
+- Did not change OCR, translation, recording, selected-output, model/runtime, or release packaging strategy.
+- Did not claim final no-flash parity without human-visible manual QA or recording evidence.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `4 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_overlay_session -- --nocapture` with `2 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib win32_overlay -- --nocapture` with `13 passed`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: release 6-round repeated immediate-drag smoke with native shield raised above WebView and destroyed on its owner thread.
+
+### Known Risks
+- Automated logs prove ordering, stable timing, and correct Win32 shield teardown; they still cannot prove the user's display driver never shows a one-frame artifact.
+- The first visible WebView canvas still arrives around `142-146ms` on warm release runs. The native shield should cover the WebView white first frame, but true QQ/WeChat/Snow Shot latency parity still requires SharedBuffer delivery or a fuller native first-frame/selection renderer.
+- The shield is mouse-transparent by hit testing and short-lived. If manual QA reports missed first drag after this chapter, the next slice should move selection interaction into the native overlay rather than lengthening the WebView delay.
+
+### Next Recommended Chapter
+- Chapter 263 should be human-visible release QA of this exact rebuilt release: repeat hand `Alt+A` immediate drag, repeat `Alt+A/Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, and multi-monitor/DPI checks.
+- If white flash still appears, capture a short screen recording and correlate the visible frame with `native_first_frame_shield_visible`, `native_first_frame_shield_raised`, `first_paint`, and `native_first_frame_shield_dismissed` logs.
+- If no white flash remains but latency still feels behind QQ/WeChat/Snow Shot, prioritize WebView2 SharedBuffer RGBA delivery or native-drawn selection for true sub-50ms perceived interaction.
+
+## Chapter 263 - Disable Risky Native Shield Default After Black/Color Flash (2026-06-10)
+
+> Chapter status: completed for immediate user-facing stabilization after manual feedback that Chapter 262 still caused severe black screen, color shift, and flicker. The native shield remains available only as an explicit diagnostic experiment; the default release no longer creates a full-screen Win32 shield.
+
+### Goals
+- Stop the severe black/color-shift fullscreen artifacts reported after the native first-frame shield build.
+- Keep the safer hidden-until-real-canvas WebView path as the default.
+- Fix the shield's RGBA-to-GDI color order for future diagnostics, without exposing it to users by default.
+- Rebuild release and verify default screenshot runs no longer create or raise the native shield.
+
+### Diagnosis
+- The native shield painted the captured `RGBA` buffer through Win32 GDI `StretchDIBits` / `BI_RGB`, whose 32-bit DIB memory order is effectively B/G/R/reserved. Passing RGBA directly can swap channels and create visible color shift.
+- The shield is a full-screen topmost Win32 window. Any missed paint, compositor delay, or wrong pixel format is perceived as an entire-screen black/colored flash, not a small overlay defect.
+- Because the WebView path is already hidden until `first_paint`, the shield was too risky as a default bridge. It should stay opt-in until the product moves to WebView SharedBuffer or a proper native interactive renderer.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Changes `native_first_frame_shield_enabled()` from default-on to opt-in only with `YSN_NATIVE_FIRST_FRAME_SHIELD=1`.
+  - Updates the unit test to assert the shield is disabled by default.
+  - Updates disabled-path logging to explain the diagnostic-only status.
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
+  - Converts RGBA bytes to BGRA DIB bytes before storing/painting the diagnostic shield bitmap.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records this stabilization chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Default release smoke with no `YSN_NATIVE_FIRST_FRAME_SHIELD` used 4 rounds of `Alt+A -> start drag about 50ms later -> Ctrl+C -> Esc fallback`.
+- Each round logged `native_first_frame_shield_disabled`; no round logged `native_first_frame_shield_visible`, `native_first_frame_shield_raised`, or `native_first_frame_shield_dismissed`.
+- Warm-run timings stayed stable:
+  - `ss-2`: `image_ready elapsed_ms=127`, `overlay_ready_to_show_returned elapsed_ms=137`.
+  - `ss-3`: `image_ready elapsed_ms=128`, `overlay_ready_to_show_returned elapsed_ms=145`.
+  - `ss-4`: `image_ready elapsed_ms=124`, `overlay_ready_to_show_returned elapsed_ms=143`.
+- The same smoke had empty stderr.
+
+### Explicit Non-Goals
+- Did not solve final QQ/WeChat/Snow Shot parity in this chapter.
+- Did not implement WebView2 SharedBuffer transfer.
+- Did not implement a native-drawn interactive selection renderer.
+- Did not remove the native shield code, because it remains useful for controlled diagnostics after the RGBA/BGRA fix.
+
+### Validation
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `4 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib win32_overlay -- --nocapture` with `13 passed`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: release 4-round default smoke proving the full-screen native shield is absent by default.
+
+### Known Risks
+- This intentionally removes the risky native shield from the default path, so it prioritizes not flashing black/colored frames over hiding every possible WebView2 first-frame artifact.
+- If the user still sees a WebView compositor flash on this safer default path, the next commercial-grade fix should be SharedBuffer or a native renderer, not re-enabling the full-screen GDI shield by default.
+- The screenshot still relies on WebView canvas presentation around `137-145ms` on this machine.
+
+### Next Recommended Chapter
+- Chapter 264 should perform human-visible QA on the rebuilt no-native-shield default and record whether black/color flash is gone.
+- If only a small first-frame WebView flash remains, implement WebView2 SharedBuffer RGBA delivery next.
+- If immediate drag still feels behind QQ/WeChat/Snow Shot after visual stability is restored, build a native interactive selection layer instead of using a visual-only shield.
+
+## Chapter 264 - WebView2 SharedBuffer Screenshot Delivery (2026-06-10)
+
+> Chapter status: completed for the first Snow Shot-style architecture slice. The screenshot image delivery path now tries WebView2 SharedBuffer before falling back to the older Tauri IPC RGBA fetch. Release smoke proves the SharedBuffer path works in the real packaged app and removes the risky native shield from the default path. Human-visible no-flash/no-black-screen QA is still required before claiming complete QQ/WeChat/Snow Shot parity.
+
+### Goals
+- Move the screenshot first-frame image transfer closer to Snow Shot's Windows architecture.
+- Avoid another visual shield/overlay hack and instead shorten the screenshot pixel delivery path.
+- Keep the existing `get_fullscreen_rgba_bytes` / PNG / base64 paths as fallbacks.
+- Prevent cancelled screenshot sessions from showing a late WebView overlay frame.
+- Rebuild release and verify the real WebView2 SharedBuffer path in a packaged smoke run.
+
+### External Findings
+- Snow Shot uses a draw-window screenshot flow plus WebView2 SharedBuffer delivery on Windows. Its frontend waits for `sharedbufferreceived`, while Rust posts screenshot bytes through `PostSharedBufferToScript`.
+- Microsoft WebView2 exposes this as `ICoreWebView2Environment12::CreateSharedBuffer`, `ICoreWebView2_17::PostSharedBufferToScript`, and the JavaScript `sharedbufferreceived` event.
+- This project can access the same WebView2 COM interfaces through Tauri 2 `Webview::with_webview`, so no opaque external executable is needed for this architecture slice.
+
+### Added Files
+- `tauri-client/src-tauri/src/screenshot_shared_buffer.rs`
+  - Builds the RGBA SharedBuffer payload as `rgba bytes + little-endian width + little-endian height`.
+  - Posts the payload to the active WebView2 script context with `transfer_type=screenshot` and `session_id`.
+  - Includes unit tests for payload layout and invalid byte-count rejection.
+
+### Modified Files
+- `tauri-client/src-tauri/Cargo.toml`
+  - Adds direct `webview2-com` and `windows-core` dependencies for WebView2 SharedBuffer access.
+- `tauri-client/src-tauri/Cargo.lock`
+  - Records the direct dependency graph update.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Registers the new SharedBuffer module and command.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Adds `post_fullscreen_rgba_shared_buffer`.
+  - Logs `shared_buffer_posted`, `shared_buffer_failed`, and unavailable states.
+  - Emits `screenshot-session-cancelled` on repeat-hotkey cancel, force close, and explicit cancel.
+  - Tracks recently cancelled session ids so stale `overlay_ready_to_show` calls can be ignored.
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+  - Skips `overlay_ready_to_show` for cancelled screenshot sessions.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Adds a WebView2 `sharedbufferreceived` receiver.
+  - Tries SharedBuffer before `get_fullscreen_rgba_bytes`.
+  - Releases received WebView2 SharedBuffers after painting.
+  - Preserves the older IPC RGBA / PNG / base64 fallback path.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Listens for `screenshot-session-cancelled` and invalidates frontend screenshot state before late first-paint work can show a cancelled session.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records this chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- First packaged release lifecycle smoke proved the new path was real, not just compiled:
+  - `ss-1`: `shared_buffer_posted`, `shared_buffer_received`, `image_ready elapsed_ms=23`, `first_paint elapsed_ms=26`.
+  - `ss-2`: `shared_buffer_posted`, `shared_buffer_received`, `image_ready elapsed_ms=16`, `first_paint elapsed_ms=19`, `overlay_ready_to_show_returned elapsed_ms=28`.
+  - No `rgba_fetch_end` appeared in the SharedBuffer runs.
+- The same smoke exposed an existing repeated-start cancel race: a cancelled `ss-1` could still call `overlay_ready_to_show`.
+- After adding session cancellation invalidation, final packaged release lifecycle smoke showed:
+  - `ss-1`: `shared_buffer_posted`, `shared_buffer_received`, `image_ready elapsed_ms=24`, then `session_cancelled_received reason=repeat-hotkey-cancel`, then `first_paint_guard_blocked`.
+  - Repeat cancel result: `visible=false capturing=false`.
+  - `ss-2`: `shared_buffer_posted`, `shared_buffer_received`, `image_ready elapsed_ms=17`, `first_paint elapsed_ms=19`, `overlay_ready_to_show_returned elapsed_ms=34`.
+  - Final cancel result: `visible=false capturing=false`.
+  - `native_first_frame_shield_disabled` remained present; the full-screen GDI shield was not used.
+- Release smoke stderr only contained the recurring WebView2/Chromium process-exit line `Failed to unregister class Chrome_WidgetWin_0. Error = 1412`; no screenshot command failure was logged.
+
+### Explicit Non-Goals
+- Did not copy Snow Shot source code or assets.
+- Did not implement Snow Shot's full draw-window module layout.
+- Did not implement a native-drawn interactive selection layer.
+- Did not replace the current capture backend with DXGI/WGC GPU texture presentation.
+- Did not remove the existing IPC/PNG/base64 fallbacks.
+- Did not claim final visual parity without human-visible repeated `Alt+A` QA.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_shared_buffer -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: packaged release lifecycle smoke with real WebView2 SharedBuffer delivery and cancelled-session guard.
+
+### Known Risks
+- The frontend SharedBuffer timings are much lower than the previous IPC RGBA path, but the full hotkey-to-visible path still includes native capture and window show time.
+- Automated smoke proves ordering and delivery; it cannot prove the user's display never shows a one-frame compositor artifact.
+- The app still renders the selection UI in WebView canvas. If the user still cannot drag immediately after `Alt+A`, the next architecture step is a native interactive selection layer, not another visual shield.
+- The recurring WebView2 process-exit stderr line should be monitored, but it did not correlate with screenshot failure in this chapter.
+
+### Next Recommended Chapter
+- Chapter 265 should be human-visible release QA of the rebuilt SharedBuffer default: repeated hand `Alt+A` immediate drag, rapid `Alt+A/Alt+A`, rapid `Alt+A/Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab, and multi-monitor/DPI checks.
+- If the user still sees black/white/color flash after SharedBuffer, capture a short screen recording and correlate it with `shared_buffer_received`, `first_paint`, `overlay_ready_to_show_returned`, and `overlay_show_skipped_cancelled`.
+- If visual stability is good but immediate dragging still feels behind QQ/WeChat/Snow Shot, implement native selection input/rendering as the next slice.
+
+## Chapter 265 - Direct WebView2 SharedBuffer Push (2026-06-10)
+
+> Chapter status: completed for shortening the Chapter 264 SharedBuffer route. Rust now pushes the screenshot SharedBuffer directly to the mounted screenshot WebView before the frontend requests it; the frontend keeps a small SharedBuffer inbox and consumes the direct buffer when the payload arrives. The request-style SharedBuffer command and old IPC/PNG/base64 fallbacks remain intact.
+
+### Goals
+- Remove the extra frontend `invoke("post_fullscreen_rgba_shared_buffer")` round trip from the normal SharedBuffer path.
+- Keep the Chapter 264 request-style SharedBuffer path as a fallback if direct delivery is missed.
+- Keep cancelled-session protection so a rapid repeated hotkey cannot resurrect an old overlay.
+- Rebuild release and verify the packaged app uses direct SharedBuffer delivery.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - After RGBA capture is stored, calls `post_rgba_frame_to_webview` directly with the screenshot WebView handle.
+  - Logs `shared_buffer_direct_posted`, `shared_buffer_direct_failed`, or unavailable status before payload emission.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Adds a mounted `sharedbufferreceived` inbox for direct screenshot buffers.
+  - Stores direct buffers by `session_id` when they arrive before `screenshot-updated`.
+  - Waits briefly for a direct buffer, then falls back to the Chapter 264 request-style command if needed.
+  - Releases unused pending SharedBuffers during reset/unmount to avoid stale buffer retention.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records this chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Packaged release lifecycle smoke after direct push showed the normal ready run no longer used the request-style command:
+  - `ss-2`: `capture ready 61ms format=rgba bytes=14745600`.
+  - `ss-2`: `shared_buffer_direct_posted elapsed_ms=70 bytes=14745608 size=2560x1440`.
+  - `ss-2`: `shared_buffer_direct_pending elapsed_ms=0 bytes=14745608`.
+  - `ss-2`: `payload_emit elapsed_ms=72`.
+  - `ss-2`: `shared_buffer_received elapsed_ms=0 source=direct`.
+  - `ss-2`: `image_ready elapsed_ms=9`.
+  - `ss-2`: `first_paint elapsed_ms=12`.
+  - `ss-2`: `overlay_ready_to_show_returned elapsed_ms=30`.
+  - No `shared_buffer_post_returned` and no `rgba_fetch_end` appeared in the final direct run.
+- Rapid repeated-start cancel remained guarded:
+  - `ss-1`: `shared_buffer_direct_posted`, then `session_cancelled_received reason=repeat-hotkey-cancel`.
+  - Repeat cancel result: `visible=false capturing=false`.
+  - Final cancel result: `visible=false capturing=false`.
+- `native_first_frame_shield_disabled` remained present; the full-screen native shield was not used.
+- Release smoke stderr only contained the recurring WebView2/Chromium process-exit line `Failed to unregister class Chrome_WidgetWin_0. Error = 1412`; no screenshot command failure was logged.
+
+### Explicit Non-Goals
+- Did not implement a native-drawn selection/input layer.
+- Did not change the capture backend to DXGI/WGC GPU texture presentation.
+- Did not remove request-style SharedBuffer or IPC/PNG/base64 fallbacks.
+- Did not claim final human-visible parity without manual QA.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_shared_buffer -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: packaged release lifecycle smoke with direct WebView2 SharedBuffer delivery.
+
+### Known Risks
+- The direct SharedBuffer path lowers frontend image-ready time, but the full hotkey-to-visible path still includes native capture and window show.
+- Automated smoke cannot prove no one-frame compositor flash on the user's display.
+- If manual testing still shows delayed immediate drag, the next meaningful architecture step is native selection input/rendering rather than more WebView transfer work.
+
+### Next Recommended Chapter
+- Chapter 266 should perform human-visible release QA of the direct SharedBuffer build: repeated hand `Alt+A` immediate drag, rapid `Alt+A/Alt+A`, rapid `Alt+A/Esc`, copy, Save As, OCR, translate, taskbar/Alt-Tab, focus restore, and multi-monitor/DPI checks.
+- If visual stability is good but drag still feels behind QQ/WeChat/Snow Shot, implement the native selection input/rendering slice next.
+
+## Chapter 266 - Transparent Post-Paint SharedBuffer Startup Pass (2026-06-10)
+
+> Chapter status: completed for the deepest automated startup/flash pass so far. The default screenshot path now combines Snow Shot-style direct WebView2 SharedBuffer delivery, transparent WebView/window backing, hidden-until-real-canvas presentation, post-paint first visible show, capture/window-prep parallelism, bounds reuse, and session-filtered pointer recovery. Packaged six-round smoke stayed stable through rounds 3-6, but final human-visible no-flash parity still needs manual QA or a short screen recording.
+
+### Goals
+- Address the user's continued reports of black screen, white flash, color shift, and a gray layer before screenshot interaction.
+- Keep the Chapter 264-265 direct WebView2 SharedBuffer architecture instead of reintroducing the full-screen native GDI shield that caused black/color-shift artifacts.
+- Make the first visible screenshot frame safer by showing the helper only after the real screenshot canvas has painted and one post-paint task has run.
+- Reduce repeated-run compositor churn and third/fourth screenshot slowdown risk.
+- Keep rollback env flags for opaque-window diagnostics.
+
+### External Findings
+- This chapter continues the Snow Shot/WebView2 architecture direction recorded in Chapters 264-265: peer screenshot tools avoid a visible empty WebView shell and use native/low-level pixel delivery or SharedBuffer-style handoff so pixels are ready before the user sees the capture surface.
+- The local root cause mapping after Chapters 262-265 was that image transfer was no longer the bottleneck; the remaining visible artifact risk was WebView/window backing exposure before the real canvas frame, plus repeated native bounds updates and stale session work.
+- The chosen fix is therefore not another shield, but stricter first-visible ordering around the real canvas and less native window churn.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/tauri.conf.json`
+  - Sets the screenshot helper window to `transparent: true`.
+- `tauri-client/src-tauri/src/lib.rs`
+  - Sets `WEBVIEW2_DEFAULT_BACKGROUND_COLOR=00000000` by default so WebView2 starts transparent.
+  - Keeps rollback through `YSN_SCREENSHOT_OPAQUE_WINDOW=1` or `YSN_SCREENSHOT_TRANSPARENT_WINDOW=0`.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Makes screenshot window transparency the default with opaque rollback.
+  - Starts native capture before screenshot WebView/window prep so capture and overlay preparation can overlap.
+  - Adds `LAST_SCREENSHOT_WINDOW_BOUNDS` and skips repeated position/size changes when the monitor bounds are unchanged.
+  - Clears bounds cache when creating the helper or doing offscreen prewarm.
+  - Adds `session_id` filtering to `get_screenshot_pointer_state` so pre-show drag recovery cannot consume stale pointer state from an older screenshot.
+  - Updates screenshot transparency tests.
+- `tauri-client/src/main.tsx`
+  - Sets `html`, `body`, and root screenshot surfaces transparent before React renders the screenshot page.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Forces the screenshot page background to transparent instead of the older dark fallback.
+  - Clears duplicate payload/shell signatures when a screenshot session is cancelled.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Calls `get_screenshot_pointer_state` with the active session id.
+  - Preserves the current session's SharedBuffer during stale-buffer pruning.
+  - Changes first visible show to a post-paint gate: `requestAnimationFrame(() => setTimeout(..., 0))`.
+  - Logs `first_paint ... gate=post-paint-task`.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 266 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Final packaged release six-round smoke log:
+  - stdout: `tmp-runtime-logs\transparent-postpaint-bounds-cache-six-round-20260610-032927-out.log`.
+  - stderr: `tmp-runtime-logs\transparent-postpaint-bounds-cache-six-round-20260610-032927-err.log`, empty.
+- The six-round smoke used transparent screenshot helper logs and direct SharedBuffer in every round:
+  - no `rgba_fetch`;
+  - no `shared_buffer_direct_wait_miss`;
+  - no SharedBuffer timeout;
+  - no native first-frame shield path.
+- Stable per-round timings:
+  - `ss-1`: `capture_end 46ms`, `payload_emit 55ms`, `image_ready 8ms`, `first_paint 11ms`, `overlay_ready_to_show_returned 29ms`.
+  - `ss-2`: `capture_end 39ms`, `payload_emit 52ms`, `image_ready 6ms`, `first_paint 8ms`, `overlay_ready_to_show_returned 22ms`.
+  - `ss-3`: `capture_end 36ms`, `payload_emit 47ms`, `image_ready 5ms`, `first_paint 7ms`, `overlay_ready_to_show_returned 25ms`.
+  - `ss-4`: `capture_end 41ms`, `payload_emit 51ms`, `image_ready 5ms`, `first_paint 7ms`, `overlay_ready_to_show_returned 22ms`.
+  - `ss-5`: `capture_end 37ms`, `payload_emit 48ms`, `image_ready 5ms`, `first_paint 7ms`, `overlay_ready_to_show_returned 20ms`.
+  - `ss-6`: `capture_end 39ms`, `payload_emit 50ms`, `image_ready 5ms`, `first_paint 7ms`, `overlay_ready_to_show_returned 25ms`.
+- This directly checks the reported third/fourth-run slowdown class: rounds 4-6 did not climb and stayed in the same timing band as rounds 2-3.
+- `overlay_bounds_reused` appeared after the first round, confirming repeated fullscreen runs no longer always reposition/resize the helper.
+
+### Explicit Non-Goals
+- Did not copy Snow Shot source code or assets.
+- Did not implement a native-drawn interactive selection renderer.
+- Did not switch capture to DXGI/WGC GPU texture presentation.
+- Did not remove request-style SharedBuffer or IPC/PNG/base64 fallbacks.
+- Did not claim final QQ/WeChat/Snow Shot visual parity without manual QA or recording evidence.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `4 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_shared_buffer -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: packaged six-round transparent/post-paint/bounds-cache hotkey smoke.
+
+### Known Risks
+- Automated logs prove ordering, transfer path, and repeated-run timing stability; they cannot prove that the user's monitor never displayed a one-frame compositor artifact.
+- The app still uses a WebView canvas for selection rendering. If hand QA still feels slower than QQ/WeChat/Snow Shot after this pass, the next meaningful architecture slice is native selection input/rendering.
+- Transparent WebView/window backing is now the default again because the window is hidden until real canvas paint; if a driver-specific transparent-composition regression appears, use `YSN_SCREENSHOT_OPAQUE_WINDOW=1` or `YSN_SCREENSHOT_TRANSPARENT_WINDOW=0` for rollback diagnostics.
+- Full-screen native shield should remain off by default because it previously caused severe black/color-shift artifacts.
+
+### Next Recommended Chapter
+- Chapter 267 should be human-visible QA of the rebuilt packaged app: repeated hand `Alt+A` immediate drag, rapid `Alt+A/Alt+A`, rapid `Alt+A/Esc`, copy, Save As, OCR, translate, focus restore, taskbar/Alt-Tab behavior, multi-monitor/DPI, and no white/black/color flash.
+- If flashing remains, capture a short screen recording and correlate the visible frame with `shared_buffer_received`, `first_paint gate=post-paint-task`, `overlay_ready_to_show_returned`, and fallback-path logs before choosing the next fix.
+- If visual stability is good but drag still feels behind QQ/WeChat/Snow Shot, implement native selection input/rendering rather than adding another WebView shell or shield.
+
+## Chapter 267 - Remove Recording Black-Frame Path And Earliest Black Fallback (2026-06-10)
+
+> Chapter status: completed for an automated visual-flash smoke and the root-cause fix it exposed. This chapter does not claim human-visible QQ/WeChat/Snow Shot parity, but it removes one real black-frame source from external recording/remote capture tools and removes the project's earliest black HTML/CSS fallback surface.
+
+### Goals
+- Continue after Chapter 266 without waiting for manual QA.
+- Convert the black/white/gray flash complaint into repeatable visual evidence using desktop recording and frame analysis.
+- Identify whether the recorded full-screen black frames came from actual WebView presentation or Windows capture exclusion.
+- Remove low-risk black fallback surfaces that could still be exposed before React fully hydrates.
+- Keep the direct SharedBuffer/post-paint path intact.
+
+### External Findings
+- Microsoft documents WebView2 background control through `DefaultBackgroundColor` / the `WEBVIEW2_DEFAULT_BACKGROUND_COLOR` environment path, which supports the Chapter 266 decision to set transparent backing before WebView creation instead of waiting for React CSS.
+- Microsoft documents `SetWindowDisplayAffinity` / `WDA_EXCLUDEFROMCAPTURE` as a Windows capture-exclusion mechanism. In practice, desktop recording tools can show excluded full-screen windows as black, so a visual recording smoke must either disable capture exclusion or treat black frames as a capture-tool artifact.
+- Snow Shot remains the peer architecture reference for a preloaded screenshot surface plus low-level pixel delivery; this chapter continues that direction without copying source code.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/index.html`
+  - Changes the earliest `html`, `body`, and `#root` fallback background from `#0b0f14` to `transparent`.
+- `tauri-client/src/index.css`
+  - Changes the global `html`, `body`, and `#root` fallback background from `#0b0f14` to `transparent`.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Adds `screenshot_capture_exclusion_enabled()`.
+  - Makes screenshot helper `WDA_EXCLUDEFROMCAPTURE` opt-in with `YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE=1`.
+  - Logs `overlay_capture_exclusion excluded=false/true` for each screenshot session.
+  - Adds a unit test proving capture exclusion is off by default and opt-in only.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 267 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Pre-fix visual smoke:
+  - video: `tmp-runtime-logs\visual-flash-smoke-20260610-034351.mp4`;
+  - analysis: `tmp-runtime-logs\visual-flash-smoke-20260610-034351-visual-analysis.json`;
+  - result: `luma_min=0.0069`, `diff_max=181.46`, `flag_count=173`, with many near-black full-screen frames while the screenshot helper was capture-excluded.
+- Interpretation: those black frames matched the Windows capture-exclusion path and are not reliable proof of a human-visible WebView black frame. They are still a product problem for users who record/share the screen.
+- Post-fix visual smoke:
+  - video: `tmp-runtime-logs\visual-flash-post-exclusion-20260610-035131.mp4`;
+  - analysis: `tmp-runtime-logs\visual-flash-post-exclusion-20260610-035131-visual-analysis.json`;
+  - result: `frames=479`, `luma_min=88.54`, `luma_max=161.67`, `diff_max=70.00`, `diff_avg=1.15`, `black_frame_count=0`, `white_frame_count=0`.
+- Post-fix release log:
+  - stdout: `tmp-runtime-logs\visual-flash-post-exclusion-20260610-035101-out.log`;
+  - stderr: `tmp-runtime-logs\visual-flash-post-exclusion-20260610-035101-err.log`, empty.
+- The post-fix release log showed 4 automated `Alt+A/Esc` rounds:
+  - all rounds logged `overlay_capture_exclusion excluded=false`;
+  - all rounds used `shared_buffer_direct_posted`;
+  - no `rgba_fetch`;
+  - no `shared_buffer_direct_wait_miss`;
+  - no native first-frame shield;
+  - `image_ready` stayed `7-11ms`;
+  - `first_paint gate=post-paint-task` stayed `12-15ms`;
+  - `overlay_ready_to_show_returned` stayed `37-71ms`.
+
+### Explicit Non-Goals
+- Did not remove the normal screenshot dimming/mask UI after screenshot mode starts.
+- Did not implement native selection input/rendering.
+- Did not change capture backend to DXGI/WGC.
+- Did not remove SharedBuffer fallbacks.
+- Did not claim that a user's naked-eye monitor can no longer show any compositor artifact; this chapter proves the recording black-frame class is gone when capture exclusion is off.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `5 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_shared_buffer -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: post-fix ffmpeg desktop recording smoke and raw RGB frame analysis with no black/white frames.
+
+### Known Risks
+- The post-fix visual smoke still shows expected entry/exit luminance changes because screenshot mode dims the desktop. If the user describes that dimming itself as a flash, the next chapter should tune the initial mask/dim timing and opacity, not the image transfer path.
+- The first run after app restart can still be slower than warm runs because main-window parking and WebView warm state vary; warm runs stayed stable.
+- Users who explicitly set `YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE=1` can still see black windows in external recording tools by design.
+- Human-visible driver/compositor artifacts still need a naked-eye or camera/phone recording confirmation.
+
+### Next Recommended Chapter
+- Chapter 268 should be chosen based on the next observation:
+  - If black/white flash is gone but immediate drag still feels behind QQ/WeChat/Snow Shot, implement native selection input/rendering.
+  - If the remaining complaint is the gray/dim transition, tune the initial mask presentation so screenshot pixels appear first and dimming is applied without a separate full-screen pulse.
+  - If a true black/white compositor flash remains with capture exclusion disabled, record another visual smoke and correlate it against `overlay_capture_exclusion`, `shared_buffer_received`, `first_paint gate=post-paint-task`, and `overlay_ready_to_show_returned`.
+
+## Chapter 268 - Transparent Input Shell Before Screenshot Pixels (2026-06-10)
+
+> Chapter status: completed for the next latency slice after the black/white frame fix. The default screenshot path now shows a transparent, empty input shell before screenshot pixels are ready, so `Alt+A` can hand control to the screenshot surface earlier without drawing a black/white/gray placeholder. The real screenshot pixels still arrive through the direct WebView2 SharedBuffer path, and the native GDI first-frame shield stays disabled.
+
+### Goals
+- Reduce the user's "Alt+A then cannot immediately drag" delay without reintroducing the old full-screen native GDI shield that caused black/color-shift artifacts.
+- Match the Snow Shot-style architecture more closely: hotkey routes into an already-loaded draw surface, capture and window preparation run in parallel, and raw pixels arrive through a SharedBuffer-like path.
+- Avoid drawing a separate gray mask before the screenshot image is ready; the early shell must be transparent and input-only.
+- Preserve a rollback switch if a driver or WebView2 transparent-window regression appears on the user's device.
+
+### External Findings
+- Snow Shot's public architecture and source confirm the peer direction: a reusable draw window receives an `execute-screenshot` style event, monitor capture is separate from draw-page readiness, and WebView shared buffers are used for image transfer. This chapter follows the pattern at the architecture level only and does not copy Snow Shot code or assets.
+- Microsoft's WebView2 background-color guidance continues to support keeping the earliest WebView/window backing transparent before React paints.
+- Microsoft's Win32 input model supports immediate mouse capture once an interactive window is visible; this chapter uses the existing WebView input shell first because it is lower risk than re-enabling a native visual shield.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Makes `screenshot_early_visible_shell_enabled()` default to true.
+  - Keeps rollback with `YSN_SCREENSHOT_DEFER_VISIBLE_SHELL=1` or `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=0`.
+  - Updates the startup policy unit test to cover the new default and rollbacks.
+  - Logs `overlay_window_prepared ... transparent_input_shell=true/false` instead of implying the overlay is always hidden.
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+  - Allows a left-button-down pointer move to start selection even if the initial pointer-down happened just before the shell received pointer capture.
+  - Logs `first_pointer_move_down` for that recovery path.
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Uses the backend pointer pre-capture store during shell display, not only after image ready.
+  - Draws an early selection rectangle on the transparent shell when a pre-show drag is detected.
+  - Focuses the shell canvas after shell show returns, while deferring screenshot toolbar UI until real pixels are ready.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records this chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Packaged release hotkey smoke:
+  - stdout: `tmp-runtime-logs\transparent-input-shell-smoke-20260610-043120-out.log`.
+  - stderr: `tmp-runtime-logs\transparent-input-shell-smoke-20260610-043120-err.log`, empty.
+- The 4-round `Alt+A -> Esc` smoke showed:
+  - all rounds logged `transparent_input_shell=true`;
+  - all rounds used direct SharedBuffer delivery;
+  - no `rgba_fetch`;
+  - no `shared_buffer_direct_wait_miss`;
+  - no `shared_buffer_receive_timeout`;
+  - no failure/error/panic log matches.
+- Timings from the hotkey smoke:
+  - shell window prepared at `23-46ms` warm, `46ms` first round;
+  - `shell_ready_to_show_returned` at `21-70ms`;
+  - `image_ready` at `6-12ms` after frontend session start;
+  - `first_paint` at `9-18ms` after frontend session start.
+- Visual recording smoke:
+  - video: `tmp-runtime-logs\transparent-input-shell-visual-20260610-043245.mp4`;
+  - app stdout: `tmp-runtime-logs\transparent-input-shell-visual-20260610-043245-out.log`;
+  - app stderr: `tmp-runtime-logs\transparent-input-shell-visual-20260610-043245-err.log`, empty;
+  - analysis: `tmp-runtime-logs\transparent-input-shell-visual-20260610-043245-visual-analysis.json`.
+- Visual frame analysis result:
+  - `frames=419`;
+  - `black_frame_count=0`;
+  - `white_frame_count=0`;
+  - `high_diff_frame_count=0`;
+  - `luma_min=29.22`, `luma_max=68.77`;
+  - `diff_max=23.95`, `diff_avg=0.45`.
+
+### Explicit Non-Goals
+- Did not implement a full native-drawn selection renderer.
+- Did not re-enable the old native GDI first-frame shield by default.
+- Did not switch capture to DXGI/WGC GPU texture presentation.
+- Did not remove the normal dimmed screenshot mask after the real screenshot image is ready.
+- Did not claim final human-visible parity with QQ/WeChat/Snow Shot without the user's manual device validation.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `5 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_shared_buffer -- --nocapture` with `2 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_input_smoke -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"` release rebuild.
+- Passed: packaged release hotkey smoke and ffmpeg visual frame analysis.
+
+### Known Risks
+- This is still a WebView input shell, not a full native selection renderer. It reduces the perceived drag gate, but it does not make the architecture identical to Snow Shot's deeper candidate/draw system.
+- The first visual transition from live desktop to frozen/dimmed screenshot can still be perceptible as the screenshot image arrives. The visual smoke shows no black/white/high-diff flash, but a user may still notice the intended dim state appearing.
+- If a specific GPU/WebView2 driver renders transparent early windows incorrectly, set `YSN_SCREENSHOT_DEFER_VISIBLE_SHELL=1` or `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=0` to return to the Chapter 267 deferred-show behavior.
+
+### Next Recommended Chapter
+- Chapter 269 should implement **Native First Frame Screenshot Session** directly.
+- Do not continue with a WebView-only timing patch and do not stop at low-level mouse recovery. The next route is native first-frame screenshot overlay + native input overlay, with low-level/global mouse hook only as a 0-50ms fallback and WebView only as the later complex-UI layer.
+- Chapter 269 must target `Alt+A -> 画面冻结/遮罩出现/马上能拖`, not `Alt+A -> 等 WebView -> 闪一下 -> 再遮罩 -> 再能拖`.
+
+## Chapter 269 - Native First Frame Screenshot Session (Planned)
+
+> Chapter status: planned and user-approved as the next implementation target. This chapter is not completed yet. It supersedes a WebView-only or low-level-hook-only next step: the next screenshot chapter should build a native first-frame screenshot session where Rust/Win32 owns the first visible screenshot frame, mask, candidate/window recognition, and immediate mouse input, while WebView joins later for toolbar, OCR, translation, editing, copy, and save.
+
+### User-Approved Target - Verbatim
+
+```text
+核心方案：
+
+Alt+A
+  ↓
+Rust/Win32 立即接管
+  ↓
+原生截图 + 原生遮罩 + 原生窗口识别 + 原生鼠标输入
+  ↓
+用户立刻可拖
+  ↓
+WebView 后面再接管工具栏、OCR、翻译、编辑
+
+也就是：
+
+第一帧：Native 负责
+后续 UI：WebView 负责
+
+最终推荐架构
+常驻预热：
+- 预创建 hidden native overlay HWND
+- 预初始化 D3D/Direct2D/GDI 绘制资源
+- 预初始化截图 backend
+- 预初始化窗口枚举/候选框服务
+- WebView 截图页保持隐藏预热
+
+Alt+A 触发：
+1. Rust 收到全局热键
+2. 立即进入 native screenshot session
+3. 立即捕获屏幕
+4. 立即枚举窗口/控件候选区域
+5. 原生 overlay 画：
+   - 截图画面
+   - 半透明遮罩
+   - 鼠标下窗口候选框
+6. overlay 直接接管鼠标：
+   - WM_LBUTTONDOWN
+   - WM_MOUSEMOVE
+   - WM_LBUTTONUP
+   - ESC
+7. 用户马上拖选
+8. WebView 后台 ready 后只接管：
+   - 工具栏
+   - OCR
+   - 翻译
+   - 编辑按钮
+   - 复制/保存
+这比单独 low-level hook 更适合你的目标
+
+你现在要的不是：
+
+先记录鼠标，等 WebView 后恢复
+
+你要的是：
+
+Alt+A 后画面立刻冻结，遮罩立刻出现，窗口立刻识别，鼠标立刻能拖
+
+所以我会把优先级改成：
+
+第一优先级：native input overlay + native first frame
+第二优先级：low-level mouse hook 兜底最早几十毫秒输入
+第三优先级：WebView 后置接管复杂 UI
+
+不要只做 low-level hook。
+low-level hook 只能解决“马上拖动不丢第一下”，但不能解决你说的：
+
+延迟 100ms+
+瞬间闪烁
+遮罩慢
+UI 窗口识别慢
+
+这些必须靠 native first frame。
+目标链路应该变成这样
+Alt+A
+  ↓ 0-10ms
+热键进入 Rust native fast path
+  ↓ 10-40ms
+截图 + 画遮罩 + 识别当前窗口
+  ↓ 40-60ms
+native overlay 已显示，鼠标已可拖
+  ↓ 后台
+WebView 工具栏/OCR/翻译接上
+实际目标可以定成：
+
+P95 hotkey -> 鼠标可拖：<= 50ms
+P95 hotkey -> 遮罩首帧出现：<= 60ms
+P95 hotkey -> 窗口候选框出现：<= 60ms
+P95 hotkey -> WebView 工具栏 ready：<= 120ms
+
+用户体感就是：
+
+Alt+A -> 画面冻结/遮罩出现/马上能拖
+
+而不是：
+
+Alt+A -> 等 WebView -> 闪一下 -> 再遮罩 -> 再能拖
+实施顺序
+
+我建议下一章直接叫：
+
+Chapter 269: Native First Frame Screenshot Overlay
+
+做这几件事：
+
+1. 新增 Win32 native overlay 窗口
+2. overlay 启动时预创建，默认隐藏
+3. Alt+A 后不等 WebView，直接 show native overlay
+4. native overlay 负责首帧截图、遮罩、候选框
+5. native overlay 直接处理鼠标拖选
+6. WebView 只在 ready 后接管工具栏和后续功能
+7. low-level mouse hook 只作为 0-50ms 兜底
+最终形态
+QQ/微信式体验 =
+原生截图首帧
++ 原生遮罩
++ 原生输入
++ 原生窗口识别
++ WebView 后置复杂 UI
+```
+
+### Goals
+
+- Build the first production-grade slice of **Native First Frame Screenshot Session**, not another WebView-first shell experiment.
+- Keep the old diagnostic native GDI first-frame shield disabled by default. The new route must render actual screenshot pixels and native mask/candidates; it must not be a temporary black, gray, white, or color-shifting cover.
+- Add or upgrade a Win32 native overlay window that is created/prepared before use, hidden by default, and capable of immediate no-activate topmost presentation when `Alt+A` starts.
+- Make the native overlay own the first visible frame: screenshot bitmap, dim mask, current mouse-window candidate rectangle, and drag rectangle.
+- Make the native overlay own immediate input for the screenshot-start phase: `WM_LBUTTONDOWN`, `WM_MOUSEMOVE`, `WM_LBUTTONUP`, `ESC`, and repeat-hotkey cancellation if applicable.
+- Use low-level/global mouse hook only as the earliest 0-50ms fallback so a click that begins before the overlay message pump is ready is not lost.
+- Let WebView remain hidden/preheated during native first-frame presentation, then hand off only the complex UI layer: toolbar, OCR, translation, edit actions, copy, save, and later annotation tools.
+- Preserve the existing direct WebView2 SharedBuffer path as the WebView image handoff/fallback path; do not copy Snow Shot source code.
+
+### Proposed Native Session Flow
+
+```text
+Alt+A
+  -> Rust global hotkey callback records hotkey timestamp
+  -> create/resume native screenshot session
+  -> begin 0-50ms low-level/global mouse fallback capture
+  -> capture screen into RGBA/native bitmap
+  -> enumerate fast window/control candidates
+  -> show hidden native overlay no-activate/topmost
+  -> native overlay paints screenshot pixels + mask + initial candidate
+  -> native overlay message pump handles drag/cancel
+  -> WebView screenshot page warms/receives SharedBuffer in background
+  -> WebView toolbar joins after ready without replacing the first visible frame with a blank/gray/white surface
+```
+
+### Implementation Boundaries
+
+- Prefer a focused native session module rather than extending the already-large `screenshot_commands.rs` with more responsibilities.
+- Reuse existing native primitives where safe: `win32_overlay`, `native_overlay_session`, `win32_input`, `selection_state`, current capture code, and candidate/window enumeration adapters.
+- Do not revive the Chapter 262-263 full-screen native shield as the product default.
+- Do not depend on Snow Shot GPL code or its custom forks. Use Snow Shot only as an architecture reference.
+- Do not move OCR, translation, or recording work into Chapter 269 except for smoke regression.
+- Do not claim QQ/WeChat/Snow Shot parity until a real release build passes repeated human-device tests and visual recording evidence.
+
+### Acceptance Targets
+
+- P95 `hotkey -> 鼠标可拖`: `<= 50ms`.
+- P95 `hotkey -> 遮罩首帧出现`: `<= 60ms`.
+- P95 `hotkey -> 窗口候选框出现`: `<= 60ms`.
+- P95 `hotkey -> WebView 工具栏 ready`: `<= 120ms`.
+- No black frame, white frame, full-screen gray pulse, color-shift frame, or WebView-default-background flash during entry.
+- Repeated `Alt+A` runs must not degrade on the third/fourth run.
+- Immediate drag must work even when the mouse button goes down before WebView focus or toolbar readiness.
+- `Esc`, repeat hotkey, cancel, copy, save, OCR, translate, and focus restore must remain recoverable after native-to-WebView handoff.
+
+### Validation Required
+
+- Rust unit tests for native input event decoding, native selection transitions, session lifecycle cleanup, stale-session rejection, and cancellation.
+- Rust compile/check: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check` and `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Frontend checks after handoff changes: `cd tauri-client; npx tsc --noEmit`, `npm run build`, `npm run check:i18n`, and `npm run check:ocr-processing`.
+- Release build smoke through `cmd /c "build.bat --no-pause"` unless the chapter only lands guarded diagnostics.
+- Automated hotkey timing smoke with logged timestamps for `hotkey_received`, `native_session_start`, `native_overlay_first_paint`, `native_input_ready`, `candidate_first_rect`, `webview_toolbar_ready`, and `handoff_complete`.
+- Visual recording smoke with frame analysis for black/white/high-diff/color-shift frames.
+- Manual QA on the release exe: repeated `Alt+A`, immediate drag, third/fourth run, rapid cancel, rapid repeat-hotkey, multi-monitor/DPI, copy/save/OCR/translate after handoff.
+
+### Rollback And Diagnostics
+
+- Keep an explicit env rollback to the Chapter 268 WebView SharedBuffer/transparent-shell path.
+- Keep the old `YSN_NATIVE_FIRST_FRAME_SHIELD=1` diagnostic separate and off by default.
+- Log whether each screenshot used `native_first_frame_session`, `low_level_mouse_fallback`, `webview_handoff`, or a fallback route.
+- On any native-session failure, cancel/cleanup native HWND/hooks and fall back to the existing WebView SharedBuffer path rather than leaving an invisible or input-blocking overlay.
+
+### Next Chapter Entry Point
+
+- Start Chapter 269 by extracting a focused native screenshot session owner around the existing Win32 overlay/input primitives, then prove a minimal native first frame can show real screenshot pixels, draw a dim mask/candidate, accept drag, cancel cleanly, and hand off to the current WebView toolbar path.

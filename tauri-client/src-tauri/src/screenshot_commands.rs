@@ -4,19 +4,40 @@ pub use crate::screenshot_wgc_diagnostic_commands::*;
 use crate::*;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 static SCREENSHOT_RGBA: OnceLock<Mutex<Option<SessionScreenshotRgba>>> = OnceLock::new();
 static LATEST_SCREENSHOT_PAYLOAD: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
-static AUTOMATION_SCREENSHOT_WINDOW_REBUILD_REQUESTED: AtomicBool = AtomicBool::new(false);
+static LATEST_SCREENSHOT_SHELL_PAYLOAD: OnceLock<Mutex<Option<serde_json::Value>>> =
+    OnceLock::new();
+static CANCELLED_SCREENSHOT_SESSIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static SCREENSHOT_POINTER_PRE_CAPTURE: OnceLock<Mutex<Option<ScreenshotPointerPreCapture>>> =
+    OnceLock::new();
+static LAST_SCREENSHOT_WINDOW_BOUNDS: OnceLock<Mutex<Option<(i32, i32, u32, u32)>>> =
+    OnceLock::new();
 type ScreenshotRgba = crate::screenshot_native::RgbaFrame;
 
 #[derive(Debug, Clone)]
 struct SessionScreenshotRgba {
     session_id: String,
     frame: ScreenshotRgba,
+}
+
+#[derive(Debug, Clone)]
+struct ScreenshotPointerPreCapture {
+    session_id: String,
+    origin_x: i32,
+    origin_y: i32,
+    started_at: Instant,
+    updated_at: Instant,
+    was_down_at_start: bool,
+    left_down: bool,
+    completed: bool,
+    down_global: Option<(i32, i32)>,
+    latest_global: Option<(i32, i32)>,
+    max_drag_distance: f64,
 }
 
 fn now_epoch_millis_local() -> u64 {
@@ -79,8 +100,11 @@ fn native_overlay_mvp_fallback_plan() -> crate::screenshot_native::NativeOverlay
     )
 }
 
-fn cpu_native_overlay_mvp_enabled() -> bool {
-    std::env::var("YSN_NATIVE_OVERLAY_CPU_MVP").ok().as_deref() == Some("1")
+fn native_first_frame_shield_enabled() -> bool {
+    std::env::var("YSN_NATIVE_FIRST_FRAME_SHIELD")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 fn log_cpu_native_overlay_diagnostics(
@@ -163,8 +187,37 @@ fn get_latest_screenshot_payload_store() -> &'static Mutex<Option<serde_json::Va
     LATEST_SCREENSHOT_PAYLOAD.get_or_init(|| Mutex::new(None))
 }
 
+fn get_latest_screenshot_shell_payload_store() -> &'static Mutex<Option<serde_json::Value>> {
+    LATEST_SCREENSHOT_SHELL_PAYLOAD.get_or_init(|| Mutex::new(None))
+}
+
+fn get_screenshot_pointer_pre_capture_store() -> &'static Mutex<Option<ScreenshotPointerPreCapture>>
+{
+    SCREENSHOT_POINTER_PRE_CAPTURE.get_or_init(|| Mutex::new(None))
+}
+
+fn get_cancelled_screenshot_sessions_store() -> &'static Mutex<Vec<String>> {
+    CANCELLED_SCREENSHOT_SESSIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn get_last_screenshot_window_bounds_store() -> &'static Mutex<Option<(i32, i32, u32, u32)>> {
+    LAST_SCREENSHOT_WINDOW_BOUNDS.get_or_init(|| Mutex::new(None))
+}
+
+fn clear_screenshot_window_bounds_cache() {
+    if let Ok(mut guard) = get_last_screenshot_window_bounds_store().lock() {
+        *guard = None;
+    }
+}
+
 fn set_latest_screenshot_payload(payload: serde_json::Value) {
     if let Ok(mut guard) = get_latest_screenshot_payload_store().lock() {
+        *guard = Some(payload);
+    }
+}
+
+fn set_latest_screenshot_shell_payload(payload: serde_json::Value) {
+    if let Ok(mut guard) = get_latest_screenshot_shell_payload_store().lock() {
         *guard = Some(payload);
     }
 }
@@ -172,6 +225,72 @@ fn set_latest_screenshot_payload(payload: serde_json::Value) {
 fn clear_latest_screenshot_payload() {
     if let Ok(mut guard) = get_latest_screenshot_payload_store().lock() {
         *guard = None;
+    }
+    if let Ok(mut guard) = get_latest_screenshot_shell_payload_store().lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = get_screenshot_pointer_pre_capture_store().lock() {
+        *guard = None;
+    }
+}
+
+fn latest_screenshot_session_id() -> Option<String> {
+    let from_payload = get_latest_screenshot_payload_store()
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|payload| payload.get("sessionId"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    if from_payload.is_some() {
+        return from_payload;
+    }
+
+    get_latest_screenshot_shell_payload_store()
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|payload| payload.get("sessionId"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn mark_screenshot_session_cancelled(session_id: &str) {
+    if let Ok(mut guard) = get_cancelled_screenshot_sessions_store().lock() {
+        if !guard.iter().any(|existing| existing == session_id) {
+            guard.push(session_id.to_string());
+        }
+        let keep_from = guard.len().saturating_sub(16);
+        if keep_from > 0 {
+            guard.drain(0..keep_from);
+        }
+    }
+}
+
+pub(crate) fn is_screenshot_session_cancelled(session_id: &str) -> bool {
+    get_cancelled_screenshot_sessions_store()
+        .lock()
+        .map(|guard| guard.iter().any(|cancelled| cancelled == session_id))
+        .unwrap_or(false)
+}
+
+fn notify_screenshot_session_cancelled(app: &tauri::AppHandle, reason: &str) {
+    let session_id = latest_screenshot_session_id();
+    if let Some(session_id) = session_id.as_deref() {
+        mark_screenshot_session_cancelled(session_id);
+    }
+    let payload = serde_json::json!({
+        "sessionId": session_id,
+        "reason": reason,
+    });
+    if let Some(window) = app.get_webview_window("screenshot") {
+        let _ = window.emit("screenshot-session-cancelled", payload);
     }
 }
 
@@ -621,40 +740,17 @@ pub fn ensure_screenshot_window(
 ) -> Result<tauri::WebviewWindow, String> {
     let transparent = screenshot_window_transparency_enabled();
     if let Some(win) = app.get_webview_window("screenshot") {
-        if !transparent
-            && !AUTOMATION_SCREENSHOT_WINDOW_REBUILD_REQUESTED.swap(true, Ordering::SeqCst)
-        {
+        if transparent {
             println!(
-                "[screenshot-trace] ensure_screenshot_window: rebuilding preconfigured transparent window for automation reason={reason}"
+                "[screenshot-trace] ensure_screenshot_window: transparent screenshot helper active reason={reason}"
             );
-            let _ = win.set_always_on_top(false);
-            let _ = win.destroy();
-            for _ in 0..12 {
-                if app.get_webview_window("screenshot").is_none() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-        } else {
-            let _ = win.set_skip_taskbar(true);
-            crate::window_lifecycle::apply_screenshot_overlay_window_styles(&win, true);
-            return Ok(win);
         }
-    }
-
-    if !transparent && app.get_webview_window("screenshot").is_some() {
-        return Err(
-            "Automation screenshot window rebuild failed: preconfigured window is still present"
-                .to_string(),
-        );
-    }
-
-    if let Some(win) = app.get_webview_window("screenshot") {
         let _ = win.set_skip_taskbar(true);
         crate::window_lifecycle::apply_screenshot_overlay_window_styles(&win, true);
         return Ok(win);
     }
 
+    clear_screenshot_window_bounds_cache();
     println!("[screenshot-trace] ensure_screenshot_window: creating hidden window reason={reason}");
     let win = tauri::WebviewWindowBuilder::new(
         app,
@@ -680,10 +776,30 @@ pub fn ensure_screenshot_window(
 }
 
 fn screenshot_window_transparency_enabled() -> bool {
-    std::env::var("YSN_SCREENSHOT_AUTOMATION_WINDOW")
+    if std::env::var("YSN_SCREENSHOT_OPAQUE_WINDOW")
         .ok()
         .as_deref()
-        != Some("1")
+        == Some("1")
+    {
+        return false;
+    }
+    match std::env::var("YSN_SCREENSHOT_TRANSPARENT_WINDOW")
+        .ok()
+        .as_deref()
+    {
+        Some("0") => false,
+        Some("1") => true,
+        _ => true,
+    }
+}
+
+fn screenshot_capture_exclusion_enabled() -> bool {
+    matches!(
+        std::env::var("YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE")
+            .ok()
+            .as_deref(),
+        Some("1")
+    )
 }
 
 #[cfg(test)]
@@ -694,41 +810,161 @@ mod screenshot_window_transparency_tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn automation_window_env_disables_transparency_only_when_explicit() {
+    fn screenshot_window_transparency_is_default_with_opaque_rollback() {
         let _guard = TEST_LOCK.lock().unwrap();
-        std::env::remove_var("YSN_SCREENSHOT_AUTOMATION_WINDOW");
+        std::env::remove_var("YSN_SCREENSHOT_TRANSPARENT_WINDOW");
+        std::env::remove_var("YSN_SCREENSHOT_OPAQUE_WINDOW");
         assert!(screenshot_window_transparency_enabled());
 
-        std::env::set_var("YSN_SCREENSHOT_AUTOMATION_WINDOW", "0");
-        assert!(screenshot_window_transparency_enabled());
-
-        std::env::set_var("YSN_SCREENSHOT_AUTOMATION_WINDOW", "1");
+        std::env::set_var("YSN_SCREENSHOT_TRANSPARENT_WINDOW", "0");
         assert!(!screenshot_window_transparency_enabled());
-        std::env::remove_var("YSN_SCREENSHOT_AUTOMATION_WINDOW");
+
+        std::env::set_var("YSN_SCREENSHOT_TRANSPARENT_WINDOW", "1");
+        assert!(screenshot_window_transparency_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_OPAQUE_WINDOW", "1");
+        assert!(!screenshot_window_transparency_enabled());
+
+        std::env::remove_var("YSN_SCREENSHOT_TRANSPARENT_WINDOW");
+        std::env::remove_var("YSN_SCREENSHOT_OPAQUE_WINDOW");
     }
 
     #[test]
-    fn early_visible_shell_env_is_disabled_by_default() {
+    fn transparent_input_shell_is_default_with_rollbacks() {
         let _guard = TEST_LOCK.lock().unwrap();
+        std::env::remove_var("YSN_SCREENSHOT_DEFER_VISIBLE_SHELL");
         std::env::remove_var("YSN_SCREENSHOT_EARLY_VISIBLE_SHELL");
-        assert!(!screenshot_early_visible_shell_enabled());
+        assert!(screenshot_early_visible_shell_enabled());
 
         std::env::set_var("YSN_SCREENSHOT_EARLY_VISIBLE_SHELL", "0");
         assert!(!screenshot_early_visible_shell_enabled());
 
         std::env::set_var("YSN_SCREENSHOT_EARLY_VISIBLE_SHELL", "1");
         assert!(screenshot_early_visible_shell_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_DEFER_VISIBLE_SHELL", "1");
+        assert!(!screenshot_early_visible_shell_enabled());
+        std::env::remove_var("YSN_SCREENSHOT_DEFER_VISIBLE_SHELL");
         std::env::remove_var("YSN_SCREENSHOT_EARLY_VISIBLE_SHELL");
+    }
+
+    #[test]
+    fn offscreen_prewarm_show_is_opt_in() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        std::env::remove_var("YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW");
+        assert!(!screenshot_offscreen_prewarm_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW", "0");
+        assert!(!screenshot_offscreen_prewarm_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW", "1");
+        assert!(screenshot_offscreen_prewarm_enabled());
+        std::env::remove_var("YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW");
+    }
+
+    #[test]
+    fn native_first_frame_shield_is_opt_in_until_visual_artifacts_are_fixed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        std::env::remove_var("YSN_NATIVE_FIRST_FRAME_SHIELD");
+        assert!(!native_first_frame_shield_enabled());
+
+        std::env::set_var("YSN_NATIVE_FIRST_FRAME_SHIELD", "1");
+        assert!(native_first_frame_shield_enabled());
+
+        std::env::set_var("YSN_NATIVE_FIRST_FRAME_SHIELD", "0");
+        assert!(!native_first_frame_shield_enabled());
+        std::env::remove_var("YSN_NATIVE_FIRST_FRAME_SHIELD");
+    }
+
+    #[test]
+    fn screenshot_capture_exclusion_is_opt_in_for_visual_qa() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        std::env::remove_var("YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE");
+        assert!(!screenshot_capture_exclusion_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE", "1");
+        assert!(screenshot_capture_exclusion_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE", "0");
+        assert!(!screenshot_capture_exclusion_enabled());
+        std::env::remove_var("YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE");
     }
 }
 
 pub fn prewarm_screenshot_window(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-        if let Err(error) = ensure_screenshot_window(&app, "startup-prewarm") {
-            eprintln!("[screenshot] failed to prewarm screenshot window: {error}");
+        match ensure_screenshot_window(&app, "startup-prewarm") {
+            Ok(window) => pulse_screenshot_window_for_webview_prewarm(window).await,
+            Err(error) => eprintln!("[screenshot] failed to prewarm screenshot window: {error}"),
         }
     });
+}
+
+fn screenshot_offscreen_prewarm_enabled() -> bool {
+    std::env::var("YSN_SCREENSHOT_PREWARM_OFFSCREEN_WINDOW")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+async fn pulse_screenshot_window_for_webview_prewarm(window: tauri::WebviewWindow) {
+    if !screenshot_offscreen_prewarm_enabled() {
+        println!("[screenshot-trace] startup offscreen screenshot prewarm show disabled; hidden WebView prewarm only");
+        return;
+    }
+    clear_screenshot_window_bounds_cache();
+    let _ = window.set_position(tauri::PhysicalPosition::new(-32000, -32000));
+    let _ = window.set_size(tauri::PhysicalSize::new(1_u32, 1_u32));
+    let _ = window.set_skip_taskbar(true);
+    crate::window_lifecycle::show_screenshot_overlay_window(&window);
+    println!("[screenshot-trace] startup offscreen screenshot prewarm shown");
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    if CAPTURING.load(Ordering::SeqCst) {
+        println!("[screenshot-trace] startup offscreen screenshot prewarm kept visible because capture started");
+        return;
+    }
+    crate::window_lifecycle::hide_window_without_activation(&window);
+    clear_screenshot_window_bounds_cache();
+    println!("[screenshot-trace] startup offscreen screenshot prewarm hidden");
+}
+
+fn set_screenshot_window_bounds_if_changed(
+    window: &tauri::WebviewWindow,
+    session_id: &str,
+    started_at: &Instant,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) {
+    let next = (x, y, width, height);
+    let unchanged = get_last_screenshot_window_bounds_store()
+        .lock()
+        .map(|guard| guard.as_ref() == Some(&next))
+        .unwrap_or(false);
+
+    if unchanged {
+        log_screenshot_baseline(
+            session_id,
+            "overlay_bounds_reused",
+            started_at,
+            &format!("screen={}x{}@{},{}", width, height, x, y),
+        );
+        return;
+    }
+
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = window.set_size(tauri::PhysicalSize::new(width.max(1), height.max(1)));
+    if let Ok(mut guard) = get_last_screenshot_window_bounds_store().lock() {
+        *guard = Some(next);
+    }
+    log_screenshot_baseline(
+        session_id,
+        "overlay_bounds_updated",
+        started_at,
+        &format!("screen={}x{}@{},{}", width, height, x, y),
+    );
 }
 
 fn prepare_screenshot_overlay_window(
@@ -748,21 +984,38 @@ fn prepare_screenshot_overlay_window(
     let (x, y, width, height) = current_screen_origin();
     let safe_width = width.max(1) as u32;
     let safe_height = height.max(1) as u32;
-    let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
-    let _ = screenshot_win.set_size(tauri::PhysicalSize::new(safe_width, safe_height));
+    set_screenshot_window_bounds_if_changed(
+        &screenshot_win,
+        session_id,
+        started_at,
+        x,
+        y,
+        safe_width,
+        safe_height,
+    );
     let _ = screenshot_win.set_always_on_top(true);
     let _ = screenshot_win.set_skip_taskbar(true);
-    let _ = crate::window_lifecycle::set_webview_capture_excluded(app, "screenshot", true);
+    let capture_exclusion = screenshot_capture_exclusion_enabled();
+    let _ =
+        crate::window_lifecycle::set_webview_capture_excluded(app, "screenshot", capture_exclusion);
+    log_screenshot_baseline(
+        session_id,
+        "overlay_capture_exclusion",
+        started_at,
+        &format!(
+            "excluded={} env=YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE",
+            capture_exclusion
+        ),
+    );
     let transparent = screenshot_window_transparency_enabled();
     let show_shell_before_ready = screenshot_early_visible_shell_enabled();
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.to_string());
-    let _ = screenshot_win.emit(
-        "screenshot-shell",
-        serde_json::json!({
+    let shell_payload = serde_json::json!({
             "mode": screenshot_mode,
             "sessionId": session_id,
             "transparent": transparent,
-            "nativeVisible": show_shell_before_ready,
+            "nativeVisible": false,
+            "showOnShellReady": show_shell_before_ready,
             "deferredShowUntilReady": !show_shell_before_ready,
             "screen": {
                 "x": x,
@@ -770,18 +1023,19 @@ fn prepare_screenshot_overlay_window(
                 "width": safe_width,
                 "height": safe_height
             }
-        }),
-    );
+    });
+    set_latest_screenshot_shell_payload(shell_payload.clone());
     if show_shell_before_ready {
-        crate::window_lifecycle::show_screenshot_overlay_window(&screenshot_win);
+        let _ = screenshot_win.emit("screenshot-shell", shell_payload);
         log_screenshot_baseline(
             session_id,
-            "visible_shell_show_returned",
+            "visible_shell_show_delegated",
             started_at,
             &format!("screen={}x{}@{},{}", safe_width, safe_height, x, y),
         );
     } else {
         crate::window_lifecycle::hide_window_without_activation(&screenshot_win);
+        let _ = screenshot_win.emit("screenshot-shell", shell_payload);
         log_screenshot_baseline(
             session_id,
             "shell_deferred_until_ready",
@@ -793,10 +1047,156 @@ fn prepare_screenshot_overlay_window(
 }
 
 fn screenshot_early_visible_shell_enabled() -> bool {
-    std::env::var("YSN_SCREENSHOT_EARLY_VISIBLE_SHELL")
+    if std::env::var("YSN_SCREENSHOT_DEFER_VISIBLE_SHELL")
         .ok()
         .as_deref()
         == Some("1")
+    {
+        return false;
+    }
+    match std::env::var("YSN_SCREENSHOT_EARLY_VISIBLE_SHELL")
+        .ok()
+        .as_deref()
+    {
+        Some("0") => false,
+        Some("1") => true,
+        _ => true,
+    }
+}
+
+fn screenshot_left_button_down() -> bool {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        (win32::GetAsyncKeyState(0x01) & i16::MIN) != 0
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+fn update_pointer_pre_capture_distance(state: &mut ScreenshotPointerPreCapture) {
+    let (Some((down_x, down_y)), Some((latest_x, latest_y))) =
+        (state.down_global, state.latest_global)
+    else {
+        return;
+    };
+    let dx = f64::from(latest_x - down_x);
+    let dy = f64::from(latest_y - down_y);
+    state.max_drag_distance = state.max_drag_distance.max((dx * dx + dy * dy).sqrt());
+}
+
+fn start_screenshot_pointer_pre_capture(session_id: &str, origin_x: i32, origin_y: i32) {
+    let session_id = session_id.to_string();
+    let started_at = Instant::now();
+    let initial_down = screenshot_left_button_down();
+    let initial_cursor = get_cursor_position();
+    if let Ok(mut guard) = get_screenshot_pointer_pre_capture_store().lock() {
+        *guard = Some(ScreenshotPointerPreCapture {
+            session_id: session_id.clone(),
+            origin_x,
+            origin_y,
+            started_at,
+            updated_at: started_at,
+            was_down_at_start: initial_down,
+            left_down: initial_down,
+            completed: false,
+            down_global: initial_cursor.filter(|_| initial_down),
+            latest_global: initial_cursor.filter(|_| initial_down),
+            max_drag_distance: 0.0,
+        });
+    }
+
+    std::thread::spawn(move || {
+        for _ in 0..450 {
+            std::thread::sleep(std::time::Duration::from_millis(4));
+            let left_down = screenshot_left_button_down();
+            let cursor = get_cursor_position();
+            let mut should_stop = false;
+            if let Ok(mut guard) = get_screenshot_pointer_pre_capture_store().lock() {
+                let Some(state) = guard.as_mut() else {
+                    break;
+                };
+                if state.session_id != session_id {
+                    break;
+                }
+                if started_at.elapsed() > std::time::Duration::from_millis(1800) {
+                    should_stop = true;
+                }
+                state.updated_at = Instant::now();
+                if left_down {
+                    if state.down_global.is_none() {
+                        state.down_global = cursor;
+                    }
+                    state.latest_global = cursor.or(state.latest_global);
+                    state.left_down = true;
+                    state.completed = false;
+                    update_pointer_pre_capture_distance(state);
+                } else {
+                    if state.left_down && state.down_global.is_some() {
+                        state.latest_global = cursor.or(state.latest_global);
+                        state.completed = true;
+                        update_pointer_pre_capture_distance(state);
+                    }
+                    state.left_down = false;
+                }
+            } else {
+                break;
+            }
+            if should_stop {
+                break;
+            }
+        }
+    });
+}
+
+fn screenshot_pointer_pre_capture_json(session_id: Option<&str>) -> serde_json::Value {
+    let Ok(guard) = get_screenshot_pointer_pre_capture_store().lock() else {
+        return serde_json::Value::Null;
+    };
+    let Some(state) = guard.as_ref() else {
+        return serde_json::Value::Null;
+    };
+    if let Some(expected_session_id) = session_id {
+        if state.session_id != expected_session_id {
+            return serde_json::Value::Null;
+        }
+    }
+    if state.started_at.elapsed() > std::time::Duration::from_millis(2500) {
+        return serde_json::Value::Null;
+    }
+    let Some((down_global_x, down_global_y)) = state.down_global else {
+        return serde_json::json!({
+            "sessionId": state.session_id,
+            "available": false,
+            "leftDown": state.left_down,
+            "completed": state.completed,
+            "wasDownAtStart": state.was_down_at_start,
+            "startedAgeMs": state.started_at.elapsed().as_millis(),
+            "updatedAgeMs": state.updated_at.elapsed().as_millis()
+        });
+    };
+    let (latest_global_x, latest_global_y) = state
+        .latest_global
+        .unwrap_or((down_global_x, down_global_y));
+    serde_json::json!({
+        "sessionId": state.session_id,
+        "available": true,
+        "leftDown": state.left_down,
+        "completed": state.completed,
+        "wasDownAtStart": state.was_down_at_start,
+        "x": down_global_x - state.origin_x,
+        "y": down_global_y - state.origin_y,
+        "currentX": latest_global_x - state.origin_x,
+        "currentY": latest_global_y - state.origin_y,
+        "globalX": down_global_x,
+        "globalY": down_global_y,
+        "currentGlobalX": latest_global_x,
+        "currentGlobalY": latest_global_y,
+        "dragDistance": state.max_drag_distance,
+        "startedAgeMs": state.started_at.elapsed().as_millis(),
+        "updatedAgeMs": state.updated_at.elapsed().as_millis()
+    })
 }
 
 pub async fn start_screenshot_impl(
@@ -817,6 +1217,8 @@ pub async fn start_screenshot_impl(
         mode
     );
     let screenshot_mode = mode.unwrap_or_else(|| "normal".to_string());
+    let (pointer_origin_x, pointer_origin_y, _, _) = current_screen_origin();
+    start_screenshot_pointer_pre_capture(&session_id, pointer_origin_x, pointer_origin_y);
     let native_overlay_plan = crate::screenshot_native::default_native_overlay_launch_plan();
     log_native_overlay_launch_plan(&session_id, &started_at, native_overlay_plan);
     if native_overlay_plan.uses_native_overlay() {
@@ -853,24 +1255,30 @@ pub async fn start_screenshot_impl(
         &format!("hidden_for_capture={}", main_hidden_for_capture),
     );
 
-    close_screenshot_windows(&app, false);
-    let screenshot_win =
-        prepare_screenshot_overlay_window(&app, &session_id, &started_at, &screenshot_mode)?;
-    log_screenshot_baseline(
-        &session_id,
-        "overlay_window_prepared_hidden",
-        &started_at,
-        &format!("generation={}", run_generation),
-    );
     if main_hidden_for_capture && crate::window_lifecycle::current_screenshot_capture_needs_settle()
     {
         crate::window_lifecycle::wait_for_hidden_main_capture_settle().await;
         log_screenshot_baseline(&session_id, "main_hidden_settled", &started_at, "");
     }
 
-    // Capture and encode on a blocking thread to avoid blocking the async runtime.
     log_screenshot_baseline(&session_id, "capture_start", &started_at, "");
-    let (rgba_image, screen_info) = match tokio::task::spawn_blocking(capture_current_monitor_rgba)
+    let capture_task = tokio::task::spawn_blocking(capture_current_monitor_rgba);
+
+    close_screenshot_windows(&app, false);
+    let screenshot_win =
+        prepare_screenshot_overlay_window(&app, &session_id, &started_at, &screenshot_mode)?;
+    log_screenshot_baseline(
+        &session_id,
+        "overlay_window_prepared",
+        &started_at,
+        &format!(
+            "generation={} transparent_input_shell={}",
+            run_generation,
+            screenshot_early_visible_shell_enabled()
+        ),
+    );
+
+    let (rgba_image, screen_info) = match capture_task
         .await
         .map_err(|error| format!("Screenshot task failed: {error}"))
         .and_then(|result| result)
@@ -928,7 +1336,35 @@ pub async fn start_screenshot_impl(
         *guard = None;
     }
 
-    if cpu_native_overlay_mvp_enabled() {
+    match crate::screenshot_shared_buffer::post_rgba_frame_to_webview(
+        screenshot_win.as_ref().clone(),
+        session_id.clone(),
+        &rgba_image,
+    ) {
+        Ok(posted) if posted.posted => log_screenshot_baseline(
+            &session_id,
+            "shared_buffer_direct_posted",
+            &started_at,
+            &format!(
+                "bytes={} size={}x{} transfer_type={}",
+                posted.bytes, posted.width, posted.height, posted.transfer_type
+            ),
+        ),
+        Ok(posted) => log_screenshot_baseline(
+            &session_id,
+            "shared_buffer_direct_unavailable",
+            &started_at,
+            posted.reason.as_deref().unwrap_or("unknown"),
+        ),
+        Err(error) => log_screenshot_baseline(
+            &session_id,
+            "shared_buffer_direct_failed",
+            &started_at,
+            &error,
+        ),
+    }
+
+    if native_first_frame_shield_enabled() {
         let bounds = crate::screenshot_native::MonitorCaptureBounds::new(
             screen_info.0,
             screen_info.1,
@@ -944,12 +1380,12 @@ pub async fn start_screenshot_impl(
             Ok(diagnostics) => log_cpu_native_overlay_diagnostics(
                 &session_id,
                 &started_at,
-                "native_overlay_cpu_mvp_visible",
+                "native_first_frame_shield_visible",
                 diagnostics,
             ),
             Err(error) => log_screenshot_baseline(
                 &session_id,
-                "native_overlay_cpu_mvp_fallback",
+                "native_first_frame_shield_fallback",
                 &started_at,
                 &format!("reason={error}"),
             ),
@@ -957,9 +1393,9 @@ pub async fn start_screenshot_impl(
     } else {
         log_screenshot_baseline(
             &session_id,
-            "native_overlay_cpu_mvp_disabled",
+            "native_first_frame_shield_disabled",
             &started_at,
-            "set YSN_NATIVE_OVERLAY_CPU_MVP=1 for diagnostic-only native overlay render/show",
+            "set YSN_NATIVE_FIRST_FRAME_SHIELD=1 only for native shield diagnostics; default disabled to avoid black/color-shift fullscreen artifacts",
         );
     }
 
@@ -968,8 +1404,15 @@ pub async fn start_screenshot_impl(
 
     let (x, y, width, height) = screen_info;
     let physical_bounds = crate::screenshot_native::MonitorCaptureBounds::new(x, y, width, height);
-    let _ = screenshot_win.set_position(tauri::PhysicalPosition::new(x, y));
-    let _ = screenshot_win.set_size(tauri::PhysicalSize::new(width, height));
+    set_screenshot_window_bounds_if_changed(
+        &screenshot_win,
+        &session_id,
+        &started_at,
+        x,
+        y,
+        width.max(1),
+        height.max(1),
+    );
     let _ = screenshot_win.set_always_on_top(true);
 
     if crate::screenshot_native::is_stale_generation(run_generation) {
@@ -1020,6 +1463,7 @@ pub async fn start_screenshot_impl(
 pub fn get_screenshot_pointer_state(
     app: tauri::AppHandle,
     label: Option<String>,
+    session_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let target_label = label.unwrap_or_else(|| "screenshot".to_string());
     if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
@@ -1040,16 +1484,14 @@ pub fn get_screenshot_pointer_state(
             window_y = position.y;
         }
     }
-    #[cfg(target_os = "windows")]
-    let left_down = unsafe { (win32::GetAsyncKeyState(0x01) & i16::MIN) != 0 };
-    #[cfg(not(target_os = "windows"))]
-    let left_down = false;
+    let left_down = screenshot_left_button_down();
     Ok(serde_json::json!({
         "leftDown": left_down,
         "x": global_x - window_x,
         "y": global_y - window_y,
         "globalX": global_x,
-        "globalY": global_y
+        "globalY": global_y,
+        "preCapture": screenshot_pointer_pre_capture_json(session_id.as_deref())
     }))
 }
 
@@ -2578,6 +3020,14 @@ pub fn get_latest_screenshot_payload() -> Result<Option<serde_json::Value>, Stri
 }
 
 #[tauri::command]
+pub fn get_latest_screenshot_shell_payload() -> Result<Option<serde_json::Value>, String> {
+    get_latest_screenshot_shell_payload_store()
+        .lock()
+        .map(|guard| guard.clone())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn show_save_feedback_toast(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let label = format!("save_toast_{}", now_epoch_millis_local());
     let encoded_path = encode_query_component(&path);
@@ -2650,6 +3100,7 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
 
     if CAPTURING.swap(true, Ordering::SeqCst) {
         println!("[screenshot-trace] start_screenshot: CAPTURING was already true, canceling active screenshot");
+        notify_screenshot_session_cancelled(&app, "repeat-hotkey-cancel");
         crate::screenshot_native::advance_run_generation();
         let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("repeat-hotkey-cancel");
         unregister_capture_escape_shortcut(&app);
@@ -2678,9 +3129,11 @@ pub async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String
     println!("[screenshot-trace] enter force_close_screenshots");
     crate::screenshot_native::advance_run_generation();
     let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("force-close-screenshots");
+    notify_screenshot_session_cancelled(&app, "force-close-screenshots");
     unregister_capture_escape_shortcut(&app);
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
+    clear_latest_screenshot_payload();
     crate::window_lifecycle::restore_main_window_after_screenshot(&app, "force-close-screenshots");
     println!("[screenshot-trace] force_close_screenshots: CAPTURING is now false");
     Ok(())
@@ -2717,6 +3170,7 @@ pub async fn cancel_screenshot(
         crate::window_lifecycle::suppress_next_screenshot_restore();
     }
     let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("cancel-screenshot");
+    notify_screenshot_session_cancelled(&app, "cancel-screenshot");
     unregister_capture_escape_shortcut(&app);
     if let Some(target_label) = label {
         if target_label == "screenshot" || target_label.starts_with("screenshot_") {
@@ -2758,6 +3212,42 @@ pub fn get_fullscreen_rgba_bytes(
 ) -> Result<tauri::ipc::Response, String> {
     let rgba = get_matching_screenshot_rgba(session_id.as_deref())?;
     Ok(tauri::ipc::Response::new(rgba.bytes))
+}
+
+#[tauri::command]
+pub fn post_fullscreen_rgba_shared_buffer(
+    webview: tauri::Webview,
+    session_id: Option<String>,
+) -> Result<crate::screenshot_shared_buffer::ScreenshotSharedBufferPostResult, String> {
+    let started_at = Instant::now();
+    let session_id = session_id.unwrap_or_else(|| "unknown".to_string());
+    let rgba = get_matching_screenshot_rgba(Some(&session_id))?;
+    let result = crate::screenshot_shared_buffer::post_rgba_frame_to_webview(
+        webview,
+        session_id.clone(),
+        &rgba,
+    );
+    match &result {
+        Ok(posted) if posted.posted => log_screenshot_baseline(
+            &session_id,
+            "shared_buffer_posted",
+            &started_at,
+            &format!(
+                "bytes={} size={}x{} transfer_type={}",
+                posted.bytes, posted.width, posted.height, posted.transfer_type
+            ),
+        ),
+        Ok(posted) => log_screenshot_baseline(
+            &session_id,
+            "shared_buffer_unavailable",
+            &started_at,
+            posted.reason.as_deref().unwrap_or("unknown"),
+        ),
+        Err(error) => {
+            log_screenshot_baseline(&session_id, "shared_buffer_failed", &started_at, error)
+        }
+    }
+    result
 }
 
 #[tauri::command]

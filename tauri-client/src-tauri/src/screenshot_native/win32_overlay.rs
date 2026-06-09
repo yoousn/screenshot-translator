@@ -1,8 +1,12 @@
 #[cfg(target_os = "windows")]
 use crate::win32;
 #[cfg(target_os = "windows")]
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
 use std::ffi::c_void;
 use std::fmt;
+#[cfg(target_os = "windows")]
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Win32OverlayHandle {
@@ -186,6 +190,7 @@ pub fn create_win32_overlay(
 
 pub fn destroy_win32_overlay(window: &mut Win32OverlayWindow) -> Result<(), Win32OverlayError> {
     ensure_handle(window.handle, "destroy")?;
+    clear_win32_overlay_bitmap(window.handle());
     destroy_platform_overlay(window.handle)?;
     window.mark_destroyed();
     Ok(())
@@ -286,6 +291,90 @@ fn create_platform_overlay(
     Ok(window)
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone)]
+struct Win32OverlayBitmap {
+    bgra_bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(target_os = "windows")]
+static WIN32_OVERLAY_BITMAPS: OnceLock<Mutex<HashMap<isize, Win32OverlayBitmap>>> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn overlay_bitmap_store() -> &'static Mutex<HashMap<isize, Win32OverlayBitmap>> {
+    WIN32_OVERLAY_BITMAPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_win32_overlay_bitmap(
+    handle: Win32OverlayHandle,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(), Win32OverlayError> {
+    ensure_handle(handle, "set-bitmap")?;
+    if width == 0 || height == 0 {
+        return Err(Win32OverlayError::InvalidConfig("bitmap dimensions"));
+    }
+    let expected_len = usize::try_from(width)
+        .ok()
+        .and_then(|w| w.checked_mul(usize::try_from(height).ok()?))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(Win32OverlayError::InvalidConfig("bitmap size"))?;
+    if bytes.len() != expected_len {
+        return Err(Win32OverlayError::InvalidConfig("bitmap bytes"));
+    }
+    let bgra_bytes = rgba_to_bgra_dib_bytes(bytes);
+    if let Ok(mut guard) = overlay_bitmap_store().lock() {
+        guard.insert(
+            handle.hwnd(),
+            Win32OverlayBitmap {
+                bgra_bytes,
+                width,
+                height,
+            },
+        );
+    }
+    unsafe {
+        let _ = win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn rgba_to_bgra_dib_bytes(rgba: &[u8]) -> Vec<u8> {
+    let mut bgra = Vec::with_capacity(rgba.len());
+    for pixel in rgba.chunks_exact(4) {
+        bgra.push(pixel[2]);
+        bgra.push(pixel[1]);
+        bgra.push(pixel[0]);
+        bgra.push(pixel[3]);
+    }
+    bgra
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_win32_overlay_bitmap(
+    _handle: Win32OverlayHandle,
+    _bytes: &[u8],
+    _width: u32,
+    _height: u32,
+) -> Result<(), Win32OverlayError> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn clear_win32_overlay_bitmap(handle: Win32OverlayHandle) {
+    if let Ok(mut guard) = overlay_bitmap_store().lock() {
+        guard.remove(&handle.hwnd());
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn clear_win32_overlay_bitmap(_handle: Win32OverlayHandle) {}
+
 #[cfg(not(target_os = "windows"))]
 fn create_platform_overlay(
     _config: &Win32OverlayConfig,
@@ -295,6 +384,7 @@ fn create_platform_overlay(
 
 #[cfg(target_os = "windows")]
 fn destroy_platform_overlay(handle: Win32OverlayHandle) -> Result<(), Win32OverlayError> {
+    clear_win32_overlay_bitmap(handle);
     let ok = unsafe { win32::DestroyWindow(handle.hwnd()) };
     if ok == 0 {
         Err(Win32OverlayError::DestroyWindowFailed)
@@ -332,7 +422,11 @@ fn show_platform_overlay(
         SW_SHOW
     };
     let _ = unsafe { win32::ShowWindow(handle.hwnd(), show_command) };
+    let _ = unsafe { win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0) };
     let _ = unsafe { win32::UpdateWindow(handle.hwnd()) };
+    unsafe {
+        let _ = win32::DwmFlush();
+    }
     Ok(())
 }
 
@@ -380,7 +474,7 @@ fn set_capture_exclusion(
 
 #[cfg(target_os = "windows")]
 fn overlay_ex_style(config: &Win32OverlayConfig) -> u32 {
-    let mut style = WS_EX_TOOLWINDOW | WS_EX_LAYERED;
+    let mut style = WS_EX_TOOLWINDOW;
     if config.topmost {
         style |= WS_EX_TOPMOST;
     }
@@ -411,7 +505,79 @@ unsafe extern "system" fn win32_overlay_wnd_proc(
     w_param: usize,
     l_param: isize,
 ) -> isize {
+    match message {
+        WM_NCHITTEST => return HTTRANSPARENT,
+        WM_ERASEBKGND => return 1,
+        WM_PAINT => {
+            paint_overlay_bitmap(hwnd);
+            return 0;
+        }
+        _ => {}
+    }
     win32::DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+#[cfg(target_os = "windows")]
+fn paint_overlay_bitmap(hwnd: isize) {
+    let bitmap = overlay_bitmap_store()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&hwnd).cloned());
+    let mut paint = win32::PAINTSTRUCT {
+        hdc: 0,
+        f_erase: 0,
+        rc_paint: win32::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        f_restore: 0,
+        f_inc_update: 0,
+        rgb_reserved: [0; 32],
+    };
+    let hdc = unsafe { win32::BeginPaint(hwnd, &mut paint as *mut win32::PAINTSTRUCT) };
+    if hdc == 0 {
+        return;
+    }
+    if let Some(bitmap) = bitmap {
+        let info = BitmapInfo {
+            header: BitmapInfoHeader {
+                bi_size: std::mem::size_of::<BitmapInfoHeader>() as u32,
+                bi_width: bitmap.width as i32,
+                bi_height: -(bitmap.height as i32),
+                bi_planes: 1,
+                bi_bit_count: 32,
+                bi_compression: BI_RGB,
+                bi_size_image: 0,
+                bi_x_pels_per_meter: 0,
+                bi_y_pels_per_meter: 0,
+                bi_clr_used: 0,
+                bi_clr_important: 0,
+            },
+            colors: [0; 3],
+        };
+        let dst_width = (paint.rc_paint.right - paint.rc_paint.left).max(bitmap.width as i32);
+        let dst_height = (paint.rc_paint.bottom - paint.rc_paint.top).max(bitmap.height as i32);
+        unsafe {
+            let _ = StretchDIBits(
+                hdc,
+                0,
+                0,
+                dst_width,
+                dst_height,
+                0,
+                0,
+                bitmap.width as i32,
+                bitmap.height as i32,
+                bitmap.bgra_bytes.as_ptr().cast(),
+                &info,
+                DIB_RGB_COLORS,
+                SRCCOPY,
+            );
+        }
+    }
+    let _ = unsafe { win32::EndPaint(hwnd, &paint as *const win32::PAINTSTRUCT) };
 }
 
 #[cfg(target_os = "windows")]
@@ -448,13 +614,69 @@ const WS_EX_TOOLWINDOW: u32 = 0x00000080;
 #[cfg(target_os = "windows")]
 const WS_EX_APPWINDOW: u32 = 0x00040000;
 #[cfg(target_os = "windows")]
-const WS_EX_LAYERED: u32 = 0x00080000;
+const WM_NCHITTEST: u32 = 0x0084;
+#[cfg(target_os = "windows")]
+const WM_ERASEBKGND: u32 = 0x0014;
+#[cfg(target_os = "windows")]
+const WM_PAINT: u32 = 0x000F;
+#[cfg(target_os = "windows")]
+const HTTRANSPARENT: isize = -1;
 #[cfg(target_os = "windows")]
 const WS_EX_NOACTIVATE: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
 const WDA_NONE: u32 = 0x00000000;
 #[cfg(target_os = "windows")]
 const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct BitmapInfoHeader {
+    bi_size: u32,
+    bi_width: i32,
+    bi_height: i32,
+    bi_planes: u16,
+    bi_bit_count: u16,
+    bi_compression: u32,
+    bi_size_image: u32,
+    bi_x_pels_per_meter: i32,
+    bi_y_pels_per_meter: i32,
+    bi_clr_used: u32,
+    bi_clr_important: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct BitmapInfo {
+    header: BitmapInfoHeader,
+    colors: [u32; 3],
+}
+
+#[cfg(target_os = "windows")]
+const BI_RGB: u32 = 0;
+#[cfg(target_os = "windows")]
+const DIB_RGB_COLORS: u32 = 0;
+#[cfg(target_os = "windows")]
+const SRCCOPY: u32 = 0x00CC0020;
+
+#[cfg(target_os = "windows")]
+#[link(name = "gdi32")]
+extern "system" {
+    fn StretchDIBits(
+        hdc: isize,
+        x_dest: i32,
+        y_dest: i32,
+        dest_width: i32,
+        dest_height: i32,
+        x_src: i32,
+        y_src: i32,
+        src_width: i32,
+        src_height: i32,
+        bits: *const std::ffi::c_void,
+        bitmap_info: *const BitmapInfo,
+        usage: u32,
+        rop: u32,
+    ) -> i32;
+}
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {

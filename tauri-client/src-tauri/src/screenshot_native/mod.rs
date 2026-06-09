@@ -96,7 +96,8 @@ pub use monitor_output_mapping::{
 };
 pub use native_overlay_session::{
     begin_cpu_native_overlay_session, cancel_cpu_native_overlay_session,
-    cleanup_stale_cpu_native_overlay_session, cpu_native_overlay_session_diagnostics,
+    cancel_cpu_native_overlay_session_if_matches, cleanup_stale_cpu_native_overlay_session,
+    cpu_native_overlay_session_diagnostics, raise_cpu_native_overlay_session,
     NativeOverlaySessionDiagnostics, NativeOverlaySessionError, NativeOverlaySessionRuntime,
     NativeOverlaySessionState,
 };
@@ -123,9 +124,9 @@ pub use session::{
     next_screenshot_session_id, ScreenshotGenerationState, ScreenshotRunGeneration,
 };
 pub use win32_overlay::{
-    create_win32_overlay, destroy_win32_overlay, hide_win32_overlay, show_win32_overlay,
-    Win32OverlayConfig, Win32OverlayError, Win32OverlayHandle, Win32OverlayLifecycleState,
-    Win32OverlayWindow,
+    create_win32_overlay, destroy_win32_overlay, hide_win32_overlay, set_win32_overlay_bitmap,
+    show_win32_overlay, Win32OverlayConfig, Win32OverlayError, Win32OverlayHandle,
+    Win32OverlayLifecycleState, Win32OverlayWindow,
 };
 pub use win32_overlay_dispatch::{
     input_event_label, run_win32_overlay_message_tuple_diagnostic_pump, Win32OverlayWaitResult,

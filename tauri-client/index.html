@@ -5,6 +5,36 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tauri + React + Typescript</title>
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+
+      html.transparent-window,
+      html.transparent-window body,
+      html.transparent-window #root {
+        background: transparent;
+      }
+    </style>
+    <script>
+      (() => {
+        const search = window.location.search || "";
+        if (
+          search.includes("recordingSessionKey") ||
+          search.includes("recording_control") ||
+          search.includes("recording_notice") ||
+          search.includes("save_toast")
+        ) {
+          document.documentElement.classList.add("transparent-window");
+        }
+      })();
+    </script>
   </head>
 
   <body>

@@ -20,6 +20,8 @@ interface UseScreenshotInteractionProps {
   hasSelectedRef: React.RefObject<boolean>;
   overlayVisibleRef: React.RefObject<boolean>;
   frameInteractiveRef: React.RefObject<boolean>;
+  imageReadyRef: React.RefObject<boolean>;
+  activeSessionIdRef?: React.RefObject<string | null>;
   isSelecting: boolean;
   setIsSelecting: (selected: boolean) => void;
   isSelectingRef: React.RefObject<boolean>;
@@ -113,6 +115,8 @@ export function useScreenshotInteraction({
   hasSelectedRef,
   overlayVisibleRef,
   frameInteractiveRef,
+  imageReadyRef,
+  activeSessionIdRef,
   isSelecting,
   setIsSelecting,
   isSelectingRef,
@@ -207,6 +211,7 @@ export function useScreenshotInteraction({
   const annotationDragStartRef = useRef({ x: 0, y: 0 });
   const internalLastMouseRef = useRef({ x: 0, y: 0 });
   const lastMouseRef = sharedLastMouseRef || internalLastMouseRef;
+  const firstPointerDownSessionRef = useRef<string | null>(null);
 
   function EMPTY_RECT(): Rect {
     return { x: 0, y: 0, w: 0, h: 0 };
@@ -216,6 +221,39 @@ export function useScreenshotInteraction({
     const canvas = canvasRef.current;
     if (!canvas) return;
     canvas.focus({ preventScroll: true });
+  };
+
+  const logInteractionBaseline = (phase: string, detail = "") => {
+    const session = activeSessionIdRef?.current || "interaction";
+    invoke("log_screenshot_perf", {
+      message: `[baseline] session=${session} phase=${phase} elapsed_ms=0 ${detail}`,
+    }).catch(() => {});
+  };
+
+  const waitForImageReady = async (timeoutMs = 1500) => {
+    if (imageReadyRef.current) return true;
+    const startedAt = performance.now();
+    while (performance.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => window.setTimeout(resolve, 16));
+      if (imageReadyRef.current) return true;
+    }
+    return false;
+  };
+
+  const runWhenImageReady = (action: string, task: () => void) => {
+    if (imageReadyRef.current) {
+      task();
+      return;
+    }
+    logInteractionBaseline("image_action_pending", `action=${action}`);
+    waitForImageReady().then((ready) => {
+      if (!ready) {
+        logInteractionBaseline("image_action_timeout", `action=${action}`);
+        return;
+      }
+      logInteractionBaseline("image_action_resumed", `action=${action}`);
+      task();
+    }).catch(() => {});
   };
 
   const focusScreenshotWindow = () => {
@@ -307,6 +345,11 @@ export function useScreenshotInteraction({
 
   const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!frameInteractiveRef.current) return;
+    const activeSession = activeSessionIdRef?.current || "interaction";
+    if (firstPointerDownSessionRef.current !== activeSession) {
+      firstPointerDownSessionRef.current = activeSession;
+      logInteractionBaseline("first_pointer_down", `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} image_ready=${imageReadyRef.current}`);
+    }
     focusScreenshotWindow();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -409,14 +452,30 @@ export function useScreenshotInteraction({
     if (!frameInteractiveRef.current) return;
     const cx = e.clientX;
     const cy = e.clientY;
+    const primaryButtonDown = (e.buttons & 1) === 1;
     if (
-      (e.buttons & 1) === 1
-      && activePointerIdRef.current !== null
+      primaryButtonDown
       && !hasSelectedRef.current
       && !isSelectingRef.current
       && !isDraggingRef.current
       && !isResizingRef.current
     ) {
+      if (activePointerIdRef.current === null) {
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          activePointerIdRef.current = e.pointerId;
+        } catch {
+          activePointerIdRef.current = null;
+        }
+        const activeSession = activeSessionIdRef?.current || "interaction";
+        if (firstPointerDownSessionRef.current !== activeSession) {
+          firstPointerDownSessionRef.current = activeSession;
+          logInteractionBaseline(
+            "first_pointer_move_down",
+            `x=${Math.round(cx)} y=${Math.round(cy)} image_ready=${imageReadyRef.current}`
+          );
+        }
+      }
       startPlainSelectionAt(cx, cy);
     }
     lastMouseRef.current = { x: cx, y: cy };
@@ -608,7 +667,7 @@ export function useScreenshotInteraction({
     setSelection(valid);
     if (valid) requestAnimationFrame(focusScreenshotWindow);
     if (valid && explicitSelectionRelease && screenshotModeRef.current === "translate") {
-      setTimeout(() => handleTranslate(), 0);
+      setTimeout(() => runWhenImageReady("auto_translate", handleTranslate), 0);
     }
     if (valid && explicitSelectionRelease && screenshotModeRef.current === "record") {
       // setTimeout(() => enterRecordingMode("region"), 0);
@@ -629,7 +688,7 @@ export function useScreenshotInteraction({
   const handleDoubleClick = () => {
     if (!frameInteractiveRef.current) return;
     const canConfirm = getSelectionConfirmDelayMs();
-    if (canConfirm === 0) confirmScreenshot("copy");
+    if (canConfirm === 0) runWhenImageReady("double_click_copy", () => confirmScreenshot("copy"));
   };
 
   const getSelectionConfirmDelayMs = (minAgeMs = 120) => {
@@ -714,9 +773,12 @@ export function useScreenshotInteraction({
         e.preventDefault();
         runWgcExplicitSelectionDiagnostic?.();
         return;
-      }      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "d" || e.key === "D")) {
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
-        if (!isOCRingRef.current && !isTranslatingRef.current && !isScrollCapturingRef.current && recordingStatusRef.current === "idle") handleOCR();
+        if (!isOCRingRef.current && !isTranslatingRef.current && !isScrollCapturingRef.current && recordingStatusRef.current === "idle") {
+          runWhenImageReady("ocr", handleOCR);
+        }
         return;
       }
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
@@ -736,12 +798,12 @@ export function useScreenshotInteraction({
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        confirmScreenshot("copy");
+        runWhenImageReady("enter_copy", () => confirmScreenshot("copy"));
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
         e.preventDefault();
-        confirmScreenshot("copy");
+        runWhenImageReady("copy", () => confirmScreenshot("copy"));
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
@@ -754,17 +816,17 @@ export function useScreenshotInteraction({
           finishManualScrollCapture();
           return;
         }
-        confirmScreenshot("save");
+        runWhenImageReady("save", () => confirmScreenshot("save"));
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "q" || e.key === "Q")) {
         e.preventDefault();
         if (isTranslatingRef.current || isOCRingRef.current || isScrollCapturingRef.current) return;
-        handleTranslate();
+        runWhenImageReady("translate", handleTranslate);
       }
       if (!e.ctrlKey && !e.metaKey && (e.key === "p" || e.key === "P")) {
         e.preventDefault();
-        handlePin();
+        runWhenImageReady("pin", handlePin);
       }
     };
 

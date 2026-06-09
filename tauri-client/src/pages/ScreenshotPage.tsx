@@ -37,6 +37,20 @@ const WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED = import.meta.env.VITE_Y
 
 type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
 
+const waitForShellPaint = () => new Promise<void>((resolve) => {
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    resolve();
+  };
+  const timeoutId = window.setTimeout(finish, 24);
+  window.requestAnimationFrame(() => {
+    window.clearTimeout(timeoutId);
+    finish();
+  });
+});
+
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mouseTrackerRef = useRef<HTMLDivElement>(null);
@@ -47,6 +61,7 @@ export default function ScreenshotPage() {
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const autoAcceptanceSmokeStartedRef = useRef(false);
   const lastScreenshotPayloadSignatureRef = useRef<string | null>(null);
+  const lastScreenshotShellSignatureRef = useRef<string | null>(null);
   
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
@@ -74,6 +89,7 @@ export default function ScreenshotPage() {
   const isEditingRef = useRef(false);
   const screenshotModeRef = useRef("normal");
   const frameInteractiveRef = useRef(false);
+  const imageReadyRef = useRef(false);
   const drawRef = useRef(draw);
 
   // Break circular dependency
@@ -327,6 +343,8 @@ export default function ScreenshotPage() {
     clearScrollCaptureState,
     clearRecordingState,
     resetAnnotations,
+    rectRef,
+    hasSelectedRef,
     setCurrentRect,
     setSelection,
     setHasSelected,
@@ -348,7 +366,9 @@ export default function ScreenshotPage() {
     pendingConfirmTimerRef,
   });
 
-  frameInteractiveRef.current = overlayVisible && screenshotState === "ready";
+  const canInteractWithOverlay = overlayVisible && (screenshotState === "ready" || nativeOverlayVisibleRef.current);
+  frameInteractiveRef.current = canInteractWithOverlay;
+  imageReadyRef.current = Boolean(imageRef.current);
 
   // 7. useScreenshotOcr (Initialized before actions to avoid temporal dead zone)
   const {
@@ -532,6 +552,8 @@ export default function ScreenshotPage() {
     hasSelectedRef,
     overlayVisibleRef,
     frameInteractiveRef,
+    imageReadyRef,
+    activeSessionIdRef: displayedSessionIdRef,
     isSelecting,
     setIsSelecting,
     isSelectingRef,
@@ -674,6 +696,7 @@ export default function ScreenshotPage() {
   }
 
   useEffect(() => {
+    invoke("log_screenshot_perf", { message: "[baseline] session=screenshot-page phase=mounted elapsed_ms=0" }).catch(() => {});
     loadConfig();
     document.body.style.setProperty("margin", "0", "important");
     document.body.style.setProperty("overflow", "hidden", "important");
@@ -684,6 +707,7 @@ export default function ScreenshotPage() {
     let unlistenMode: (() => void) | null = null;
     let unlistenShell: (() => void) | null = null;
     let unlistenEvent: (() => void) | null = null;
+    let unlistenSessionCancelled: (() => void) | null = null;
     let unlistenRecordingEnded: (() => void) | null = null;
 
     const getPayloadSignature = (payload: ScreenshotUpdatedPayload | null | undefined) => {
@@ -698,6 +722,68 @@ export default function ScreenshotPage() {
         payload.path || "",
         payload.base64 ? payload.base64.length : 0,
       ].join("|");
+    };
+
+    const recoverShellPreCaptureDrag = async (sessionId: string, shellReceivedAt: number) => {
+      let loggedStart = false;
+      const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+      const clampToViewport = (value: number, max: number) => Math.max(0, Math.min(max, value));
+      const applyPreCapture = (preCapture: any, finalize: boolean) => {
+        const maxW = Math.max(1, window.innerWidth);
+        const maxH = Math.max(1, window.innerHeight);
+        const startX = clampToViewport(Math.round(Number(preCapture.x) || 0), maxW - 1);
+        const startY = clampToViewport(Math.round(Number(preCapture.y) || 0), maxH - 1);
+        const currentX = clampToViewport(Math.round(Number(preCapture.currentX) || startX), maxW - 1);
+        const currentY = clampToViewport(Math.round(Number(preCapture.currentY) || startY), maxH - 1);
+        const next = {
+          x: Math.min(startX, currentX),
+          y: Math.min(startY, currentY),
+          w: Math.abs(currentX - startX),
+          h: Math.abs(currentY - startY),
+        };
+        const dragDistance = Number(preCapture.dragDistance) || Math.hypot(next.w, next.h);
+        selectionDragDistanceRef.current = Math.max(selectionDragDistanceRef.current, dragDistance);
+        setCurrentRect(next, true);
+        drawRef.current(next.x, next.y, next.w, next.h);
+        const valid = next.w > 5 && next.h > 5;
+        isSelectingRef.current = !finalize;
+        setIsSelecting(!finalize);
+        setSelection(finalize && valid);
+        return { next, valid, dragDistance };
+      };
+
+      for (let index = 0; index < 48; index += 1) {
+        if (displayedSessionIdRef.current !== sessionId || !overlayVisibleRef.current) return;
+        if (hasSelectedRef.current && rectRef.current.w > 5 && rectRef.current.h > 5) return;
+        const pointerState = await invoke<any>("get_screenshot_pointer_state", {
+          label: getCurrentWindow().label,
+          sessionId,
+        }).catch(() => null);
+        const preCapture = pointerState?.preCapture;
+        if (!preCapture || preCapture.available !== true || String(preCapture.sessionId) !== sessionId) return;
+        const dragDistance = Number(preCapture.dragDistance) || 0;
+        const leftDown = preCapture.leftDown === true;
+        const completed = preCapture.completed === true;
+        if (dragDistance < 3 && leftDown) {
+          await wait(12);
+          continue;
+        }
+        if (dragDistance < 3 && !completed) return;
+        const { next, valid } = applyPreCapture(preCapture, !leftDown);
+        if (!loggedStart) {
+          loggedStart = true;
+          invoke("log_screenshot_perf", {
+            message: `[baseline] session=${sessionId} phase=shell_pre_capture_drag_recovered elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} left_down=${leftDown} completed=${completed} valid=${valid} drag=${Math.round(dragDistance)} rect=${Math.round(next.x)},${Math.round(next.y)},${Math.round(next.w)},${Math.round(next.h)}`,
+          }).catch(() => {});
+        }
+        if (!leftDown) {
+          invoke("log_screenshot_perf", {
+            message: `[baseline] session=${sessionId} phase=shell_pre_capture_drag_finalized elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} valid=${valid} drag=${Math.round(dragDistance)}`,
+          }).catch(() => {});
+          return;
+        }
+        await wait(12);
+      }
     };
 
     const handleScreenshotPayload = (payload: ScreenshotUpdatedPayload | null | undefined, source: string) => {
@@ -748,19 +834,49 @@ export default function ScreenshotPage() {
       .catch(() => {});
 
     listen("recording-ended", () => {
-      clearRecordingState();
-      resetScreenshotState();
-      invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
+      invoke("cancel_screenshot", { label: getCurrentWindow().label })
+        .finally(() => {
+          clearRecordingState();
+          resetScreenshotState();
+        });
     })
       .then((unsub) => { unlistenRecordingEnded = unsub; })
       .catch(() => {});
 
-    listen<any>("screenshot-shell", (event) => {
-      const payload = event.payload || {};
+    const handleScreenshotShellPayload = (rawPayload: any, source = "screenshot-shell") => {
+      const payload = rawPayload || {};
       const nextMode = payload.mode || screenshotModeRef.current || "normal";
-      const sessionId = payload.sessionId || "shell";
+      const sessionId = String(payload.sessionId || "shell");
+      const shellSignature = JSON.stringify({
+        sessionId,
+        mode: nextMode,
+        nativeVisible: payload.nativeVisible === true,
+        showOnShellReady: payload.showOnShellReady === true,
+        screen: payload.screen || null,
+      });
+      if (lastScreenshotShellSignatureRef.current === shellSignature) {
+        invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_payload_duplicate_skipped elapsed_ms=0 source=${source}` }).catch(() => {});
+        return;
+      }
+      if (imageRef.current && displayedSessionIdRef.current === sessionId) {
+        lastScreenshotShellSignatureRef.current = shellSignature;
+        invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_payload_skipped_image_ready elapsed_ms=0 source=${source}` }).catch(() => {});
+        return;
+      }
+      lastScreenshotShellSignatureRef.current = shellSignature;
+      const shellReceivedAt = performance.now();
+      const nativeVisible = payload.nativeVisible === true;
+      const showOnShellReady = payload.showOnShellReady === true;
+      const shouldPresentShell = nativeVisible || showOnShellReady;
       screenshotModeRef.current = nextMode;
-      nativeOverlayVisibleRef.current = payload.nativeVisible === true;
+      nativeOverlayVisibleRef.current = shouldPresentShell;
+      displayedSessionIdRef.current = sessionId;
+      displayedPhysicalBoundsRef.current = payload.screen ? {
+        x: Number(payload.screen.x) || 0,
+        y: Number(payload.screen.y) || 0,
+        width: Number(payload.screen.width) || 0,
+        height: Number(payload.screen.height) || 0,
+      } : null;
       setScreenshotMode(nextMode);
       autoAcceptanceSmokeStartedRef.current = false;
       setCurrentRect(EMPTY_RECT, true);
@@ -774,7 +890,7 @@ export default function ScreenshotPage() {
       analysisImageDataRef.current = null;
       const shellCanvas = canvasRef.current;
       const shellCtx = shellCanvas?.getContext("2d");
-      if (shellCanvas && shellCtx) {
+      if (shouldPresentShell && shellCanvas && shellCtx) {
         const width = Math.max(1, window.innerWidth);
         const height = Math.max(1, window.innerHeight);
         shellCanvas.width = width;
@@ -785,28 +901,66 @@ export default function ScreenshotPage() {
       }
       setHoverCandidate(null);
       setHoverCandidateList([]);
-      overlayVisibleRef.current = true;
-      setOverlayVisible(true);
+      overlayVisibleRef.current = shouldPresentShell;
+      setOverlayVisible(shouldPresentShell);
       setScreenshotState("initializing");
       setDbgStatus({ imageLoaded: false, imageWidth: payload.screen?.width || 0, imageHeight: payload.screen?.height || 0, screenshotBytes: 0, errorMsg: "" });
-      invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_event_received elapsed_ms=0 source=screenshot-shell mode=${nextMode}` }).catch(() => {});
-      invoke<any>("get_screenshot_pointer_state", { label: getCurrentWindow().label })
-        .then((pointer) => {
-          const nextMouse = {
-            x: Number(pointer?.x) || 0,
-            y: Number(pointer?.y) || 0,
-          };
-          lastMouseRef.current = nextMouse;
-          invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_candidate_load_start elapsed_ms=0 x=${Math.round(nextMouse.x)} y=${Math.round(nextMouse.y)}` }).catch(() => {});
-          return loadWindowRects(true);
-        })
-        .then(() => {
-          invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_candidate_first_batch elapsed_ms=0 count=${hoverCandidatesRef.current.length}` }).catch(() => {});
-          triggerRender();
-        })
-        .catch(() => {});
+      invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_event_received elapsed_ms=0 source=${source} mode=${nextMode} native_visible=${nativeVisible} show_on_shell_ready=${showOnShellReady}` }).catch(() => {});
+      if (showOnShellReady && !nativeVisible) {
+        void (async () => {
+          try {
+            await waitForShellPaint();
+            if (displayedSessionIdRef.current !== sessionId) return;
+            const calledAt = Math.round(performance.now() - shellReceivedAt);
+            invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_ready_to_show_called elapsed_ms=${calledAt}` }).catch(() => {});
+            await invoke("overlay_ready_to_show", { label: getCurrentWindow().label, sessionId });
+            if (displayedSessionIdRef.current !== sessionId) return;
+            nativeOverlayVisibleRef.current = true;
+            const returnedAt = Math.round(performance.now() - shellReceivedAt);
+            invoke("log_screenshot_perf", { message: `[baseline] session=${sessionId} phase=shell_ready_to_show_returned elapsed_ms=${returnedAt}` }).catch(() => {});
+            const shellCanvas = canvasRef.current;
+            if (shellCanvas) {
+              shellCanvas.focus({ preventScroll: true });
+              requestAnimationFrame(() => shellCanvas.focus({ preventScroll: true }));
+            }
+            void recoverShellPreCaptureDrag(sessionId, shellReceivedAt);
+          } catch (error: any) {
+            if (displayedSessionIdRef.current !== sessionId) return;
+            nativeOverlayVisibleRef.current = false;
+            cancelScreenshot(error?.message || "Screenshot shell failed to show");
+          }
+        })();
+      }
+    };
+
+    listen<any>("screenshot-shell", (event) => {
+      handleScreenshotShellPayload(event.payload, "screenshot-shell");
     })
-      .then((unsub) => { unlistenShell = unsub; })
+      .then((unsub) => {
+        unlistenShell = unsub;
+        invoke<any | null>("get_latest_screenshot_shell_payload")
+          .then((payload) => {
+            if (payload) handleScreenshotShellPayload(payload, "screenshot-shell-pending-payload");
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
+    listen<any>("screenshot-session-cancelled", (event) => {
+      const payload = event.payload || {};
+      const cancelledSessionId = payload.sessionId == null ? "" : String(payload.sessionId);
+      if (cancelledSessionId && displayedSessionIdRef.current && displayedSessionIdRef.current !== cancelledSessionId) {
+        invoke("log_screenshot_perf", { message: `[baseline] session=${cancelledSessionId} phase=session_cancelled_skipped elapsed_ms=0 reason=${payload.reason || "unknown"} displayed=${displayedSessionIdRef.current}` }).catch(() => {});
+        return;
+      }
+      invoke("log_screenshot_perf", { message: `[baseline] session=${cancelledSessionId || displayedSessionIdRef.current || "unknown"} phase=session_cancelled_received elapsed_ms=0 reason=${payload.reason || "unknown"}` }).catch(() => {});
+      lastScreenshotPayloadSignatureRef.current = null;
+      lastScreenshotShellSignatureRef.current = null;
+      resetScreenshotState();
+    })
+      .then((unsub) => {
+        unlistenSessionCancelled = unsub;
+      })
       .catch(() => {});
 
     listen<ScreenshotUpdatedPayload>("screenshot-updated", (event) => handleScreenshotPayload(event.payload, "screenshot-updated"))
@@ -823,6 +977,7 @@ export default function ScreenshotPage() {
     return () => {
       if (unlistenShell) unlistenShell();
       if (unlistenEvent) unlistenEvent();
+      if (unlistenSessionCancelled) unlistenSessionCancelled();
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
@@ -886,7 +1041,7 @@ export default function ScreenshotPage() {
   ];
 
   return (
-    <div className={`screenshot-root ${overlayVisible && screenshotState === "ready" ? "ready" : overlayVisible ? "shell" : "initializing"}`} style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: overlayVisible && screenshotState === "ready" ? (hasSelected ? "default" : "crosshair") : "wait" }}>
+    <div className={`screenshot-root ${overlayVisible && screenshotState === "ready" ? "ready" : overlayVisible ? "shell" : "initializing"}`} style={{ position: "fixed", inset: 0, overflow: "hidden", cursor: canInteractWithOverlay ? (hasSelected ? "default" : "crosshair") : "wait" }}>
       {overlayVisible && !hasSelected && (
         <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px", display: "none" }}>0, 0</div>
       )}
@@ -910,10 +1065,10 @@ export default function ScreenshotPage() {
         onPointerUp={handleMouseUp}
         onPointerCancel={handlePointerCancel}
         onDoubleClick={handleDoubleClick}
-        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible && screenshotState === "ready" ? "auto" : "none" }}
+        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: canInteractWithOverlay ? "auto" : "none" }}
       />
 
-      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (
+      {overlayVisible && screenshotState === "ready" && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (
         <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>
           <RecordingTargetPicker
             mode={recordingPickerMode}
@@ -936,7 +1091,7 @@ export default function ScreenshotPage() {
         </div>
       )}
 
-      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && !recordingPickerMode && scrollCaptureMode !== "idle" && (
+      {overlayVisible && screenshotState === "ready" && hasSelected && !isSelecting && recordingStatus === "idle" && !recordingPickerMode && scrollCaptureMode !== "idle" && (
         <div ref={actionToolbarRef} style={currentOverlayToolbarStyle} onContextMenu={(event) => event.stopPropagation()}>
           <Space size={[8, 8]} wrap style={{ maxWidth: "100%", padding: "8px 10px", borderRadius: 16, background: "rgba(255,255,255,0.96)", border: "1px solid rgba(226,232,240,0.95)", boxShadow: "0 12px 32px rgba(15,23,42,0.18)", color: "#111827", boxSizing: "border-box" }}>
             <span style={{ color: SCROLL_CAPTURE_BORDER_COLOR, fontWeight: 800 }}>Manual Scroll Capture</span>
@@ -948,7 +1103,7 @@ export default function ScreenshotPage() {
         </div>
       )}
 
-      {overlayVisible && hasSelected && !isSelecting && recordingStatus === "idle" && !recordingPickerMode && scrollCaptureMode === "idle" && (
+      {overlayVisible && screenshotState === "ready" && hasSelected && !isSelecting && recordingStatus === "idle" && !recordingPickerMode && scrollCaptureMode === "idle" && (
         <ScreenshotToolbar
           containerRef={actionToolbarRef}
           style={currentToolbarStyle}
