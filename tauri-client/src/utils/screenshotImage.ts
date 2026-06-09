@@ -1,4 +1,4 @@
-import type { Annotation, Rect } from "../types/screenshot";
+import type { Annotation, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
 import { renderExportAnnotations } from "./renderAnnotations";
 
 type PhysicalSelectionInput = {
@@ -20,6 +20,16 @@ export const getPhysicalSelection = ({ canvas, image, rect }: PhysicalSelectionI
   return { x, y, w, h };
 };
 
+export const getDesktopPhysicalSelection = (input: PhysicalSelectionInput & { physicalBounds: ScreenshotPhysicalBounds | null | undefined }) => {
+  if (!input.physicalBounds) throw new Error("截图物理屏幕范围不可用");
+  const local = getPhysicalSelection(input);
+  return {
+    x: input.physicalBounds.x + local.x,
+    y: input.physicalBounds.y + local.y,
+    width: local.w,
+    height: local.h,
+  };
+};
 export const cropSelectionFromLoadedImage = (input: PhysicalSelectionInput) => {
   if (!input.image) throw new Error("截图图片未加载");
   const { x, y, w, h } = getPhysicalSelection(input);

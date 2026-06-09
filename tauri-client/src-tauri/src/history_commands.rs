@@ -1,6 +1,6 @@
 use crate::*;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryRecord {
@@ -144,4 +144,3 @@ pub fn clear_history() -> Result<(), String> {
     }
     Ok(())
 }
-

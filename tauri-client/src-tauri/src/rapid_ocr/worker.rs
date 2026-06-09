@@ -1,13 +1,13 @@
 use crate::*;
-use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::io::{BufRead, BufReader, Write};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, Duration};
 use std::path::Path;
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::runner::{
-    rapid_ocr_model_version, rapid_ocr_model_root, rapid_ocr_missing_model_files,
-    resolve_rapidocr_command, RapidOcrRunnerOutput, RapidOcrCommandSpec
+    rapid_ocr_missing_model_files, rapid_ocr_model_root, rapid_ocr_model_version,
+    resolve_rapidocr_command, RapidOcrCommandSpec, RapidOcrRunnerOutput,
 };
 
 #[derive(Debug, Deserialize)]
@@ -37,7 +37,9 @@ pub fn rapid_ocr_worker_enabled() -> bool {
     config_value_bool("rapidOcrWorkerEnabled").unwrap_or(true)
 }
 
-pub fn spawn_rapid_ocr_worker_process(app: &tauri::AppHandle) -> Result<RapidOcrWorkerProcess, String> {
+pub fn spawn_rapid_ocr_worker_process(
+    app: &tauri::AppHandle,
+) -> Result<RapidOcrWorkerProcess, String> {
     let spec = resolve_rapidocr_command(app)?;
     let mut command = std::process::Command::new(&spec.program);
     command.args(&spec.args_prefix);

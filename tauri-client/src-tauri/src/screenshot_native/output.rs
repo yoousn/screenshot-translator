@@ -125,6 +125,13 @@ impl CropRect {
         self.y.saturating_add(self.height)
     }
 
+    pub fn rgba_byte_len(self) -> Option<usize> {
+        usize::try_from(self.width)
+            .ok()?
+            .checked_mul(usize::try_from(self.height).ok()?)?
+            .checked_mul(4)
+    }
+
     pub fn as_selection_rect(self) -> SelectionRect {
         SelectionRect {
             x: self.x.min(i32::MAX as u32) as i32,
@@ -186,6 +193,44 @@ pub struct SelectedImageContract {
     pub was_clamped: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedReadbackContract {
+    pub rect: SelectionRect,
+    pub crop: CropRect,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub rgba_byte_len: usize,
+    pub selected_only: bool,
+    pub was_clamped: bool,
+}
+
+impl SelectedReadbackContract {
+    pub fn new(clamped: ClampedSelectionRect, bounds: ImageBounds) -> Option<Self> {
+        Some(Self {
+            rect: clamped.requested,
+            crop: clamped.crop,
+            source_width: bounds.width,
+            source_height: bounds.height,
+            rgba_byte_len: clamped.crop.rgba_byte_len()?,
+            selected_only: true,
+            was_clamped: clamped.was_clamped,
+        })
+    }
+
+    pub fn bounds(self) -> ImageBounds {
+        ImageBounds {
+            width: self.source_width,
+            height: self.source_height,
+        }
+    }
+
+    pub fn is_selected_only(self) -> bool {
+        self.selected_only
+            && !self.crop.is_empty()
+            && self.rgba_byte_len == self.crop.rgba_byte_len().unwrap_or_default()
+    }
+}
+
 impl SelectedImageContract {
     pub fn new(clamped: ClampedSelectionRect, png_bytes: Vec<u8>, bounds: ImageBounds) -> Self {
         Self {
@@ -215,6 +260,27 @@ impl SelectedImageContract {
 
     pub fn is_empty(&self) -> bool {
         self.png_bytes.is_empty() || self.crop.is_empty()
+    }
+
+    pub fn readback_contract(&self) -> Option<SelectedReadbackContract> {
+        SelectedReadbackContract::new(
+            ClampedSelectionRect {
+                requested: self.rect,
+                crop: self.crop,
+                was_clamped: self.was_clamped,
+            },
+            self.bounds(),
+        )
+    }
+
+    pub fn is_selected_only_png(&self) -> bool {
+        self.image_format() == OutputImageFormat::Png
+            && self
+                .readback_contract()
+                .is_some_and(|readback| readback.is_selected_only())
+            && self
+                .png_bytes
+                .starts_with(&[137, 80, 78, 71, 13, 10, 26, 10])
     }
 }
 

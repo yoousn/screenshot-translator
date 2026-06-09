@@ -157,6 +157,38 @@ pub struct OverlayRenderReceipt {
     pub bytes_uploaded: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayRenderDiagnostics {
+    pub backend: OverlayRendererBackend,
+    pub target: OverlayRenderTarget,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    pub frame_byte_len: usize,
+    pub expected_byte_len: Option<usize>,
+    pub tightly_packed_rgba: bool,
+    pub can_attempt_render: bool,
+    pub failure: Option<OverlayRenderError>,
+}
+
+impl OverlayRenderDiagnostics {
+    pub fn from_request(target: OverlayRenderTarget, frame: &RgbaFrame) -> Self {
+        let expected_byte_len = expected_rgba_len(frame.width, frame.height).ok();
+        let failure = validate_render_request(target, frame).err();
+
+        Self {
+            backend: OverlayRendererBackend::CpuRgbaGdiDib,
+            target,
+            frame_width: frame.width,
+            frame_height: frame.height,
+            frame_byte_len: frame.bytes.len(),
+            expected_byte_len,
+            tightly_packed_rgba: expected_byte_len == Some(frame.bytes.len()),
+            can_attempt_render: failure.is_none(),
+            failure,
+        }
+    }
+}
+
 pub fn overlay_renderer_contract() -> OverlayRendererContract {
     OverlayRendererContract::cpu_rgba_gdi_dib()
 }
@@ -167,6 +199,13 @@ pub fn render_rgba_frame_to_overlay(
 ) -> OverlayRenderResult<OverlayRenderReceipt> {
     validate_render_request(target, frame)?;
     render_rgba_frame_to_platform_overlay(target, frame)
+}
+
+pub fn diagnose_overlay_render_request(
+    target: OverlayRenderTarget,
+    frame: &RgbaFrame,
+) -> OverlayRenderDiagnostics {
+    OverlayRenderDiagnostics::from_request(target, frame)
 }
 
 fn validate_render_request(

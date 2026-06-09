@@ -181,18 +181,31 @@ impl D3d11StagingReadbackMetadata {
             });
         }
 
-        if self.byte_len
-            < usize::try_from(minimum_depth_pitch)
-                .map_err(|_| D3d11FrameContractError::PitchOverflow)?
-        {
+        let minimum_byte_len = usize::try_from(minimum_depth_pitch)
+            .map_err(|_| D3d11FrameContractError::PitchOverflow)?;
+        if self.byte_len < minimum_byte_len {
             return Err(D3d11FrameContractError::ByteLenTooSmall {
                 byte_len: self.byte_len,
-                minimum: usize::try_from(minimum_depth_pitch)
-                    .map_err(|_| D3d11FrameContractError::PitchOverflow)?,
+                minimum: minimum_byte_len,
             });
         }
 
         Ok(())
+    }
+
+    pub fn compact_byte_len(
+        self,
+        width: u32,
+        height: u32,
+        format: D3d11TextureFrameFormat,
+    ) -> D3d11FrameResult<usize> {
+        let row_len = width
+            .checked_mul(format.bytes_per_pixel())
+            .ok_or(D3d11FrameContractError::PitchOverflow)?;
+        let byte_len = row_len
+            .checked_mul(height)
+            .ok_or(D3d11FrameContractError::PitchOverflow)?;
+        usize::try_from(byte_len).map_err(|_| D3d11FrameContractError::PitchOverflow)
     }
 }
 
@@ -318,6 +331,72 @@ impl D3d11TextureFrame {
     pub fn has_cpu_readback(self) -> bool {
         self.readback_bytes.is_some()
     }
+
+    pub fn validate_cpu_readback(&self) -> D3d11FrameResult<()> {
+        let staging = self
+            .metadata
+            .staging_readback
+            .ok_or(D3d11FrameContractError::MissingStagingReadback)?;
+        if !staging.is_mapped {
+            return Err(D3d11FrameContractError::StagingReadbackNotMapped);
+        }
+        let bytes = self
+            .readback_bytes
+            .as_ref()
+            .ok_or(D3d11FrameContractError::MissingReadbackBytes)?;
+        if bytes.len() < staging.byte_len {
+            return Err(D3d11FrameContractError::ByteLenTooSmall {
+                byte_len: bytes.len(),
+                minimum: staging.byte_len,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn compact_readback_bytes(&self) -> D3d11FrameResult<Vec<u8>> {
+        self.validate_cpu_readback()?;
+        let staging = self
+            .metadata
+            .staging_readback
+            .ok_or(D3d11FrameContractError::MissingStagingReadback)?;
+        let source = self
+            .readback_bytes
+            .as_ref()
+            .ok_or(D3d11FrameContractError::MissingReadbackBytes)?;
+        let row_len = usize::try_from(
+            self.metadata
+                .width
+                .checked_mul(self.metadata.format.bytes_per_pixel())
+                .ok_or(D3d11FrameContractError::PitchOverflow)?,
+        )
+        .map_err(|_| D3d11FrameContractError::PitchOverflow)?;
+        let height = usize::try_from(self.metadata.height)
+            .map_err(|_| D3d11FrameContractError::PitchOverflow)?;
+        let row_pitch = usize::try_from(staging.row_pitch)
+            .map_err(|_| D3d11FrameContractError::PitchOverflow)?;
+        let mut compact = Vec::with_capacity(staging.compact_byte_len(
+            self.metadata.width,
+            self.metadata.height,
+            self.metadata.format,
+        )?);
+        for row in 0..height {
+            let offset = row
+                .checked_mul(row_pitch)
+                .ok_or(D3d11FrameContractError::PitchOverflow)?;
+            let end = offset
+                .checked_add(row_len)
+                .ok_or(D3d11FrameContractError::PitchOverflow)?;
+            let slice =
+                source
+                    .get(offset..end)
+                    .ok_or(D3d11FrameContractError::ByteLenTooSmall {
+                        byte_len: source.len(),
+                        minimum: end,
+                    })?;
+            compact.extend_from_slice(slice);
+        }
+        Ok(compact)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +404,13 @@ pub enum D3d11FrameContractError {
     UnsupportedContractVersion(u16),
     EmptyDimensions { width: u32, height: u32 },
     MissingSharedHandle,
+    MissingStagingTexture,
+    MissingStagingReadback,
+    MissingReadbackBytes,
+    StagingReadbackNotMapped,
+    UnsupportedTextureFormat(String),
+    SelectedRegionOutsideFrame,
+    WindowsApi(String),
     PitchOverflow,
     RowPitchTooSmall { row_pitch: u32, minimum: u32 },
     DepthPitchTooSmall { depth_pitch: u32, minimum: u32 },
@@ -334,20 +420,28 @@ pub enum D3d11FrameContractError {
 impl fmt::Display for D3d11FrameContractError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedContractVersion(version) => {
-                write!(
-                    formatter,
-                    "unsupported D3D11 frame contract version: {version}"
-                )
-            }
-            Self::EmptyDimensions { width, height } => {
-                write!(
-                    formatter,
-                    "empty D3D11 texture frame dimensions: {width}x{height}"
-                )
-            }
+            Self::UnsupportedContractVersion(version) => write!(
+                formatter,
+                "unsupported D3D11 frame contract version: {version}"
+            ),
+            Self::EmptyDimensions { width, height } => write!(
+                formatter,
+                "empty D3D11 texture frame dimensions: {width}x{height}"
+            ),
             Self::MissingSharedHandle => {
                 formatter.write_str("D3D11 shared handle metadata has no handle")
+            }
+            Self::MissingStagingTexture => {
+                formatter.write_str("D3D11 staging texture was not returned")
+            }
+            Self::MissingStagingReadback => {
+                formatter.write_str("D3D11 CPU readback requires staging metadata")
+            }
+            Self::MissingReadbackBytes => {
+                formatter.write_str("D3D11 CPU readback bytes are missing")
+            }
+            Self::StagingReadbackNotMapped => {
+                formatter.write_str("D3D11 staging texture is not mapped for CPU readback")
             }
             Self::PitchOverflow => formatter.write_str("D3D11 staging readback pitch overflows"),
             Self::RowPitchTooSmall { row_pitch, minimum } => write!(
@@ -365,6 +459,14 @@ impl fmt::Display for D3d11FrameContractError {
                 formatter,
                 "D3D11 staging byte length {byte_len} is smaller than minimum {minimum}"
             ),
+            Self::UnsupportedTextureFormat(format) => write!(
+                formatter,
+                "unsupported D3D11 texture format for RGBA readback: {format}"
+            ),
+            Self::SelectedRegionOutsideFrame => {
+                formatter.write_str("selected D3D11 readback region is outside the frame")
+            }
+            Self::WindowsApi(reason) => write!(formatter, "D3D11 readback API failed: {reason}"),
         }
     }
 }

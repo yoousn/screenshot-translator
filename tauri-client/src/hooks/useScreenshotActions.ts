@@ -3,11 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "antd";
-import type { Rect, Annotation } from "../types/screenshot";
-import { cropSelectionFromLoadedImage, getPhysicalSelection, renderEditedSelectionBase64 } from "../utils/screenshotImage";
+import type { Annotation, NativeWgcSelectedOutputClipboardAcceptanceRequest, NativeWgcSelectedOutputClipboardAcceptanceResponse, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
+import { cropSelectionFromLoadedImage, getDesktopPhysicalSelection, getPhysicalSelection, renderEditedSelectionBase64 } from "../utils/screenshotImage";
 import { openPinWindow } from "../utils/pinWindows";
 
 const MIN_SELECTION_CONFIRM_AGE_MS = 120;
+const WGC_SELECTED_OUTPUT_COPY_CANDIDATE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_COPY_CANDIDATE === "1";
+const WGC_SELECTED_OUTPUT_SAVE_CANDIDATE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_SAVE_CANDIDATE === "1";
 
 const logScreenshotPerf = (messageText: string) => {
   invoke("log_screenshot_perf", { message: messageText }).catch(() => {});
@@ -17,9 +19,26 @@ const logSaveBaseline = (phase: string, elapsedMs: number, detail = "") => {
   logScreenshotPerf(`[baseline] session=save-as phase=${phase} elapsed_ms=${Math.round(elapsedMs)} ${detail}`);
 };
 
+type NativeSelectedImageBridgeResponse = {
+  pngBase64?: unknown;
+  diagnostics?: {
+    pngSignatureValid?: unknown;
+    selectedOnlyPng?: unknown;
+    isValidBridge?: unknown;
+  };
+};
+
+type NativeSelectedImageBridgeSuccess = NativeSelectedImageBridgeResponse & {
+  pngBase64: string;
+};
+
+type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
+
 interface UseScreenshotActionsProps {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  imageRef: React.RefObject<HTMLImageElement | null>;
+  imageRef: React.RefObject<HTMLImageElement | HTMLCanvasElement | null>;
+  displayedSessionIdRef: React.RefObject<string | null>;
+  displayedPhysicalBoundsRef: React.RefObject<ScreenshotPhysicalBounds | null>;
   rectRef: React.RefObject<Rect>;
   rect: Rect;
   hasSelected: boolean;
@@ -49,6 +68,8 @@ interface UseScreenshotActionsProps {
 export function useScreenshotActions({
   canvasRef,
   imageRef,
+  displayedSessionIdRef,
+  displayedPhysicalBoundsRef,
   rectRef,
   rect,
   hasSelected,
@@ -82,12 +103,136 @@ export function useScreenshotActions({
     rect: rectRef.current,
   });
 
-  const captureRegionBase64 = async () => {
+  const canUseNativeSelectedImageBridge = () => {
+    const image = imageRef.current;
+    return image instanceof HTMLCanvasElement;
+  };
+
+  const isValidNativeSelectedImageBridge = (result: NativeSelectedImageBridgeResponse | null | undefined): result is NativeSelectedImageBridgeSuccess => (
+    result?.diagnostics?.isValidBridge === true
+    && result.diagnostics.selectedOnlyPng === true
+    && result.diagnostics.pngSignatureValid === true
+    && typeof result.pngBase64 === "string"
+    && result.pngBase64.length > 0
+  );
+
+  const buildNativeSelectedImageBase64 = async (action: SelectedImageBridgeAction): Promise<string | null> => {
+    if (!canUseNativeSelectedImageBridge()) return null;
+
     const { x, y, w, h } = getPhysicalSelection({
       canvas: canvasRef.current,
       image: imageRef.current as any,
       rect: rectRef.current,
     });
+    if (w <= 0 || h <= 0) return null;
+
+    try {
+      const result = await invoke<NativeSelectedImageBridgeResponse>("build_native_selected_image_bridge", {
+        request: { action, x, y, width: w, height: h, sessionId: displayedSessionIdRef.current },
+      });
+      if (isValidNativeSelectedImageBridge(result)) {
+        logScreenshotPerf(`native selected-image bridge hit action=${action} bytes=${Math.round(result.pngBase64.length * 0.75)}`);
+        return result.pngBase64;
+      }
+      console.warn("[ScreenshotPage] native selected-image bridge returned invalid diagnostics, falling back", result?.diagnostics);
+    } catch (error) {
+      console.warn("[ScreenshotPage] native selected-image bridge unavailable, falling back", error);
+    }
+    return null;
+  };
+
+  const runGuardedWgcExplicitSelectionDiagnostic = async (
+    options: Partial<Omit<NativeWgcSelectedOutputClipboardAcceptanceRequest, "bounds">> = {}
+  ): Promise<NativeWgcSelectedOutputClipboardAcceptanceResponse | null> => {
+    const currentHasSelected = hasSelected || interactionStateRef.current.hasSelected;
+    if (!overlayVisibleRef.current || !currentHasSelected || rectRef.current.w <= 0 || rectRef.current.h <= 0) return null;
+    const bounds = getDesktopPhysicalSelection({
+      canvas: canvasRef.current,
+      image: imageRef.current as any,
+      rect: rectRef.current,
+      physicalBounds: displayedPhysicalBoundsRef.current,
+    });
+    const request: NativeWgcSelectedOutputClipboardAcceptanceRequest = {
+      bounds: { ...bounds, explicitOptIn: true, allowRealDxgiApi: false },
+      explicitOptIn: options.explicitOptIn ?? true,
+      allowRealWgcApi: options.allowRealWgcApi ?? true,
+      allowFakeClipboardSink: options.allowFakeClipboardSink ?? true,
+      allowRealClipboard: options.allowRealClipboard ?? false,
+      frameTimeoutMs: options.frameTimeoutMs ?? 500,
+      includeCursor: options.includeCursor ?? false,
+      requireBorder: options.requireBorder ?? false,
+      bufferCount: options.bufferCount ?? 1,
+      validateTarget: options.validateTarget ?? true,
+      includeSelectedPngBase64: options.includeSelectedPngBase64 ?? false,
+      allowFileWrite: options.allowFileWrite ?? false,
+      savePath: options.savePath,
+    };
+    try {
+      const response = await invoke<NativeWgcSelectedOutputClipboardAcceptanceResponse>(
+        "run_native_wgc_explicit_selection_selected_output_clipboard_acceptance_smoke",
+        { request }
+      );
+      logScreenshotPerf(`wgc explicit-selection diagnostic ok=${response?.ok === true} attempted=${response?.attempted === true} stage=${response?.stage || "unknown"}`);
+      return response;
+    } catch (error) {
+      console.warn("[ScreenshotPage] WGC explicit-selection diagnostic failed", error);
+      logScreenshotPerf(`wgc explicit-selection diagnostic invoke failed error=${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  };
+
+  const canTryWgcSelectedOutputCandidate = (action: "copy" | "save") => (
+    (action === "copy" ? WGC_SELECTED_OUTPUT_COPY_CANDIDATE_ENABLED : WGC_SELECTED_OUTPUT_SAVE_CANDIDATE_ENABLED)
+    && overlayVisibleRef.current
+    && (hasSelected || interactionStateRef.current.hasSelected)
+    && rectRef.current.w > 0
+    && rectRef.current.h > 0
+    && annotationsRef.current.length === 0
+    && !translatedResult
+  );
+
+  const tryWgcSelectedOutputBase64Candidate = async (action: "copy" | "save"): Promise<string | null> => {
+    if (!canTryWgcSelectedOutputCandidate(action)) return null;
+    const writesRealClipboard = action === "copy";
+    const response = await runGuardedWgcExplicitSelectionDiagnostic({
+      explicitOptIn: true,
+      allowRealWgcApi: true,
+      allowFakeClipboardSink: !writesRealClipboard,
+      allowRealClipboard: writesRealClipboard,
+      includeSelectedPngBase64: true,
+      frameTimeoutMs: 500,
+      includeCursor: false,
+      requireBorder: false,
+      bufferCount: 1,
+      validateTarget: true,
+    });
+    const clipboardAccepted = writesRealClipboard
+      ? response?.realClipboardAttempted === true && response.realClipboardVerified === true
+      : response?.realClipboardAttempted === false;
+    if (
+      response?.ok === true
+      && response.selectedOutputEffectConfirmed === true
+      && clipboardAccepted
+      && typeof response.selectedPngBase64 === "string"
+      && response.selectedPngBase64.length > 0
+    ) {
+      logScreenshotPerf(`wgc selected-output ${action} candidate hit bytes=${Math.round(response.selectedPngBase64.length * 0.75)}`);
+      return response.selectedPngBase64;
+    }
+    if (response) {
+      logScreenshotPerf(`wgc selected-output ${action} candidate fallback ok=${response.ok === true} realClipboardVerified=${response.realClipboardVerified === true} stage=${response.stage || "unknown"}`);
+    }
+    return null;
+  };
+
+  const captureRegionBase64 = async (action: SelectedImageBridgeAction = "ocr"): Promise<string> => {
+    const { x, y, w, h } = getPhysicalSelection({
+      canvas: canvasRef.current,
+      image: imageRef.current as any,
+      rect: rectRef.current,
+    });
+    const nativeBase64 = await buildNativeSelectedImageBase64(action);
+    if (nativeBase64) return nativeBase64;
     try {
       const cropped = cropCurrentSelectionFromLoadedImage();
       if (cropped.base64) return cropped.base64;
@@ -107,18 +252,18 @@ export function useScreenshotActions({
     fallbackSize: annotationSizeRef.current,
   });
 
-  const buildOutputBase64 = async () => (
-    annotationsRef.current.length > 0 ? await renderCurrentEditedSelectionBase64() : (translatedResult || await captureRegionBase64())
+  const buildOutputBase64 = async (action: SelectedImageBridgeAction = "copy"): Promise<string> => (
+    annotationsRef.current.length > 0 ? await renderCurrentEditedSelectionBase64() : (translatedResult || await captureRegionBase64(action))
   );
 
-  const getOutputBase64 = async () => {
+  const getOutputBase64 = async (action: SelectedImageBridgeAction = "copy"): Promise<string> => {
     const signature = getOutputSignature();
     if (outputCacheRef.current?.signature === signature) {
       logScreenshotPerf("output cache hit");
       return outputCacheRef.current.base64;
     }
     const startedAt = performance.now();
-    const base64 = await buildOutputBase64();
+    const base64 = await buildOutputBase64(action);
     outputCacheRef.current = { signature, base64 };
     logScreenshotPerf(`output built ${Math.round(performance.now() - startedAt)}ms bytes=${Math.round(base64.length * 0.75)}`);
     return base64;
@@ -135,7 +280,7 @@ export function useScreenshotActions({
       outputWarmupTimerRef.current = null;
       const signature = getOutputSignature();
       const startedAt = performance.now();
-      buildOutputBase64()
+      buildOutputBase64("copy")
         .then((base64) => {
           outputCacheRef.current = { signature, base64 };
           logScreenshotPerf(`output warmed ${Math.round(performance.now() - startedAt)}ms bytes=${Math.round(base64.length * 0.75)}`);
@@ -179,7 +324,7 @@ export function useScreenshotActions({
     if (!base64) return;
 
     try {
-      await openPinWindow(await getOutputBase64(), { x, y, w, h });
+      await openPinWindow(await getOutputBase64("copy"), { x, y, w, h });
       cancelScreenshot();
     } catch (error) {
       console.error("Failed to create pin window", error);
@@ -231,7 +376,7 @@ export function useScreenshotActions({
         }
         const outputStartedAt = performance.now();
         logSaveBaseline("output_render_start", outputStartedAt - actionStartedAt);
-        const base64 = await getOutputBase64();
+        const base64 = await tryWgcSelectedOutputBase64Candidate("save") ?? await getOutputBase64("save");
         const outputMs = Math.round(performance.now() - outputStartedAt);
         logSaveBaseline("output_render_end", performance.now() - actionStartedAt, `output_ms=${outputMs} bytes=${Math.round(base64.length * 0.75)}`);
         const writeStartedAt = performance.now();
@@ -247,9 +392,10 @@ export function useScreenshotActions({
         logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt);
         return;
       }
-      const base64 = await getOutputBase64();
+      const wgcCopiedBase64 = action === "copy" ? await tryWgcSelectedOutputBase64Candidate("copy") : null;
+      const base64 = wgcCopiedBase64 ?? await getOutputBase64(action === "both" ? "copy" : action);
       await emit("screenshot-captured", base64);
-      if (action === "copy" || action === "both") {
+      if ((action === "copy" || action === "both") && !wgcCopiedBase64) {
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
       }
       message.destroy();
@@ -270,6 +416,7 @@ export function useScreenshotActions({
     captureRegionBase64,
     renderCurrentEditedSelectionBase64,
     getOutputBase64,
+    runGuardedWgcExplicitSelectionDiagnostic,
     getSelectionConfirmDelayMs,
     canConfirmCurrentSelection,
     handlePin,

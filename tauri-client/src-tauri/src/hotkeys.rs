@@ -242,4 +242,3 @@ pub fn get_shortcut_status(state: tauri::State<'_, AppShortcutStatus>) -> Result
         Err(e) => Err(e.clone()),
     }
 }
-

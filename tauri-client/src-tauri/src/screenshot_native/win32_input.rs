@@ -38,6 +38,10 @@ pub const VK_MENU: u16 = 0x12;
 pub const VK_LWIN: u16 = 0x5B;
 pub const VK_RWIN: u16 = 0x5C;
 pub const VK_SNAPSHOT: u16 = 0x2C;
+pub const VK_A: u16 = 0x41;
+pub const VK_C: u16 = 0x43;
+pub const VK_S: u16 = 0x53;
+pub const VK_T: u16 = 0x54;
 
 pub const WHEEL_DELTA: i32 = 120;
 
@@ -314,6 +318,51 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn maps_selection_lifecycle_keys_to_terminal_events() {
+        assert_eq!(
+            key_event_from_virtual_key(VK_RETURN, Win32KeyState::empty()),
+            Some(ScreenshotInputEvent::Confirm)
+        );
+        assert_eq!(
+            key_event_from_virtual_key(VK_ESCAPE, Win32KeyState::empty()),
+            Some(ScreenshotInputEvent::Cancel)
+        );
+    }
+
+    #[test]
+    fn maps_repeat_hotkey_to_non_terminal_cancel_event() {
+        let event = key_event_from_virtual_key(VK_SNAPSHOT, Win32KeyState::empty());
+
+        assert_eq!(event, Some(ScreenshotInputEvent::RepeatHotkey));
+        assert_eq!(
+            event.and_then(ScreenshotInputEvent::key_command),
+            Some(KeyCommand::RepeatHotkey)
+        );
+        assert!(!event.unwrap().is_terminal());
+    }
+
+    #[test]
+    fn leaves_app_level_shortcuts_unclaimed_by_native_selection_input() {
+        let ctrl = Win32KeyState {
+            shift: false,
+            ctrl: true,
+            alt: false,
+            meta: false,
+        };
+        let alt = Win32KeyState {
+            shift: false,
+            ctrl: false,
+            alt: true,
+            meta: false,
+        };
+
+        assert_eq!(key_event_from_virtual_key(VK_C, ctrl), None);
+        assert_eq!(key_event_from_virtual_key(VK_S, ctrl), None);
+        assert_eq!(key_event_from_virtual_key(VK_A, alt), None);
+        assert_eq!(key_event_from_virtual_key(VK_T, alt), None);
     }
 
     #[test]

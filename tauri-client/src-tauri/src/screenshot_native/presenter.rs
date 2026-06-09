@@ -43,6 +43,17 @@ pub enum PresentationFailureKind {
     ProtectedContent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationFallbackReason {
+    None,
+    CpuFrameReady,
+    GpuInteropUnavailable,
+    GpuReadbackPending,
+    InvalidCpuFrame,
+    InvalidTexture,
+    RecoverableFailure,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationFailure {
     pub kind: PresentationFailureKind,
@@ -202,6 +213,17 @@ pub struct PresentationPlan {
     pub failure: Option<PresentationFailure>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationDiagnostics {
+    pub preferred: PresenterKind,
+    pub active: PresenterKind,
+    pub backend: CaptureBackendKind,
+    pub readiness: PresentationReadiness,
+    pub fallback_reason: PresentationFallbackReason,
+    pub failure: Option<PresentationFailure>,
+    pub can_present_cpu: bool,
+}
+
 impl PresentationPlan {
     pub fn ready_cpu(frame: PresentationFrame) -> Self {
         Self {
@@ -243,5 +265,129 @@ impl PresentationPlan {
                 .texture
                 .as_ref()
                 .is_some_and(|texture| !texture.is_presentable())
+    }
+
+    pub fn fallback_reason(&self) -> PresentationFallbackReason {
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.recoverable)
+        {
+            return PresentationFallbackReason::RecoverableFailure;
+        }
+
+        if self
+            .texture
+            .as_ref()
+            .is_some_and(|texture| !texture.is_presentable())
+        {
+            return PresentationFallbackReason::InvalidTexture;
+        }
+
+        match self.frame.readiness() {
+            PresentationReadiness::Ready => PresentationFallbackReason::None,
+            PresentationReadiness::NeedsGpuInterop => {
+                PresentationFallbackReason::GpuInteropUnavailable
+            }
+            PresentationReadiness::NeedsReadback => PresentationFallbackReason::GpuReadbackPending,
+            PresentationReadiness::FallbackRequired if self.frame.can_present_cpu() => {
+                PresentationFallbackReason::CpuFrameReady
+            }
+            PresentationReadiness::FallbackRequired => PresentationFallbackReason::InvalidCpuFrame,
+        }
+    }
+
+    pub fn with_cpu_fallback(mut self) -> Self {
+        if self.needs_fallback() && self.frame.can_present_cpu() {
+            self.contract = self.contract.fallback();
+            self.frame = self.frame.fallback_to_cpu();
+            self.texture = None;
+        }
+        self
+    }
+
+    pub fn diagnostics(&self) -> PresentationDiagnostics {
+        PresentationDiagnostics {
+            preferred: self.contract.kind,
+            active: self.frame.presenter,
+            backend: self.frame.backend,
+            readiness: self.frame.readiness(),
+            fallback_reason: self.fallback_reason(),
+            failure: self.failure.clone(),
+            can_present_cpu: self.frame.can_present_cpu(),
+        }
+    }
+}
+
+pub fn plan_presenter_with_fallback(
+    frame: PresentationFrame,
+    preferred: PresenterContract,
+    texture: Option<GpuTextureDescriptor>,
+) -> PresentationPlan {
+    let failure = match (preferred.kind, frame.readiness(), texture) {
+        (PresenterKind::D3d11Texture, PresentationReadiness::NeedsReadback, _) => {
+            Some(PresentationFailure::recoverable(
+                PresentationFailureKind::ReadbackUnavailable,
+                "native presenter needs GPU readback before D3D11 presentation",
+            ))
+        }
+        (PresenterKind::D3d11Texture, PresentationReadiness::NeedsGpuInterop, None) => {
+            Some(PresentationFailure::recoverable(
+                PresentationFailureKind::TextureInteropUnavailable,
+                "native presenter has no shareable D3D11 texture descriptor",
+            ))
+        }
+        (PresenterKind::D3d11Texture, _, Some(texture)) if !texture.is_presentable() => {
+            Some(PresentationFailure::recoverable(
+                PresentationFailureKind::TextureInteropUnavailable,
+                "native presenter texture descriptor is not presentable",
+            ))
+        }
+        (_, PresentationReadiness::FallbackRequired, _) => Some(PresentationFailure::recoverable(
+            PresentationFailureKind::InvalidFrame,
+            "native presenter frame is not tightly packed RGBA",
+        )),
+        _ => None,
+    };
+
+    PresentationPlan {
+        contract: preferred,
+        frame,
+        texture,
+        failure,
+    }
+    .with_cpu_fallback()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn falls_back_to_cpu_when_gpu_texture_missing_but_rgba_is_ready() {
+        let rgba = RgbaFrame::new(1, 1, vec![1, 2, 3, 4]).expect("valid frame");
+        let frame = PresentationFrame {
+            presenter: PresenterKind::D3d11Texture,
+            backend: CaptureBackendKind::WindowsGraphicsCapture,
+            rgba: Some(rgba),
+        };
+
+        let plan = plan_presenter_with_fallback(frame, PresenterContract::d3d11_texture(), None);
+
+        assert_eq!(plan.contract.kind, PresenterKind::CpuRgba);
+        assert_eq!(plan.frame.presenter, PresenterKind::CpuRgba);
+        assert_eq!(plan.diagnostics().active, PresenterKind::CpuRgba);
+    }
+
+    #[test]
+    fn keeps_gpu_plan_when_texture_is_presentable() {
+        let frame = PresentationFrame::gpu_pending_readback(CaptureBackendKind::DesktopDuplication);
+        let texture = GpuTextureDescriptor::rgba8_shared(8, 4);
+
+        let plan =
+            plan_presenter_with_fallback(frame, PresenterContract::d3d11_texture(), Some(texture));
+
+        assert_eq!(plan.contract.kind, PresenterKind::D3d11Texture);
+        assert_eq!(plan.texture, Some(texture));
     }
 }

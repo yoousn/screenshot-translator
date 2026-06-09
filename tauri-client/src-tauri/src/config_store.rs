@@ -103,4 +103,3 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
         Ok(())
     }
 }
-

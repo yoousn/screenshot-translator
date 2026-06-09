@@ -1,21 +1,21 @@
 #[cfg(test)]
 mod tests {
-    use serde::{Deserialize, Serialize};
-    use crate::recording_process::process_manager::{
-        default_recording_output_dir, recording_temp_dir,
-        resolution_scale_filter, build_recording_args, RecordingOptions,
-        cleanup_recording_files, escape_concat_path, ffmpeg_stderr_excerpt
-    };
-    use crate::recording_process::device_detector::{
-        parse_quoted_audio_devices, ffmpeg_supports_input_format
-    };
-    use crate::recording_overlay::{
-        recording_color_ref, RECORDING_BORDER_BLUE, RECORDING_BORDER_RED, RECORDING_BORDER_YELLOW
-    };
     use crate::app_paths::sanitize_tag;
     use crate::diagnostics::{
-        startup_diagnostics_probe_path, build_diagnostic_readiness_by_module
+        build_diagnostic_readiness_by_module, startup_diagnostics_probe_path,
     };
+    use crate::recording_overlay::{
+        recording_color_ref, RECORDING_BORDER_BLUE, RECORDING_BORDER_RED, RECORDING_BORDER_YELLOW,
+    };
+    use crate::recording_process::device_detector::{
+        ffmpeg_supports_input_format, parse_quoted_audio_devices,
+    };
+    use crate::recording_process::process_manager::{
+        build_recording_args, cleanup_recording_files, default_recording_output_dir,
+        escape_concat_path, ffmpeg_stderr_excerpt, recording_temp_dir, resolution_scale_filter,
+        RecordingOptions,
+    };
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
     struct RawOcrBlock {
@@ -49,15 +49,9 @@ mod tests {
     fn test_recording_resolution_filter_defaults_to_1080p() {
         assert_eq!(resolution_scale_filter("480p"), Some("scale=-2:480"));
         assert_eq!(resolution_scale_filter("720p"), Some("scale=-2:720"));
-        assert_eq!(
-            resolution_scale_filter("1080p"),
-            Some("scale=-2:1080")
-        );
+        assert_eq!(resolution_scale_filter("1080p"), Some("scale=-2:1080"));
         assert_eq!(resolution_scale_filter("original"), None);
-        assert_eq!(
-            resolution_scale_filter("unexpected"),
-            Some("scale=-2:1080")
-        );
+        assert_eq!(resolution_scale_filter("unexpected"), Some("scale=-2:1080"));
     }
 
     fn recording_options(audio_mode: &str) -> RecordingOptions {
@@ -111,8 +105,7 @@ mod tests {
 
     #[test]
     fn test_recording_args_system_audio_uses_wasapi() {
-        let args =
-            build_recording_args(&recording_options("system"), output_path()).unwrap();
+        let args = build_recording_args(&recording_options("system"), output_path()).unwrap();
         assert!(args.windows(2).any(|pair| pair == ["-f", "wasapi"]));
         assert!(args.windows(2).any(|pair| pair == ["-i", "default"]));
         assert!(args.windows(2).any(|pair| pair == ["-map", "1:a"]));
@@ -129,8 +122,7 @@ mod tests {
 
     #[test]
     fn test_recording_args_system_and_microphone_mix_audio() {
-        let args =
-            build_recording_args(&recording_options("system_mic"), output_path()).unwrap();
+        let args = build_recording_args(&recording_options("system_mic"), output_path()).unwrap();
         assert!(args.windows(2).any(|pair| pair
             == [
                 "-filter_complex",
@@ -202,30 +194,15 @@ File formats:
     #[test]
     fn test_sanitize_tag_keeps_release_names_filesystem_safe() {
         assert_eq!(sanitize_tag("v1.2.3"), "v1.2.3");
-        assert_eq!(
-            sanitize_tag("release/2026:01 beta"),
-            "release_2026_01_beta"
-        );
+        assert_eq!(sanitize_tag("release/2026:01 beta"), "release_2026_01_beta");
         assert_eq!(sanitize_tag("***"), "___");
     }
     #[test]
     fn test_recording_overlay_status_color_mapping() {
-        assert_eq!(
-            recording_color_ref("ready"),
-            RECORDING_BORDER_BLUE
-        );
-        assert_eq!(
-            recording_color_ref("recording"),
-            RECORDING_BORDER_RED
-        );
-        assert_eq!(
-            recording_color_ref("paused"),
-            RECORDING_BORDER_YELLOW
-        );
-        assert_eq!(
-            recording_color_ref("saved"),
-            RECORDING_BORDER_BLUE
-        );
+        assert_eq!(recording_color_ref("ready"), RECORDING_BORDER_BLUE);
+        assert_eq!(recording_color_ref("recording"), RECORDING_BORDER_RED);
+        assert_eq!(recording_color_ref("paused"), RECORDING_BORDER_YELLOW);
+        assert_eq!(recording_color_ref("saved"), RECORDING_BORDER_BLUE);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::*;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn app_data_dir() -> PathBuf {
     let base_dir = std::env::var("LOCALAPPDATA")
@@ -75,4 +75,3 @@ pub fn repo_root_from_manifest() -> PathBuf {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
-

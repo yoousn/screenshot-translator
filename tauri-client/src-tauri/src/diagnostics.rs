@@ -15,7 +15,8 @@ pub fn cache_startup_readiness_snapshot(snapshot: serde_json::Value) {
     }
 }
 
-pub static LAST_TRANSLATION_DIAGNOSTICS: OnceLock<Mutex<Option<serde_json::Value>>> = OnceLock::new();
+pub static LAST_TRANSLATION_DIAGNOSTICS: OnceLock<Mutex<Option<serde_json::Value>>> =
+    OnceLock::new();
 
 pub fn get_last_translation_diagnostics() -> &'static Mutex<Option<serde_json::Value>> {
     LAST_TRANSLATION_DIAGNOSTICS.get_or_init(|| Mutex::new(None))
@@ -311,7 +312,9 @@ pub fn get_startup_readiness_snapshot() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub async fn run_startup_readiness_probe(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub async fn run_startup_readiness_probe(
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
     let snapshot = tokio::task::spawn_blocking(move || build_startup_readiness_snapshot(app))
         .await
         .map_err(|error| format!("startup readiness probe task failed: {error}"))?;

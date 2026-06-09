@@ -225,3 +225,129 @@ const fn kind_weight(kind: CandidateKind) -> u8 {
         CandidateKind::Monitor => 1,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptor(
+        kind: CandidateKind,
+        rect: SelectionRect,
+        source: CandidateSource,
+        confidence: CandidateConfidence,
+    ) -> CandidateDescriptor {
+        CandidateDescriptor::new(SelectionCandidate::new(kind, rect), source, confidence)
+    }
+
+    #[test]
+    fn negative_monitor_coordinates_select_containing_window() {
+        let candidates = CandidateSet::new(vec![
+            descriptor(
+                CandidateKind::Monitor,
+                SelectionRect::new(-1920, 0, 1920, 1080),
+                CandidateSource::MonitorTopology,
+                CandidateConfidence::Exact,
+            ),
+            descriptor(
+                CandidateKind::Monitor,
+                SelectionRect::new(0, 0, 2560, 1440),
+                CandidateSource::MonitorTopology,
+                CandidateConfidence::Exact,
+            ),
+            descriptor(
+                CandidateKind::Window,
+                SelectionRect::new(-1640, 120, 1280, 720),
+                CandidateSource::Win32Window,
+                CandidateConfidence::High,
+            )
+            .with_title("left monitor window"),
+        ]);
+
+        let hit = candidates.best_at(-1000, 300).expect("window hit");
+
+        assert_eq!(hit.descriptor.candidate.kind, CandidateKind::Window);
+        assert_eq!(hit.descriptor.source, CandidateSource::Win32Window);
+        assert_eq!(hit.pointer_x, -1000);
+    }
+
+    #[test]
+    fn dpi_scaled_monitor_edges_are_half_open() {
+        let candidates = CandidateSet::new(vec![
+            descriptor(
+                CandidateKind::Window,
+                SelectionRect::new(0, 0, 1920, 1080),
+                CandidateSource::Win32Window,
+                CandidateConfidence::High,
+            ),
+            descriptor(
+                CandidateKind::Window,
+                SelectionRect::new(1920, 0, 1536, 864),
+                CandidateSource::Win32Window,
+                CandidateConfidence::High,
+            ),
+        ]);
+
+        assert_eq!(
+            candidates
+                .best_at(1919, 500)
+                .unwrap()
+                .descriptor
+                .candidate
+                .rect,
+            SelectionRect::new(0, 0, 1920, 1080)
+        );
+        assert_eq!(
+            candidates
+                .best_at(1920, 500)
+                .unwrap()
+                .descriptor
+                .candidate
+                .rect,
+            SelectionRect::new(1920, 0, 1536, 864)
+        );
+        assert!(candidates.best_at(3456, 500).is_none());
+    }
+
+    #[test]
+    fn maximized_window_and_taskbar_edge_do_not_steal_each_other() {
+        let candidates = CandidateSet::new(vec![
+            descriptor(
+                CandidateKind::Window,
+                SelectionRect::new(0, 0, 1920, 1040),
+                CandidateSource::Win32Window,
+                CandidateConfidence::Exact,
+            ),
+            descriptor(
+                CandidateKind::Taskbar,
+                SelectionRect::new(0, 1040, 1920, 40),
+                CandidateSource::ShellTaskbar,
+                CandidateConfidence::Exact,
+            ),
+            descriptor(
+                CandidateKind::Monitor,
+                SelectionRect::new(0, 0, 1920, 1080),
+                CandidateSource::MonitorTopology,
+                CandidateConfidence::Exact,
+            ),
+        ]);
+
+        assert_eq!(
+            candidates
+                .best_at(960, 1039)
+                .unwrap()
+                .descriptor
+                .candidate
+                .kind,
+            CandidateKind::Window
+        );
+        assert_eq!(
+            candidates
+                .best_at(960, 1040)
+                .unwrap()
+                .descriptor
+                .candidate
+                .kind,
+            CandidateKind::Taskbar
+        );
+    }
+}

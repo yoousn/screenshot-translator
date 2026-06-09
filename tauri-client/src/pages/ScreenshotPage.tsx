@@ -1,13 +1,14 @@
-﻿import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Space, Button } from "antd";
+import { join, tempDir } from "@tauri-apps/api/path";
+import { Space, Button, message } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ScreenshotToolbar from "../components/screenshot/ScreenshotToolbar";
 import TextAnnotationEditor from "../components/screenshot/TextAnnotationEditor";
 import TranslationLoadingOverlay from "../components/screenshot/TranslationLoadingOverlay";
 import type { Config } from "../types/config";
-import type { Annotation, AnnotationTool, Rect } from "../types/screenshot";
+import type { Annotation, AnnotationTool, Rect, ScreenshotUpdatedPayload } from "../types/screenshot";
 import { useScreenshotOcr } from "../hooks/useScreenshotOcr";
 import { useScreenshotAnnotation, DEFAULT_ANNOTATION_COLOR, DEFAULT_ANNOTATION_TOOL, DEFAULT_ANNOTATION_SIZES } from "../hooks/useScreenshotAnnotation";
 import { getActionToolbarStyle, FLOATING_PANEL_MARGIN, FLOATING_PANEL_GAP } from "../utils/screenshotLayout";
@@ -30,17 +31,11 @@ const RECORDING_BORDER_BLUE = "#2563eb";
 const RECORDING_BORDER_RED = "#ef4444";
 const RECORDING_BORDER_YELLOW = "#f59e0b";
 const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
+const WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT === "1";
+const WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD === "1";
+const WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE === "1";
 
-type ScreenshotUpdatedPayload = string | {
-  kind?: "file" | "base64" | "memory" | "rgba";
-  path?: string;
-  base64?: string;
-  bytes?: number;
-  width?: number;
-  height?: number;
-  mode?: string;
-  sessionId?: string;
-};
+type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
 
 export default function ScreenshotPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -50,6 +45,7 @@ export default function ScreenshotPage() {
   const liveToolbarFrameRef = useRef<number | null>(null);
   const liveToolbarRectRef = useRef<Rect | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
+  const autoAcceptanceSmokeStartedRef = useRef(false);
   
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
@@ -80,7 +76,7 @@ export default function ScreenshotPage() {
   const drawRef = useRef(draw);
 
   // Break circular dependency
-  const captureRegionBase64Ref = useRef<() => Promise<string>>(() => Promise.resolve(""));
+  const captureRegionBase64Ref = useRef<(action?: SelectedImageBridgeAction) => Promise<string>>(() => Promise.resolve(""));
 
   hasSelectedRef.current = hasSelected;
   rectRef.current = rect;
@@ -129,6 +125,38 @@ export default function ScreenshotPage() {
     }
     hasSelectedRef.current = selected;
     setHasSelected(selected);
+  };
+
+  const buildAutomationAcceptanceRect = (): Rect | null => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvas.width <= 12 || canvas.height <= 12) return null;
+    const width = Math.max(96, Math.min(640, Math.floor(canvas.width * 0.32)));
+    const height = Math.max(72, Math.min(360, Math.floor(canvas.height * 0.28)));
+    const x = Math.max(4, Math.min(canvas.width - width - 4, Math.floor(canvas.width * 0.18)));
+    const y = Math.max(4, Math.min(canvas.height - height - 4, Math.floor(canvas.height * 0.18)));
+    const w = Math.max(0, Math.min(width, canvas.width - x));
+    const h = Math.max(0, Math.min(height, canvas.height - y));
+    if (w <= 5 || h <= 5) return null;
+    return { x, y, w, h };
+  };
+
+  const ensureAutomationAcceptanceSelection = () => {
+    if (hasSelectedRef.current && rectRef.current.w > 5 && rectRef.current.h > 5) {
+      return { ok: true, synthesized: false, rect: rectRef.current };
+    }
+    const next = buildAutomationAcceptanceRect();
+    if (!next) return { ok: false, synthesized: false, rect: null };
+    selectionDragDistanceRef.current = Math.hypot(next.w, next.h);
+    setCurrentRect(next, true);
+    setSelection(true);
+    drawRef.current(next.x, next.y, next.w, next.h);
+    syncActionToolbarPosition(next);
+    return { ok: true, synthesized: true, rect: next };
+  };
+
+  const buildWgcAcceptanceReportPngPath = async () => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return await join(await tempDir(), `ysn-wgc-alt-a-acceptance-${timestamp}.png`);
   };
 
   // 1. useScreenshotTextSource
@@ -276,6 +304,9 @@ export default function ScreenshotPage() {
     maskedCanvasRef,
     analysisImageDataRef,
     overlayVisibleRef,
+    nativeOverlayVisibleRef,
+    displayedSessionIdRef,
+    displayedPhysicalBoundsRef,
     setScreenshotState,
     setOverlayVisible,
     setDbgStatus,
@@ -335,7 +366,7 @@ export default function ScreenshotPage() {
   } = useScreenshotOcr({
     config,
     rectRef,
-    captureRegionBase64: () => captureRegionBase64Ref.current(),
+    captureRegionBase64: (action) => captureRegionBase64Ref.current(action),
     resetScreenshotState,
     draw: (...args) => drawRef.current(...args),
     translatedImgRef,
@@ -348,6 +379,7 @@ export default function ScreenshotPage() {
     captureRegionBase64,
     renderCurrentEditedSelectionBase64,
     getOutputBase64,
+    runGuardedWgcExplicitSelectionDiagnostic,
     getSelectionConfirmDelayMs,
     canConfirmCurrentSelection,
     handlePin,
@@ -356,6 +388,8 @@ export default function ScreenshotPage() {
   } = useScreenshotActions({
     canvasRef,
     imageRef: imageRef as any,
+    displayedSessionIdRef,
+    displayedPhysicalBoundsRef,
     rectRef,
     rect,
     hasSelected,
@@ -386,6 +420,60 @@ export default function ScreenshotPage() {
     cancelScreenshot,
   });
 
+  const handleWgcExplicitSelectionDiagnostic = async () => {
+    const key = "wgc-explicit-selection-diagnostic";
+    const reportEnabled = WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_ENABLED || WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED;
+    if (reportEnabled) {
+      const selection = ensureAutomationAcceptanceSelection();
+      if (!selection.ok) {
+        message.error({ content: "WGC 选区验收未运行：无法建立有效自动化选区", key, duration: 3 });
+        return;
+      }
+    }
+    message.loading({ content: "WGC 选区诊断运行中...", key, duration: 0 });
+    const savePath = reportEnabled ? await buildWgcAcceptanceReportPngPath() : undefined;
+    if (reportEnabled) {
+      invoke("log_screenshot_perf", {
+        message: `[wgc-acceptance] start auto=${WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED} realClipboard=${WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD_ENABLED} file=${savePath || ""} rect=${JSON.stringify(rectRef.current)}`,
+      }).catch(() => {});
+    }
+    const response = await runGuardedWgcExplicitSelectionDiagnostic(reportEnabled ? {
+      allowFakeClipboardSink: !WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD_ENABLED,
+      allowRealClipboard: WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD_ENABLED,
+      includeSelectedPngBase64: true,
+      allowFileWrite: true,
+      savePath,
+    } : undefined);
+    if (!response) {
+      if (reportEnabled) {
+        invoke("log_screenshot_perf", {
+          message: `[wgc-acceptance] ok=false reason=no-response file=${savePath || ""}`,
+        }).catch(() => {});
+      }
+      message.error({ content: "WGC 选区诊断未运行：缺少有效选区或物理屏幕范围", key, duration: 3 });
+      return;
+    }
+    if (response.ok) {
+      const selectedFile = response.selectedFile as { path?: unknown } | null | undefined;
+      const savedPath = typeof selectedFile?.path === "string" ? selectedFile.path : savePath;
+      if (reportEnabled) {
+        console.info("[ScreenshotPage] WGC selected-output acceptance report", response);
+        invoke("log_screenshot_perf", {
+          message: `[wgc-acceptance] ok=true file=${savedPath || ""} realClipboard=${response.realClipboardVerified === true} width=${(response.selectedFile as any)?.pngWidth || ""} height=${(response.selectedFile as any)?.pngHeight || ""}`,
+        }).catch(() => {});
+      }
+      message.success({ content: reportEnabled ? `WGC 选区验收通过：${savedPath || "PNG 已生成"}` : "WGC 选区诊断通过", key, duration: 5 });
+      return;
+    }
+    const reason = typeof response.error === "string" ? response.error : response.stage || "未通过";
+    if (reportEnabled) {
+      const selectedFile = response.selectedFile as { path?: unknown; ok?: unknown; error?: unknown } | null | undefined;
+      invoke("log_screenshot_perf", {
+        message: `[wgc-acceptance] ok=false reason=${reason} file=${savePath || ""} selectedFileOk=${selectedFile?.ok === true} selectedFileError=${typeof selectedFile?.error === "string" ? selectedFile.error : ""}`,
+      }).catch(() => {});
+    }
+    message.warning({ content: `WGC 选区诊断：${reason}`, key, duration: 4 });
+  };
   // Set the Ref to complete the circle
   captureRegionBase64Ref.current = captureRegionBase64;
 
@@ -518,6 +606,7 @@ export default function ScreenshotPage() {
     cancelScreenshot,
     handlePin,
     forceCloseScreenshots,
+    runWgcExplicitSelectionDiagnostic: handleWgcExplicitSelectionDiagnostic,
     lastMouseRef,
 
     selectionStartedAtRef,
@@ -604,19 +693,19 @@ export default function ScreenshotPage() {
         return;
       }
       if (payload?.kind === "file" && payload.path) {
-        loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal", payload.sessionId);
+        loadFullscreenFromFile(payload.path, payload.bytes, payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.physicalBounds);
         return;
       }
       if (payload?.kind === "rgba" && payload.width && payload.height) {
-        loadFullscreenFromRgba(payload.width, payload.height, payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.bytes);
+        loadFullscreenFromRgba(payload.width, payload.height, payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.bytes, payload.physicalBounds);
         return;
       }
       if (payload?.kind === "memory") {
-        loadFullscreen(payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.bytes);
+        loadFullscreen(payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.bytes, false, payload.physicalBounds);
         return;
       }
       if (payload?.base64) {
-        loadFullscreenFromBase64(payload.base64, payload.mode || screenshotModeRef.current || "normal", payload.sessionId);
+        loadFullscreenFromBase64(payload.base64, payload.mode || screenshotModeRef.current || "normal", payload.sessionId, payload.physicalBounds);
         return;
       }
       loadFullscreen();
@@ -650,7 +739,9 @@ export default function ScreenshotPage() {
       const nextMode = payload.mode || screenshotModeRef.current || "normal";
       const sessionId = payload.sessionId || "shell";
       screenshotModeRef.current = nextMode;
+      nativeOverlayVisibleRef.current = payload.nativeVisible === true;
       setScreenshotMode(nextMode);
+      autoAcceptanceSmokeStartedRef.current = false;
       setCurrentRect(EMPTY_RECT, true);
       setSelection(false);
       setHasSelected(false);
@@ -719,6 +810,19 @@ export default function ScreenshotPage() {
       if (liveToolbarFrameRef.current !== null) cancelAnimationFrame(liveToolbarFrameRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED) return;
+    if (autoAcceptanceSmokeStartedRef.current) return;
+    if (!overlayVisible || screenshotState !== "ready" || !imageRef.current || !displayedPhysicalBoundsRef.current) return;
+    autoAcceptanceSmokeStartedRef.current = true;
+    window.setTimeout(() => {
+      handleWgcExplicitSelectionDiagnostic().catch((error) => {
+        autoAcceptanceSmokeStartedRef.current = false;
+        console.warn("[ScreenshotPage] WGC selected-output auto acceptance smoke failed", error);
+      });
+    }, 120);
+  }, [overlayVisible, screenshotState]);
 
   useEffect(() => {
     const toolbar = actionToolbarRef.current;

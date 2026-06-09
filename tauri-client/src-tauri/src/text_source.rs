@@ -19,9 +19,7 @@ mod platform {
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, TreeScope_Subtree,
-    };
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, TreeScope_Subtree};
 
     fn bstr_to_string(value: BSTR) -> String {
         String::from_utf16_lossy(value.as_wide())
@@ -158,7 +156,10 @@ pub fn set_text_source_snapshot(value: serde_json::Value) {
 #[cfg(target_os = "windows")]
 pub fn start_text_source_snapshot_capture(app: &tauri::AppHandle) {
     use crate::win32;
-    use crate::window_targets::{excluded_app_hwnds, current_screen_origin, hwnd_rect, window_title, process_path_for_hwnd, exe_name_from_path};
+    use crate::window_targets::{
+        current_screen_origin, excluded_app_hwnds, exe_name_from_path, hwnd_rect,
+        process_path_for_hwnd, window_title,
+    };
     use std::time::Instant;
 
     let hwnd = unsafe { win32::GetForegroundWindow() };

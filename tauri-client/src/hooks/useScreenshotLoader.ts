@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "antd";
-import type { Rect } from "../types/screenshot";
+import type { NativeScreenshotDiagnosticsStatus, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
 
@@ -14,6 +14,25 @@ const logScreenshotBaseline = (sessionId: string | number, phase: string, elapse
   invoke("log_screenshot_perf", {
     message: `[baseline] session=${sessionId} phase=${phase} elapsed_ms=${Math.round(elapsedMs)} ${detail}`,
   }).catch(() => {});
+};
+
+const logNativeScreenshotDiagnostics = (sessionId: string | number, phase: string, elapsedMs: number) => {
+  invoke<NativeScreenshotDiagnosticsStatus>("get_native_screenshot_diagnostics_status")
+    .then((status) => {
+      const gpuStatus = status?.gpuPlan?.primaryStatus || status?.d3d11?.capability?.status || "unknown";
+      const gpuFallback = status?.gpuPlan?.primaryFallback || status?.d3d11?.capability?.fallback || "unknown";
+      const wgcSupported = status?.wgc?.nativeApi?.isSupported;
+      const dxgiReason = status?.dxgi?.nativeApi?.reason || "unknown";
+      logScreenshotBaseline(
+        sessionId,
+        phase,
+        elapsedMs,
+        `native_gpu=${gpuStatus} native_fallback=${gpuFallback} wgc_supported=${wgcSupported === true} dxgi_reason=${dxgiReason}`
+      );
+    })
+    .catch(() => {
+      logScreenshotBaseline(sessionId, phase, elapsedMs, "native_status=unavailable");
+    });
 };
 
 interface UseScreenshotLoaderProps {
@@ -51,6 +70,7 @@ type ScreenshotImageSource = HTMLImageElement | HTMLCanvasElement;
 
 const getScreenshotImageWidth = (image: ScreenshotImageSource) => image instanceof HTMLImageElement ? image.naturalWidth : image.width;
 const getScreenshotImageHeight = (image: ScreenshotImageSource) => image instanceof HTMLImageElement ? image.naturalHeight : image.height;
+const waitForAnimationFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 export function useScreenshotLoader({
   screenshotModeRef,
@@ -91,7 +111,10 @@ export function useScreenshotLoader({
   const analysisImageDataRef = useRef<ImageData | null>(null);
   const timeoutRef = useRef<any>(null);
   const captureIdRef = useRef<number>(0);
+  const displayedSessionIdRef = useRef<string | null>(null);
+  const displayedPhysicalBoundsRef = useRef<ScreenshotPhysicalBounds | null>(null);
   const overlayVisibleRef = useRef(false);
+  const nativeOverlayVisibleRef = useRef(false);
   const frontendSessionStartedAtRef = useRef<number>(0);
 
   const reportOverlayFailure = (reason: string) => {
@@ -106,10 +129,12 @@ export function useScreenshotLoader({
     }
   };
 
-  const startNewCaptureSession = (mode = "normal", remoteSessionId?: string | number, preserveVisibleShell = false) => {
+  const startNewCaptureSession = (mode = "normal", remoteSessionId?: string | number, preserveVisibleShell = false, physicalBounds?: ScreenshotPhysicalBounds | null) => {
     clearPendingConfirm();
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
+    displayedSessionIdRef.current = remoteSessionId == null ? null : String(remoteSessionId);
+    displayedPhysicalBoundsRef.current = physicalBounds ?? null;
     frontendSessionStartedAtRef.current = performance.now();
     logScreenshotBaseline(remoteSessionId || currentId, "frontend_session_start", 0, `mode=${mode}`);
 
@@ -137,7 +162,10 @@ export function useScreenshotLoader({
 
     clearScrollCaptureState();
     clearRecordingState();
-    clearWindowRects();
+    if (!preserveVisibleShell) {
+      clearWindowRects();
+      nativeOverlayVisibleRef.current = false;
+    }
 
     setCurrentRect(EMPTY_RECT, true);
     setSelection(false);
@@ -223,8 +251,7 @@ export function useScreenshotLoader({
       screenshotBytes: bytes || 0,
       errorMsg: ""
     });
-    setScreenshotState("ready");
-    const wasOverlayVisible = overlayVisibleRef.current;
+    const wasNativeOverlayVisible = nativeOverlayVisibleRef.current;
     logScreenshotPerf(`frontend image ready bytes=${bytes || 0}`);
 
     const canvas = document.querySelector("canvas");
@@ -239,16 +266,28 @@ export function useScreenshotLoader({
 
     initCanvas(img, sessionId, remoteSessionId);
     overlayVisibleRef.current = true;
+    setScreenshotState("ready");
     setOverlayVisible(true);
 
     requestAnimationFrame(() => {
+      if (sessionId !== captureIdRef.current || imageRef.current === null || maskedCanvasRef.current === null) {
+        logScreenshotBaseline(remoteSessionId || sessionId, "first_paint_guard_blocked", performance.now() - frontendSessionStartedAtRef.current);
+        return;
+      }
       logScreenshotBaseline(remoteSessionId || sessionId, "first_paint", performance.now() - frontendSessionStartedAtRef.current);
+      logNativeScreenshotDiagnostics(remoteSessionId || sessionId, "native_diagnostics_status", performance.now() - frontendSessionStartedAtRef.current);
       void (async () => {
         if (sessionId !== captureIdRef.current) return;
-        if (!wasOverlayVisible) {
+        if (!wasNativeOverlayVisible) {
           try {
+            logScreenshotBaseline(remoteSessionId || sessionId, "pre_show_candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
+            await loadWindowRects(true);
+            logScreenshotBaseline(remoteSessionId || sessionId, "pre_show_candidate_first_batch", performance.now() - frontendSessionStartedAtRef.current);
+            draw(0, 0, 0, 0);
+            await waitForAnimationFrame();
             logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_called", performance.now() - frontendSessionStartedAtRef.current);
             await invoke("overlay_ready_to_show", { label: getCurrentWindow().label, sessionId: String(remoteSessionId || sessionId) });
+            nativeOverlayVisibleRef.current = true;
             logScreenshotBaseline(remoteSessionId || sessionId, "overlay_ready_to_show_returned", performance.now() - frontendSessionStartedAtRef.current);
           } catch (error: any) {
             throw new Error(error?.message || String(error));
@@ -372,21 +411,21 @@ export function useScreenshotLoader({
     return true;
   };
 
-  const loadFullscreenFromRgba = async (width: number, height: number, mode = "normal", remoteSessionId?: string | number, bytes?: number) => {
-    const sessionId = startNewCaptureSession(mode, remoteSessionId, overlayVisibleRef.current);
+  const loadFullscreenFromRgba = async (width: number, height: number, mode = "normal", remoteSessionId?: string | number, bytes?: number, physicalBounds?: ScreenshotPhysicalBounds | null) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId, overlayVisibleRef.current, physicalBounds);
     try {
       const rawStartedAt = performance.now();
-      const raw = await invoke<unknown>("get_fullscreen_rgba_bytes");
+      const raw = await invoke<unknown>("get_fullscreen_rgba_bytes", { sessionId: remoteSessionId == null ? null : String(remoteSessionId) });
       logScreenshotBaseline(remoteSessionId || sessionId, "rgba_fetch_end", performance.now() - frontendSessionStartedAtRef.current, `fetch_ms=${Math.round(performance.now() - rawStartedAt)} bytes=${bytes || 0} size=${width}x${height}`);
       if (loadImageFromRgbaBytes(raw, width, height, sessionId, bytes, remoteSessionId)) return;
     } catch (rawErr) {
       console.warn("[ScreenshotPage] rgba screenshot fetch failed, falling back to PNG", rawErr);
     }
-    await loadFullscreen(mode, remoteSessionId, bytes, overlayVisibleRef.current);
+    await loadFullscreen(mode, remoteSessionId, bytes, overlayVisibleRef.current, physicalBounds);
   };
 
-  const loadFullscreen = async (mode = screenshotModeRef.current || "normal", remoteSessionId?: string | number, bytes?: number, preserveVisibleShell = false) => {
-    const sessionId = startNewCaptureSession(mode, remoteSessionId, preserveVisibleShell);
+  const loadFullscreen = async (mode = screenshotModeRef.current || "normal", remoteSessionId?: string | number, bytes?: number, preserveVisibleShell = false, physicalBounds?: ScreenshotPhysicalBounds | null) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId, preserveVisibleShell, physicalBounds);
     try {
       const binaryStartedAt = performance.now();
       const binary = await invoke<unknown>("get_fullscreen_image_bytes");
@@ -411,8 +450,8 @@ export function useScreenshotLoader({
     }
   };
 
-  const loadFullscreenFromBase64 = (base64: string, mode = "normal", remoteSessionId?: string | number) => {
-    const sessionId = startNewCaptureSession(mode, remoteSessionId);
+  const loadFullscreenFromBase64 = (base64: string, mode = "normal", remoteSessionId?: string | number, physicalBounds?: ScreenshotPhysicalBounds | null) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId, false, physicalBounds);
     try {
       if (!base64 || base64.length < 1000) {
         cancelScreenshot("Screenshot overlay failed");
@@ -425,17 +464,17 @@ export function useScreenshotLoader({
     }
   };
 
-  const loadFullscreenFromFile = (path: string, bytes?: number, mode = "normal", remoteSessionId?: string | number) => {
-    const sessionId = startNewCaptureSession(mode, remoteSessionId);
+  const loadFullscreenFromFile = (path: string, bytes?: number, mode = "normal", remoteSessionId?: string | number, physicalBounds?: ScreenshotPhysicalBounds | null) => {
+    const sessionId = startNewCaptureSession(mode, remoteSessionId, false, physicalBounds);
     try {
       if (!path) {
-        loadFullscreen(mode, remoteSessionId, bytes);
+        loadFullscreen(mode, remoteSessionId, bytes, false, physicalBounds);
         return;
       }
       loadImageFromSource(`${convertFileSrc(path)}?t=${Date.now()}`, sessionId, bytes, remoteSessionId);
     } catch (err: any) {
       if (sessionId !== captureIdRef.current) return;
-      loadFullscreen(mode, remoteSessionId, bytes);
+      loadFullscreen(mode, remoteSessionId, bytes, false, physicalBounds);
     }
   };
 
@@ -468,11 +507,15 @@ export function useScreenshotLoader({
     setScreenshotMode("normal");
     screenshotModeRef.current = "normal";
     setScreenshotState("initializing");
+    overlayVisibleRef.current = false;
+    nativeOverlayVisibleRef.current = false;
     setOverlayVisible(false);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
     imageRef.current = null;
     translatedImgRef.current = null;
     analysisImageDataRef.current = null;
+    displayedSessionIdRef.current = null;
+    displayedPhysicalBoundsRef.current = null;
   }
 
   return {
@@ -484,8 +527,11 @@ export function useScreenshotLoader({
     maskedCanvasRef,
     analysisImageDataRef,
     overlayVisibleRef,
+    nativeOverlayVisibleRef,
     timeoutRef,
     captureIdRef,
+    displayedSessionIdRef,
+    displayedPhysicalBoundsRef,
     setScreenshotState,
     setOverlayVisible,
     setDbgStatus,

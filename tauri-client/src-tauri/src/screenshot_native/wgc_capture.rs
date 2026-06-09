@@ -2,7 +2,13 @@ use std::fmt;
 
 use super::{
     GpuCapabilityRequirement, GpuCaptureBackend, GpuCaptureCapability, GpuCaptureFallback,
-    GpuTextureInterop,
+    GpuCaptureStatus, GpuTextureInterop,
+};
+use crate::screenshot_native::dxgi_capture::{
+    DxgiCaptureError, DxgiDesktopDuplicationBackend as NativeDxgiDesktopDuplicationBackend,
+};
+use crate::screenshot_native::wgc_probe::{
+    default_wgc_one_frame_probe_contract, probe_wgc_native_api_support, WgcOneFrameProbeDiagnostics,
 };
 use crate::screenshot_native::{CaptureBackendKind, MonitorCaptureBounds, RgbaFrame};
 
@@ -74,6 +80,26 @@ impl std::error::Error for GpuCaptureBackendError {}
 
 pub type GpuCaptureBackendResult<T> = Result<T, GpuCaptureBackendError>;
 
+impl From<DxgiCaptureError> for GpuCaptureBackendError {
+    fn from(error: DxgiCaptureError) -> Self {
+        match error {
+            DxgiCaptureError::InvalidBounds(bounds) => Self::InvalidBounds(bounds),
+            DxgiCaptureError::Unsupported { reason }
+            | DxgiCaptureError::AdapterUnavailable { reason } => {
+                Self::unsupported(GpuCaptureBackend::DxgiDesktopDuplication, reason)
+            }
+            DxgiCaptureError::PlaceholderOnly
+            | DxgiCaptureError::AccessLost { .. }
+            | DxgiCaptureError::FrameTimeout { .. }
+            | DxgiCaptureError::FrameUnavailable { .. }
+            | DxgiCaptureError::ProtectedContent => Self::capture_unavailable(
+                GpuCaptureBackend::DxgiDesktopDuplication,
+                error.to_string(),
+            ),
+        }
+    }
+}
+
 pub trait GpuCaptureFrameSource {
     fn gpu_backend(&self) -> GpuCaptureBackend;
 
@@ -112,18 +138,53 @@ impl GpuCaptureFrameSource for WindowsGraphicsCaptureBackend {
     }
 
     fn capability(&self) -> GpuCaptureCapability {
-        GpuCaptureCapability::blocked(
+        let api_probe = probe_wgc_native_api_support();
+        let diagnostics = WgcOneFrameProbeDiagnostics::from_contract(
+            default_wgc_one_frame_probe_contract(),
+            api_probe.clone(),
+        );
+        let mut missing_requirements = vec![
+            GpuCapabilityRequirement::D3d11Device,
+            GpuCapabilityRequirement::D3d11SharedTexture,
+            GpuCapabilityRequirement::UserCaptureConsent,
+        ];
+        if !api_probe.is_supported {
+            missing_requirements.insert(0, GpuCapabilityRequirement::WindowsGraphicsCaptureApi);
+        }
+
+        GpuCaptureCapability {
+            backend: self.gpu_backend(),
+            texture_interop: GpuTextureInterop::D3d11Texture,
+            status: GpuCaptureStatus::Unsupported,
+            missing_requirements,
+            fallback: GpuCaptureFallback::RetryBackend(GpuCaptureBackend::DxgiDesktopDuplication),
+            reason: Some(api_probe.reason.unwrap_or_else(|| {
+                format!(
+                    "Windows Graphics Capture API is present; next guarded WGC contract stage is {}.",
+                    diagnostics
+                        .next_stage
+                        .map(|stage| stage.as_str())
+                        .unwrap_or("one-frame-readback")
+                )
+            })),
+        }
+    }
+
+    fn start(&mut self) -> GpuCaptureBackendResult<()> {
+        let api_probe = probe_wgc_native_api_support();
+        if !api_probe.is_supported {
+            return Err(GpuCaptureBackendError::unsupported(
+                self.gpu_backend(),
+                api_probe.reason.unwrap_or_else(|| {
+                    "Windows Graphics Capture API support probe returned false".to_string()
+                }),
+            ));
+        }
+
+        Err(GpuCaptureBackendError::capture_unavailable(
             self.gpu_backend(),
-            GpuTextureInterop::D3d11Texture,
-            vec![
-                GpuCapabilityRequirement::WindowsGraphicsCaptureApi,
-                GpuCapabilityRequirement::D3d11Device,
-                GpuCapabilityRequirement::D3d11SharedTexture,
-                GpuCapabilityRequirement::UserCaptureConsent,
-            ],
-            GpuCaptureFallback::RetryBackend(GpuCaptureBackend::DxgiDesktopDuplication),
-            "Windows Graphics Capture backend is a Phase E placeholder; native API wiring is pending.",
-        )
+            "WGC API is available, but guarded device/framepool/session contracts are diagnostics-only until one-frame capture is explicitly enabled.",
+        ))
     }
 
     fn capture_frame(
@@ -137,12 +198,16 @@ impl GpuCaptureFrameSource for WindowsGraphicsCaptureBackend {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct DxgiDesktopDuplicationBackend;
+#[derive(Debug, Default, Clone)]
+pub struct DxgiDesktopDuplicationBackend {
+    inner: NativeDxgiDesktopDuplicationBackend,
+}
 
 impl DxgiDesktopDuplicationBackend {
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self {
+            inner: NativeDxgiDesktopDuplicationBackend::new(),
+        }
     }
 }
 
@@ -156,18 +221,15 @@ impl GpuCaptureFrameSource for DxgiDesktopDuplicationBackend {
     }
 
     fn capability(&self) -> GpuCaptureCapability {
-        GpuCaptureCapability::blocked(
-            self.gpu_backend(),
-            GpuTextureInterop::D3d11Texture,
-            vec![
-                GpuCapabilityRequirement::DxgiOutputDuplicationApi,
-                GpuCapabilityRequirement::D3d11Device,
-                GpuCapabilityRequirement::D3d11SharedTexture,
-                GpuCapabilityRequirement::CompatibleAdapter,
-            ],
-            GpuCaptureFallback::CpuScreenshot,
-            "DXGI Desktop Duplication backend is a Phase E placeholder; native API wiring is pending.",
-        )
+        self.inner.capability()
+    }
+
+    fn start(&mut self) -> GpuCaptureBackendResult<()> {
+        self.inner.start().map_err(Into::into)
+    }
+
+    fn stop(&mut self) -> GpuCaptureBackendResult<()> {
+        self.inner.stop().map_err(Into::into)
     }
 
     fn capture_frame(
@@ -177,6 +239,6 @@ impl GpuCaptureFrameSource for DxgiDesktopDuplicationBackend {
         if bounds.is_empty() {
             return Err(GpuCaptureBackendError::InvalidBounds(bounds));
         }
-        Err(GpuCaptureBackendError::not_implemented(self.gpu_backend()))
+        self.inner.capture_frame(bounds).map_err(Into::into)
     }
 }

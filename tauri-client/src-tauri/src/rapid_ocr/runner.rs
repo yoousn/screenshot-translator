@@ -1,11 +1,11 @@
 use crate::*;
-use std::path::{Path, PathBuf};
+use base64::prelude::*;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
-use base64::prelude::*;
 
-use super::worker::{run_rapidocr_worker_ocr, rapid_ocr_worker_enabled};
+use super::worker::{rapid_ocr_worker_enabled, run_rapidocr_worker_ocr};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OcrBlock {
@@ -76,7 +76,7 @@ pub fn run_rapidocr_sync(
             missing_models.join(", ")
         ));
     }
-    
+
     let final_small_text_retry = small_text_retry
         .or_else(|| config_value_bool("rapidOcrSmallTextRetry"))
         .unwrap_or(true);
@@ -96,7 +96,14 @@ pub fn run_rapidocr_sync(
     }
 
     let result = if rapid_ocr_worker_enabled() {
-        match run_rapidocr_worker_ocr(app, &temp_path, &model_version, &mode, &model_root, final_small_text_retry) {
+        match run_rapidocr_worker_ocr(
+            app,
+            &temp_path,
+            &model_version,
+            &mode,
+            &model_root,
+            final_small_text_retry,
+        ) {
             Ok(output) => Ok(output),
             Err(error) => {
                 eprintln!(

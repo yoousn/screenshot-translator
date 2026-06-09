@@ -47,6 +47,53 @@ pub struct NativeOverlayWin32Policy {
 }
 
 #[cfg(target_os = "windows")]
+impl NativeOverlayWin32Policy {
+    pub const fn hides_from_taskbar_and_alt_tab(self) -> bool {
+        self.create_ex_style & WS_EX_TOOLWINDOW != 0 && self.create_ex_style & WS_EX_APPWINDOW == 0
+    }
+
+    pub const fn avoids_activation(self) -> bool {
+        self.create_ex_style & WS_EX_NOACTIVATE != 0
+            && self.apply_swp_flags & SWP_NOACTIVATE != 0
+            && self.show_swp_flags & SWP_NOACTIVATE != 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeOverlayLifecycleDiagnosticKind {
+    TaskbarOrAltTabExposure,
+    ActivationRisk,
+    RepeatHotkeyCleanupPending,
+    FocusRestorePending,
+}
+
+impl NativeOverlayLifecycleDiagnosticKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TaskbarOrAltTabExposure => "taskbar-or-alt-tab-exposure",
+            Self::ActivationRisk => "activation-risk",
+            Self::RepeatHotkeyCleanupPending => "repeat-hotkey-cleanup-pending",
+            Self::FocusRestorePending => "focus-restore-pending",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeOverlayLifecycleDiagnostic {
+    pub kind: NativeOverlayLifecycleDiagnosticKind,
+    pub state: NativeOverlayState,
+}
+
+impl NativeOverlayLifecycleDiagnostic {
+    pub const fn new(
+        kind: NativeOverlayLifecycleDiagnosticKind,
+        state: NativeOverlayState,
+    ) -> Self {
+        Self { kind, state }
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl NativeOverlayOptions {
     pub fn to_win32_policy(self) -> NativeOverlayWin32Policy {
         NativeOverlayWin32Policy {
@@ -234,7 +281,7 @@ fn set_capture_exclusion(hwnd: isize, excluded: bool) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn win32_overlay_create_style() -> u32 {
-    WS_POPUP | WS_VISIBLE
+    WS_POPUP
 }
 
 #[cfg(target_os = "windows")]
@@ -329,8 +376,6 @@ const SW_SHOW: i32 = 5;
 #[cfg(target_os = "windows")]
 const WS_POPUP: u32 = 0x80000000;
 #[cfg(target_os = "windows")]
-const WS_VISIBLE: u32 = 0x10000000;
-#[cfg(target_os = "windows")]
 const WS_EX_NOACTIVATE: isize = 0x08000000;
 #[cfg(target_os = "windows")]
 const WS_EX_TOOLWINDOW: isize = 0x00000080;
@@ -357,4 +402,30 @@ extern "system" {
         uFlags: u32,
     ) -> i32;
     fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    const TEST_WS_VISIBLE: u32 = 0x10000000;
+
+    #[test]
+    fn default_policy_hides_overlay_from_taskbar_and_alt_tab() {
+        let policy = NativeOverlayOptions::default().to_win32_policy();
+
+        assert_eq!(policy.create_style & TEST_WS_VISIBLE, 0);
+        assert!(policy.hides_from_taskbar_and_alt_tab());
+        assert!(policy.avoids_activation());
+    }
+
+    #[test]
+    fn applying_overlay_style_removes_appwindow() {
+        let current = WS_EX_APPWINDOW | WS_EX_TOOLWINDOW;
+
+        let applied = win32_apply_overlay_ex_style(current, NativeOverlayOptions::default());
+
+        assert_eq!(applied & WS_EX_APPWINDOW, 0);
+        assert_ne!(applied & WS_EX_TOOLWINDOW, 0);
+    }
 }

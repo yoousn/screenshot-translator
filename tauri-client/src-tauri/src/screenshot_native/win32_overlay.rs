@@ -113,7 +113,7 @@ impl fmt::Display for Win32OverlayError {
 
 impl std::error::Error for Win32OverlayError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Win32OverlayWindow {
     handle: Win32OverlayHandle,
     state: Win32OverlayLifecycleState,
@@ -127,12 +127,53 @@ impl Win32OverlayWindow {
         }
     }
 
-    pub const fn handle(self) -> Win32OverlayHandle {
+    pub const fn handle(&self) -> Win32OverlayHandle {
         self.handle
     }
 
-    pub const fn state(self) -> Win32OverlayLifecycleState {
+    pub const fn state(&self) -> Win32OverlayLifecycleState {
         self.state
+    }
+
+    fn mark_destroyed(&mut self) {
+        self.handle = Win32OverlayHandle::null();
+        self.state = Win32OverlayLifecycleState::Destroyed;
+    }
+}
+
+impl Drop for Win32OverlayWindow {
+    fn drop(&mut self) {
+        if self.handle.is_valid() {
+            let _ = destroy_platform_overlay(self.handle);
+            self.mark_destroyed();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Win32OverlayLifecycleDiagnostic {
+    pub hwnd: isize,
+    pub state: Win32OverlayLifecycleState,
+    pub hidden_from_taskbar_and_alt_tab: bool,
+    pub no_activate: bool,
+}
+
+impl Win32OverlayLifecycleDiagnostic {
+    pub const fn from_config(
+        handle: Win32OverlayHandle,
+        state: Win32OverlayLifecycleState,
+        config: &Win32OverlayConfig,
+    ) -> Self {
+        Self {
+            hwnd: handle.hwnd(),
+            state,
+            hidden_from_taskbar_and_alt_tab: true,
+            no_activate: config.no_activate,
+        }
+    }
+
+    pub const fn requires_recovery(self) -> bool {
+        !self.hidden_from_taskbar_and_alt_tab || !self.no_activate
     }
 }
 
@@ -146,8 +187,7 @@ pub fn create_win32_overlay(
 pub fn destroy_win32_overlay(window: &mut Win32OverlayWindow) -> Result<(), Win32OverlayError> {
     ensure_handle(window.handle, "destroy")?;
     destroy_platform_overlay(window.handle)?;
-    window.handle = Win32OverlayHandle::null();
-    window.state = Win32OverlayLifecycleState::Destroyed;
+    window.mark_destroyed();
     Ok(())
 }
 
@@ -166,6 +206,13 @@ pub fn hide_win32_overlay(window: &mut Win32OverlayWindow) -> Result<(), Win32Ov
     hide_platform_overlay(window.handle)?;
     window.state = Win32OverlayLifecycleState::Hidden;
     Ok(())
+}
+
+pub fn diagnose_win32_overlay_lifecycle(
+    window: &Win32OverlayWindow,
+    config: &Win32OverlayConfig,
+) -> Win32OverlayLifecycleDiagnostic {
+    Win32OverlayLifecycleDiagnostic::from_config(window.handle, window.state, config)
 }
 
 fn validate_config(config: &Win32OverlayConfig) -> Result<(), Win32OverlayError> {
@@ -231,15 +278,12 @@ fn create_platform_overlay(
         return Err(Win32OverlayError::CreateWindowFailed);
     }
 
-    let handle = Win32OverlayHandle::new(hwnd);
+    let window = Win32OverlayWindow::from_handle(Win32OverlayHandle::new(hwnd));
     if config.exclude_from_capture {
-        if let Err(error) = set_capture_exclusion(handle, true) {
-            let _ = destroy_platform_overlay(handle);
-            return Err(error);
-        }
+        set_capture_exclusion(window.handle(), true)?;
     }
 
-    Ok(Win32OverlayWindow::from_handle(handle))
+    Ok(window)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -343,7 +387,12 @@ fn overlay_ex_style(config: &Win32OverlayConfig) -> u32 {
     if config.no_activate {
         style |= WS_EX_NOACTIVATE;
     }
-    style
+    style & !WS_EX_APPWINDOW
+}
+
+#[cfg(all(test, target_os = "windows"))]
+fn hides_from_taskbar_and_alt_tab(style: u32) -> bool {
+    style & WS_EX_TOOLWINDOW != 0 && style & WS_EX_APPWINDOW == 0
 }
 
 #[cfg(target_os = "windows")]
@@ -397,6 +446,8 @@ const WS_EX_TOPMOST: u32 = 0x00000008;
 #[cfg(target_os = "windows")]
 const WS_EX_TOOLWINDOW: u32 = 0x00000080;
 #[cfg(target_os = "windows")]
+const WS_EX_APPWINDOW: u32 = 0x00040000;
+#[cfg(target_os = "windows")]
 const WS_EX_LAYERED: u32 = 0x00080000;
 #[cfg(target_os = "windows")]
 const WS_EX_NOACTIVATE: u32 = 0x08000000;
@@ -404,3 +455,38 @@ const WS_EX_NOACTIVATE: u32 = 0x08000000;
 const WDA_NONE: u32 = 0x00000000;
 #[cfg(target_os = "windows")]
 const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_ex_style_uses_toolwindow_without_appwindow() {
+        let config = Win32OverlayConfig::default();
+        let style = overlay_ex_style(&config);
+        assert!(hides_from_taskbar_and_alt_tab(style));
+        assert_ne!(style & WS_EX_NOACTIVATE, 0);
+    }
+
+    #[test]
+    fn overlay_ex_style_stays_hidden_when_activation_is_allowed() {
+        let config = Win32OverlayConfig {
+            no_activate: false,
+            ..Win32OverlayConfig::default()
+        };
+        let style = overlay_ex_style(&config);
+        assert!(hides_from_taskbar_and_alt_tab(style));
+        assert_eq!(style & WS_EX_NOACTIVATE, 0);
+    }
+
+    #[test]
+    fn lifecycle_diagnostic_flags_activation_risk() {
+        let config = Win32OverlayConfig {
+            no_activate: false,
+            ..Win32OverlayConfig::default()
+        };
+        let window = Win32OverlayWindow::from_handle(Win32OverlayHandle::null());
+        let diagnostic = diagnose_win32_overlay_lifecycle(&window, &config);
+        assert!(diagnostic.requires_recovery());
+    }
+}

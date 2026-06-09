@@ -1,12 +1,12 @@
-use std::sync::{Mutex, OnceLock};
-use std::process::{Command, Child, Stdio};
-use std::path::{Path, PathBuf};
+use crate::*;
 use std::fs;
 use std::io::Write;
-use crate::*;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
+use super::device_detector::{collect_ffmpeg_audio_devices, hidden_ffmpeg_command};
 use super::ffmpeg_installer::find_ffmpeg_executable;
-use super::device_detector::{hidden_ffmpeg_command, collect_ffmpeg_audio_devices};
 
 pub fn recording_temp_dir() -> PathBuf {
     let mut dir = app_data_dir();
@@ -283,7 +283,10 @@ pub fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Resu
     })?;
     println!("[window-trace] start_recording ffmpeg_path={:?}", ffmpeg);
     let output_path = recording_output_path(options.output_dir.clone())?;
-    println!("[window-trace] start_recording output_path={:?}", output_path);
+    println!(
+        "[window-trace] start_recording output_path={:?}",
+        output_path
+    );
     let args = build_recording_args(&options, &output_path)?;
     println!("[window-trace] start_recording build args finish");
 
@@ -301,7 +304,10 @@ pub fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Resu
         .try_wait()
         .map_err(|e| format!("Failed to inspect ffmpeg recording process: {}", e))?
     {
-        println!("[window-trace] start_recording try_wait result: exited with {}", status);
+        println!(
+            "[window-trace] start_recording try_wait result: exited with {}",
+            status
+        );
         return Err(format!("ffmpeg recording exited immediately with status {}. Check recording options, audio device, or ffmpeg version.", status));
     }
     println!("[window-trace] start_recording try_wait result: still running");
@@ -434,7 +440,10 @@ pub fn concat_recording_segments(
             .map_err(|e| format!("read recording segment metadata failed: {}", e))?
             .len();
         if size == 0 {
-            return Err(format!("recording segment is empty: {}", path.to_string_lossy()));
+            return Err(format!(
+                "recording segment is empty: {}",
+                path.to_string_lossy()
+            ));
         }
         existing_segments.push(path);
     }

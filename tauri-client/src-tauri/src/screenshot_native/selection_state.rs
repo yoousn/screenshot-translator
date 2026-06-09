@@ -409,4 +409,55 @@ mod tests {
         );
         assert_eq!(state.status(), SelectionStateStatus::Cancelled);
     }
+
+    #[test]
+    fn repeat_hotkey_cleans_active_selection_and_allows_fresh_drag() {
+        let mut state = SelectionState::new();
+
+        state.handle_event(ScreenshotInputEvent::MouseDown { x: -120, y: 80 });
+        state.handle_event(ScreenshotInputEvent::MouseMove { x: 320, y: 260 });
+
+        assert_eq!(
+            state.handle_event(ScreenshotInputEvent::RepeatHotkey),
+            SelectionTransition::Cancelled
+        );
+        assert_eq!(state.status(), SelectionStateStatus::Cancelled);
+        assert_eq!(state.selection(), None);
+
+        assert_eq!(
+            state.handle_event(ScreenshotInputEvent::MouseDown { x: 10, y: 10 }),
+            SelectionTransition::Armed {
+                anchor_x: 10,
+                anchor_y: 10,
+            }
+        );
+        assert_eq!(
+            state.handle_event(ScreenshotInputEvent::MouseUp { x: 40, y: 35 }),
+            SelectionTransition::Completed {
+                rect: SelectionRect::new(10, 10, 30, 25),
+            }
+        );
+    }
+
+    #[test]
+    fn repeat_hotkey_contract_can_leave_selection_active() {
+        let mut state = SelectionState::with_contract(InputContract {
+            allow_repeat_hotkey_cancel: false,
+            allow_keyboard_adjustment: true,
+            minimum_drag_pixels: 2,
+        });
+
+        state.handle_event(ScreenshotInputEvent::MouseDown { x: 5, y: 5 });
+        state.handle_event(ScreenshotInputEvent::MouseMove { x: 30, y: 25 });
+
+        assert_eq!(
+            state.handle_event(ScreenshotInputEvent::Key {
+                command: KeyCommand::RepeatHotkey,
+                modifiers: InputModifiers::none(),
+            }),
+            SelectionTransition::Ignored
+        );
+        assert_eq!(state.status(), SelectionStateStatus::Selecting);
+        assert_eq!(state.selection(), Some(SelectionRect::new(5, 5, 25, 20)));
+    }
 }

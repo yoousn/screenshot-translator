@@ -33,8 +33,18 @@ pub fn current_screen_work_area() -> Option<(i32, i32, i32, i32)> {
     }
     let mut info = win32::MONITORINFO {
         cbSize: std::mem::size_of::<win32::MONITORINFO>() as u32,
-        rcMonitor: win32::RECT { left: 0, top: 0, right: 0, bottom: 0 },
-        rcWork: win32::RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        rcMonitor: win32::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        rcWork: win32::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
         dwFlags: 0,
     };
     let ok = unsafe { win32::GetMonitorInfoW(monitor, &mut info as *mut win32::MONITORINFO) };
@@ -254,10 +264,7 @@ pub fn push_rect_candidate(
 }
 
 #[cfg(target_os = "windows")]
-pub fn push_display_candidate(
-    rects: &mut Vec<serde_json::Value>,
-    screen: (i32, i32, i32, i32),
-) {
+pub fn push_display_candidate(rects: &mut Vec<serde_json::Value>, screen: (i32, i32, i32, i32)) {
     let (_, _, w, h) = screen;
     if w < 50 || h < 50 {
         return;
@@ -395,7 +402,14 @@ pub fn get_window_rects(
                         .take(1)
                     {
                         if let Some(rect) = hwnd_rect(child, false) {
-                            push_rect_candidate(&mut rects, rect, "control", screen, window_clip, 12);
+                            push_rect_candidate(
+                                &mut rects,
+                                rect,
+                                "control",
+                                screen,
+                                window_clip,
+                                12,
+                            );
                         }
                     }
                 }
@@ -508,4 +522,3 @@ pub fn get_recording_targets(app: tauri::AppHandle) -> Result<serde_json::Value,
         "displays": displays,
     }))
 }
-

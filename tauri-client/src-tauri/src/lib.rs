@@ -1,4 +1,4 @@
-﻿pub mod app_paths;
+pub mod app_paths;
 pub use app_paths::*;
 
 pub mod config_store;
@@ -14,6 +14,15 @@ pub use hotkeys::*;
 
 pub mod screenshot_commands;
 pub use screenshot_commands::*;
+
+pub(crate) mod screenshot_diagnostics_json;
+pub(crate) mod screenshot_dxgi_diagnostics_json;
+pub(crate) mod screenshot_win32_diagnostics_json;
+
+pub mod screenshot_diagnostics_requests;
+
+pub mod screenshot_wgc_diagnostic_commands;
+pub mod screenshot_wgc_selected_output_diagnostic_commands;
 
 pub mod screenshot_native;
 pub use screenshot_native::*;
@@ -167,6 +176,20 @@ pub(crate) mod win32 {
             wMsgFilterMin: u32,
             wMsgFilterMax: u32,
         ) -> i32;
+        pub fn PeekMessageW(
+            lpMsg: *mut MSG,
+            hWnd: isize,
+            wMsgFilterMin: u32,
+            wMsgFilterMax: u32,
+            wRemoveMsg: u32,
+        ) -> i32;
+        pub fn MsgWaitForMultipleObjectsEx(
+            nCount: u32,
+            pHandles: *const isize,
+            dwMilliseconds: u32,
+            dwWakeMask: u32,
+            dwFlags: u32,
+        ) -> u32;
         pub fn TranslateMessage(lpMsg: *const MSG) -> i32;
         pub fn DispatchMessageW(lpMsg: *const MSG) -> isize;
         pub fn BeginPaint(hWnd: isize, lpPaint: *mut PAINTSTRUCT) -> isize;
@@ -200,7 +223,9 @@ pub(crate) mod win32 {
             lpEnumFunc: EnumWindowsProc,
             lParam: isize,
         ) -> i32;
+        pub fn IsWindow(hWnd: isize) -> i32;
         pub fn IsWindowVisible(hWnd: isize) -> i32;
+        pub fn IsIconic(hWnd: isize) -> i32;
         pub fn SetCursorPos(X: i32, Y: i32) -> i32;
         pub fn mouse_event(dwFlags: u32, dx: u32, dy: u32, dwData: u32, dwExtraInfo: usize);
         pub fn InvalidateRect(hWnd: isize, lpRect: *const RECT, bErase: i32) -> i32;
@@ -400,6 +425,26 @@ pub fn run() {
             get_text_source_snapshot,
             overlay_ready_to_show,
             get_screenshot_pointer_state,
+            build_native_selected_image_bridge,
+            copy_native_selected_output_to_clipboard,
+            get_native_screenshot_diagnostics_status,
+            screenshot_wgc_diagnostic_commands::run_native_wgc_one_frame_probe_smoke,
+            screenshot_wgc_diagnostic_commands::resolve_native_wgc_monitor_target_diagnostic,
+            screenshot_wgc_diagnostic_commands::run_native_wgc_monitor_session_smoke,
+            screenshot_wgc_selected_output_diagnostic_commands::run_native_wgc_selected_output_clipboard_acceptance_smoke,
+            screenshot_wgc_selected_output_diagnostic_commands::run_native_wgc_explicit_selection_selected_output_clipboard_acceptance_smoke,
+            run_native_dxgi_texture_smoke,
+            run_native_dxgi_desktop_update_pulse_diagnostic_smoke,
+            run_native_dxgi_pulse_before_acquire_probe,
+            run_native_dxgi_frame_info_probe,
+            run_native_dxgi_default_vs_selected_acquire_comparison_smoke,
+            run_native_dxgi_selected_readback_smoke,
+            run_native_dxgi_selected_output_bridge_dry_run,
+            run_native_dxgi_selected_output_clipboard_acceptance_smoke,
+            run_native_dxgi_cursor_nudge_diagnostic_smoke,
+            run_native_cursor_nudge_smoke,
+            run_native_input_synthetic_smoke,
+            run_native_overlay_planned_smoke,
             run_local_ocr,
             prewarm_local_ocr_models,
             re_register_shortcut,
@@ -437,6 +482,15 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
                     run_screenshot_lifecycle_smoke(smoke_app).await;
+                });
+            }
+            if std::env::var("YSN_SCREENSHOT_AUTO_START_SMOKE").ok().as_deref() == Some("1") {
+                let smoke_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    if let Err(error) = start_screenshot(smoke_app, None).await {
+                        eprintln!("[screenshot-smoke] auto start failed: {error}");
+                    }
                 });
             }
             let readiness_app = app.handle().clone();

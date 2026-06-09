@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
+use crate::*;
+use futures_util::StreamExt;
 use std::fs;
 use std::io::Cursor;
-use tauri::Manager;
+use std::path::{Path, PathBuf};
 use tauri::Emitter;
-use futures_util::StreamExt;
-use crate::*;
+use tauri::Manager;
 
 use super::device_detector::hidden_ffmpeg_command;
 

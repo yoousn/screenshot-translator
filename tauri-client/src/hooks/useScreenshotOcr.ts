@@ -10,10 +10,12 @@ import { buildOcrNormalizationReport } from "../ocr-processing";
 import { prewarmTranslationServices, translateOcrBlocks, translateWithLocalOcr } from "../utils/localOcrTranslate";
 import { loadPngImage } from "../utils/screenshotImage";
 
+type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
+
 export interface ScreenshotOcrDeps {
   config: Config;
   rectRef: React.MutableRefObject<Rect>;
-  captureRegionBase64: () => Promise<string>;
+  captureRegionBase64: (action?: SelectedImageBridgeAction) => Promise<string>;
   resetScreenshotState: () => void;
   draw: (x: number, y: number, w: number, h: number, img: HTMLImageElement | HTMLCanvasElement | null) => void;
   translatedImgRef: React.MutableRefObject<HTMLImageElement | null>;
@@ -111,7 +113,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       setIsOCRingSync(true);
       message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u6587\u5b57...", key: "ocr", duration: 0 });
 
-      base64 = await captureRegionBase64();
+      base64 = await captureRegionBase64("ocr");
       const ocrBlocks: OcrBlock[] = await invoke("run_local_ocr", {
         imageBase64: base64,
         executablePath: null,
@@ -180,7 +182,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       setIsTranslatingSync(true);
       message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u5e76\u7ffb\u8bd1...", key: "translate", duration: 0 });
       const captureStarted = performance.now();
-      base64 = await captureRegionBase64();
+      base64 = await captureRegionBase64("translate");
       const captureMs = Math.round(performance.now() - captureStarted);
 
       let resultBase64 = "";

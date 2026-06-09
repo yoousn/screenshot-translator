@@ -84,6 +84,7 @@ interface UseScreenshotInteractionProps {
   cancelScreenshot: () => void;
   handlePin: () => void;
   forceCloseScreenshots: () => void;
+  runWgcExplicitSelectionDiagnostic?: () => void;
   lastMouseRef?: React.MutableRefObject<{ x: number; y: number }>;
 
   // State Refs
@@ -172,6 +173,7 @@ export function useScreenshotInteraction({
   cancelScreenshot,
   handlePin,
   forceCloseScreenshots,
+  runWgcExplicitSelectionDiagnostic,
   lastMouseRef: sharedLastMouseRef,
 
   selectionStartedAtRef,
@@ -703,7 +705,11 @@ export function useScreenshotInteraction({
           return;
         }
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "d" || e.key === "D")) {
+      if ((e.ctrlKey || e.metaKey) && e.altKey && (e.key === "w" || e.key === "W")) {
+        e.preventDefault();
+        runWgcExplicitSelectionDiagnostic?.();
+        return;
+      }      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
         if (!isOCRingRef.current && !isTranslatingRef.current && !isScrollCapturingRef.current && recordingStatusRef.current === "idle") handleOCR();
         return;
@@ -773,6 +779,7 @@ export function useScreenshotInteraction({
     handlePin,
     confirmScreenshot,
     forceCloseScreenshots,
+    runWgcExplicitSelectionDiagnostic,
     cancelRecordingTargetPicker,
     cancelRecording,
     cancelManualScrollCapture,

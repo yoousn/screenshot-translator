@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 
 #[cfg(target_os = "windows")]
-use crate::win32;
-#[cfg(target_os = "windows")]
 use crate::set_hwnd_capture_excluded;
+#[cfg(target_os = "windows")]
+use crate::win32;
 
 static RECORDING_OVERLAY: OnceLock<Mutex<Option<NativeRecordingOverlay>>> = OnceLock::new();
 static RECORDING_OVERLAY_COLOR: AtomicU32 = AtomicU32::new(RECORDING_BORDER_BLUE);
@@ -282,6 +282,5 @@ pub fn show_recording_overlay(x: i32, y: i32, w: i32, h: i32) -> Result<(), Stri
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
-    {
-    }
+    {}
 }

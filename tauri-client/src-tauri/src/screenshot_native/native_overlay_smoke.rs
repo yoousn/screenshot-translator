@@ -1,24 +1,30 @@
-﻿#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeOverlaySmokeStep {
     ResolveCapability,
     PlanLaunch,
     CreateOverlayWindow,
+    VerifyTaskbarExclusion,
     AttachInputBridge,
+    VerifyRepeatHotkeyCleanup,
     RenderBackdrop,
     RenderSelectionChrome,
     CaptureSelection,
+    RestoreFocus,
     ReportOutcome,
 }
 
 impl NativeOverlaySmokeStep {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::ResolveCapability,
         Self::PlanLaunch,
         Self::CreateOverlayWindow,
+        Self::VerifyTaskbarExclusion,
         Self::AttachInputBridge,
+        Self::VerifyRepeatHotkeyCleanup,
         Self::RenderBackdrop,
         Self::RenderSelectionChrome,
         Self::CaptureSelection,
+        Self::RestoreFocus,
         Self::ReportOutcome,
     ];
 
@@ -27,10 +33,13 @@ impl NativeOverlaySmokeStep {
             Self::ResolveCapability => "resolve-capability",
             Self::PlanLaunch => "plan-launch",
             Self::CreateOverlayWindow => "create-overlay-window",
+            Self::VerifyTaskbarExclusion => "verify-taskbar-exclusion",
             Self::AttachInputBridge => "attach-input-bridge",
+            Self::VerifyRepeatHotkeyCleanup => "verify-repeat-hotkey-cleanup",
             Self::RenderBackdrop => "render-backdrop",
             Self::RenderSelectionChrome => "render-selection-chrome",
             Self::CaptureSelection => "capture-selection",
+            Self::RestoreFocus => "restore-focus",
             Self::ReportOutcome => "report-outcome",
         }
     }
@@ -64,9 +73,12 @@ pub enum NativeOverlaySmokeFailureKind {
     CapabilityUnavailable,
     LaunchPlanRejected,
     OverlayWindowUnavailable,
+    TaskbarOrAltTabExposure,
     InputBridgeUnavailable,
+    RepeatHotkeyCleanupUnavailable,
     RenderUnavailable,
     CaptureUnavailable,
+    FocusRestoreUnavailable,
     UnexpectedRuntimeError,
 }
 
@@ -76,9 +88,12 @@ impl NativeOverlaySmokeFailureKind {
             Self::CapabilityUnavailable => "capability-unavailable",
             Self::LaunchPlanRejected => "launch-plan-rejected",
             Self::OverlayWindowUnavailable => "overlay-window-unavailable",
+            Self::TaskbarOrAltTabExposure => "taskbar-or-alt-tab-exposure",
             Self::InputBridgeUnavailable => "input-bridge-unavailable",
+            Self::RepeatHotkeyCleanupUnavailable => "repeat-hotkey-cleanup-unavailable",
             Self::RenderUnavailable => "render-unavailable",
             Self::CaptureUnavailable => "capture-unavailable",
+            Self::FocusRestoreUnavailable => "focus-restore-unavailable",
             Self::UnexpectedRuntimeError => "unexpected-runtime-error",
         }
     }
@@ -175,6 +190,11 @@ pub struct NativeOverlaySmokePlan {
     pub requires_native_window: bool,
     pub requires_input_bridge: bool,
     pub requires_capture_backend: bool,
+    pub requires_taskbar_exclusion_check: bool,
+    pub requires_repeat_hotkey_cleanup_check: bool,
+    pub requires_focus_restore_check: bool,
+    pub requires_candidate_edge_case_check: bool,
+    pub requires_dpi_boundary_check: bool,
     pub has_runtime_side_effects: bool,
 }
 
@@ -186,8 +206,21 @@ impl NativeOverlaySmokePlan {
             requires_native_window: true,
             requires_input_bridge: true,
             requires_capture_backend: true,
+            requires_taskbar_exclusion_check: true,
+            requires_repeat_hotkey_cleanup_check: true,
+            requires_focus_restore_check: true,
+            requires_candidate_edge_case_check: true,
+            requires_dpi_boundary_check: true,
             has_runtime_side_effects: false,
         }
+    }
+
+    pub const fn lifecycle_checks_required(self) -> bool {
+        self.requires_taskbar_exclusion_check
+            && self.requires_repeat_hotkey_cleanup_check
+            && self.requires_focus_restore_check
+            && self.requires_candidate_edge_case_check
+            && self.requires_dpi_boundary_check
     }
 
     pub const fn planned_report(self) -> NativeOverlaySmokeReport {
@@ -259,4 +292,42 @@ pub const fn default_native_overlay_smoke_plan() -> NativeOverlaySmokePlan {
 
 pub const fn planned_native_overlay_smoke_report() -> NativeOverlaySmokeReport {
     default_native_overlay_smoke_plan().planned_report()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_smoke_plan_requires_overlay_lifecycle_checks() {
+        let plan = default_native_overlay_smoke_plan();
+
+        assert!(plan.lifecycle_checks_required());
+        assert!(plan
+            .steps
+            .contains(&NativeOverlaySmokeStep::VerifyTaskbarExclusion));
+        assert!(plan
+            .steps
+            .contains(&NativeOverlaySmokeStep::VerifyRepeatHotkeyCleanup));
+        assert!(plan.steps.contains(&NativeOverlaySmokeStep::RestoreFocus));
+        assert!(plan.requires_candidate_edge_case_check);
+        assert!(plan.requires_dpi_boundary_check);
+        assert!(!plan.has_runtime_side_effects);
+    }
+
+    #[test]
+    fn lifecycle_failures_have_stable_diagnostic_labels() {
+        assert_eq!(
+            NativeOverlaySmokeFailureKind::TaskbarOrAltTabExposure.as_str(),
+            "taskbar-or-alt-tab-exposure"
+        );
+        assert_eq!(
+            NativeOverlaySmokeFailureKind::RepeatHotkeyCleanupUnavailable.as_str(),
+            "repeat-hotkey-cleanup-unavailable"
+        );
+        assert_eq!(
+            NativeOverlaySmokeFailureKind::FocusRestoreUnavailable.as_str(),
+            "focus-restore-unavailable"
+        );
+    }
 }

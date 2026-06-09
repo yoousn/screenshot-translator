@@ -1,7 +1,7 @@
-use std::process::Command;
-use std::path::Path;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
 
 pub fn parse_quoted_audio_devices(
     output: &str,

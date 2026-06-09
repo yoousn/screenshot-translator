@@ -159,3 +159,41 @@ impl InputContract {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_selection_lifecycle_events() {
+        assert!(ScreenshotInputEvent::Confirm.is_terminal());
+        assert!(ScreenshotInputEvent::Cancel.is_terminal());
+        assert!(ScreenshotInputEvent::LostFocus.is_terminal());
+        assert!(!ScreenshotInputEvent::RepeatHotkey.is_terminal());
+    }
+
+    #[test]
+    fn exposes_key_commands_for_terminal_and_repeat_events() {
+        assert_eq!(
+            ScreenshotInputEvent::Confirm.key_command(),
+            Some(KeyCommand::Confirm)
+        );
+        assert_eq!(
+            ScreenshotInputEvent::Cancel.key_command(),
+            Some(KeyCommand::Cancel)
+        );
+        assert_eq!(
+            ScreenshotInputEvent::RepeatHotkey.key_command(),
+            Some(KeyCommand::RepeatHotkey)
+        );
+    }
+
+    #[test]
+    fn screenshot_selection_contract_keeps_repeat_and_keyboard_ready() {
+        let contract = InputContract::screenshot_selection();
+
+        assert!(contract.allow_repeat_hotkey_cancel);
+        assert!(contract.allow_keyboard_adjustment);
+        assert_eq!(contract.minimum_drag_pixels, 2);
+    }
+}

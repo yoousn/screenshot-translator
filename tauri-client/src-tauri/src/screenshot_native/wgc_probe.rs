@@ -1,219 +1,67 @@
-use std::fmt;
+pub use super::wgc_contract::{
+    WgcContractStage, WgcNativeApiProbe, WgcOneFrameProbeContract, WgcOneFrameProbeDiagnostics,
+    WgcOneFrameProbeError, WgcOneFrameProbeFallback, WgcOneFrameProbePlan, WgcOneFrameProbeRequest,
+    WgcOneFrameProbeStatus, WgcOneFrameSmokeReport, WgcOneFrameSmokeStatus,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WgcOneFrameProbeDefault {
-    Disabled,
-}
-
-impl WgcOneFrameProbeDefault {
-    pub const fn is_enabled(self) -> bool {
-        match self {
-            Self::Disabled => false,
-        }
+#[cfg(target_os = "windows")]
+pub fn probe_wgc_native_api_support() -> WgcNativeApiProbe {
+    match windows::Graphics::Capture::GraphicsCaptureSession::IsSupported() {
+        Ok(true) => WgcNativeApiProbe::supported(),
+        Ok(false) => WgcNativeApiProbe::unavailable(
+            true,
+            "GraphicsCaptureSession::IsSupported returned false",
+        ),
+        Err(error) => WgcNativeApiProbe::unavailable(
+            true,
+            format!("GraphicsCaptureSession::IsSupported failed: {error}"),
+        ),
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WgcOneFrameProbeStatus {
-    Disabled,
-    FallbackPlanned,
-    ProbePendingApiWiring,
-    InvalidRequest,
-}
-
-impl WgcOneFrameProbeStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::FallbackPlanned => "fallback-planned",
-            Self::ProbePendingApiWiring => "probe-pending-api-wiring",
-            Self::InvalidRequest => "invalid-request",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WgcOneFrameProbeFallback {
-    ExistingScreenshotPath,
-    DesktopDuplicationPlaceholder,
-    Unavailable,
-}
-
-impl WgcOneFrameProbeFallback {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ExistingScreenshotPath => "existing-screenshot-path",
-            Self::DesktopDuplicationPlaceholder => "desktop-duplication-placeholder",
-            Self::Unavailable => "unavailable",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WgcOneFrameProbeError {
-    DefaultEnableRejected,
-    RealApiCallRejected,
-    InvalidFrameTimeoutMs { timeout_ms: u64 },
-    NativeApiNotWired,
-}
-
-impl WgcOneFrameProbeError {
-    pub const fn code(&self) -> &'static str {
-        match self {
-            Self::DefaultEnableRejected => "wgc-probe-default-enable-rejected",
-            Self::RealApiCallRejected => "wgc-real-api-call-rejected",
-            Self::InvalidFrameTimeoutMs { .. } => "wgc-probe-invalid-timeout",
-            Self::NativeApiNotWired => "wgc-native-api-not-wired",
-        }
-    }
-}
-
-impl fmt::Display for WgcOneFrameProbeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DefaultEnableRejected => write!(
-                formatter,
-                "WGC one-frame probe must remain disabled by default"
-            ),
-            Self::RealApiCallRejected => write!(
-                formatter,
-                "WGC one-frame probe placeholder is not allowed to call real WGC APIs"
-            ),
-            Self::InvalidFrameTimeoutMs { timeout_ms } => write!(
-                formatter,
-                "invalid WGC one-frame probe timeout: {timeout_ms}ms"
-            ),
-            Self::NativeApiNotWired => write!(
-                formatter,
-                "WGC one-frame probe native API wiring is not implemented yet"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for WgcOneFrameProbeError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WgcOneFrameProbeContract {
-    pub default: WgcOneFrameProbeDefault,
-    pub requires_explicit_opt_in: bool,
-    pub may_call_real_wgc_api: bool,
-}
-
-impl WgcOneFrameProbeContract {
-    pub const fn disabled_placeholder() -> Self {
-        Self {
-            default: WgcOneFrameProbeDefault::Disabled,
-            requires_explicit_opt_in: true,
-            may_call_real_wgc_api: false,
-        }
-    }
-
-    pub const fn validates_no_default_enable(self) -> bool {
-        !self.default.is_enabled() && self.requires_explicit_opt_in && !self.may_call_real_wgc_api
-    }
-}
-
-impl Default for WgcOneFrameProbeContract {
-    fn default() -> Self {
-        Self::disabled_placeholder()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WgcOneFrameProbeRequest {
-    pub explicit_opt_in: bool,
-    pub allow_real_wgc_api: bool,
-    pub frame_timeout_ms: u64,
-}
-
-impl WgcOneFrameProbeRequest {
-    pub const fn disabled() -> Self {
-        Self {
-            explicit_opt_in: false,
-            allow_real_wgc_api: false,
-            frame_timeout_ms: 0,
-        }
-    }
-
-    pub const fn explicit_placeholder(frame_timeout_ms: u64) -> Self {
-        Self {
-            explicit_opt_in: true,
-            allow_real_wgc_api: false,
-            frame_timeout_ms,
-        }
-    }
-}
-
-impl Default for WgcOneFrameProbeRequest {
-    fn default() -> Self {
-        Self::disabled()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WgcOneFrameProbePlan {
-    pub contract: WgcOneFrameProbeContract,
-    pub status: WgcOneFrameProbeStatus,
-    pub should_attempt_probe: bool,
-    pub fallback: WgcOneFrameProbeFallback,
-    pub error: Option<WgcOneFrameProbeError>,
-    pub reason: String,
-}
-
-impl WgcOneFrameProbePlan {
-    pub fn fallback(
-        status: WgcOneFrameProbeStatus,
-        fallback: WgcOneFrameProbeFallback,
-        error: Option<WgcOneFrameProbeError>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            contract: WgcOneFrameProbeContract::disabled_placeholder(),
-            status,
-            should_attempt_probe: false,
-            fallback,
-            error,
-            reason: reason.into(),
-        }
-    }
-
-    pub fn uses_fallback(&self) -> bool {
-        !self.should_attempt_probe
-            || !matches!(self.fallback, WgcOneFrameProbeFallback::Unavailable)
-    }
+#[cfg(not(target_os = "windows"))]
+pub fn probe_wgc_native_api_support() -> WgcNativeApiProbe {
+    WgcNativeApiProbe::unavailable(false, "Windows Graphics Capture requires Windows")
 }
 
 pub const fn default_wgc_one_frame_probe_contract() -> WgcOneFrameProbeContract {
-    WgcOneFrameProbeContract::disabled_placeholder()
+    WgcOneFrameProbeContract::guarded_one_frame(0)
 }
-
 pub fn default_wgc_one_frame_probe_plan() -> WgcOneFrameProbePlan {
     resolve_wgc_one_frame_probe_plan(WgcOneFrameProbeRequest::disabled())
 }
 
 pub fn resolve_wgc_one_frame_probe_plan(request: WgcOneFrameProbeRequest) -> WgcOneFrameProbePlan {
-    let contract = default_wgc_one_frame_probe_contract();
+    let contract = WgcOneFrameProbeContract::guarded_one_frame(request.frame_timeout_ms);
+    let api_probe = if request.allow_real_wgc_api {
+        probe_wgc_native_api_support()
+    } else {
+        WgcNativeApiProbe::unavailable(true, "WGC API support probe skipped until guarded opt-in")
+    };
+    let diagnostics = WgcOneFrameProbeDiagnostics::from_contract(contract, api_probe.clone());
     if !contract.validates_no_default_enable() {
         return WgcOneFrameProbePlan::fallback(
+            contract,
+            diagnostics,
             WgcOneFrameProbeStatus::InvalidRequest,
             WgcOneFrameProbeFallback::ExistingScreenshotPath,
             Some(WgcOneFrameProbeError::DefaultEnableRejected),
             "WGC one-frame probe contract rejected a default-enabled configuration.",
         );
     }
-
     if !request.explicit_opt_in {
         return WgcOneFrameProbePlan::fallback(
+            contract,
+            diagnostics,
             WgcOneFrameProbeStatus::Disabled,
             WgcOneFrameProbeFallback::ExistingScreenshotPath,
             None,
             "WGC one-frame probe is disabled by default; keep using the existing screenshot path.",
         );
     }
-
     if request.frame_timeout_ms == 0 {
         return WgcOneFrameProbePlan::fallback(
+            contract,
+            diagnostics,
             WgcOneFrameProbeStatus::InvalidRequest,
             WgcOneFrameProbeFallback::ExistingScreenshotPath,
             Some(WgcOneFrameProbeError::InvalidFrameTimeoutMs {
@@ -222,22 +70,38 @@ pub fn resolve_wgc_one_frame_probe_plan(request: WgcOneFrameProbeRequest) -> Wgc
             "WGC one-frame probe needs a positive frame timeout before it can be scheduled.",
         );
     }
-
     if request.allow_real_wgc_api {
-        return WgcOneFrameProbePlan::fallback(
-            WgcOneFrameProbeStatus::FallbackPlanned,
-            WgcOneFrameProbeFallback::DesktopDuplicationPlaceholder,
-            Some(WgcOneFrameProbeError::RealApiCallRejected),
-            "Real WGC API calls are intentionally blocked in this phase; use fallback capture.",
-        );
+        if !api_probe.is_supported {
+            return WgcOneFrameProbePlan::fallback(
+                contract,
+                diagnostics,
+                WgcOneFrameProbeStatus::FallbackPlanned,
+                WgcOneFrameProbeFallback::DesktopDuplicationPlaceholder,
+                Some(api_probe.fallback_error()),
+                "Native WGC support is unavailable; use fallback capture.",
+            );
+        }
+        return WgcOneFrameProbePlan {
+            contract,
+            status: WgcOneFrameProbeStatus::ProbeReady,
+            should_attempt_probe: true,
+            fallback: WgcOneFrameProbeFallback::DesktopDuplicationPlaceholder,
+            error: None,
+            diagnostics,
+            reason: "Native WGC API support is present; framepool/session wiring can attempt a guarded one-frame probe.".to_string(),
+        };
     }
+    WgcOneFrameProbePlan::fallback(contract, diagnostics.clone(), WgcOneFrameProbeStatus::GuardedDiagnosticsReady, WgcOneFrameProbeFallback::ExistingScreenshotPath, diagnostics.first_contract_error(), "WGC one-frame probe diagnostics resolved device/framepool/session contracts; real API calls remain blocked until guarded opt-in.")
+}
 
-    WgcOneFrameProbePlan::fallback(
-        WgcOneFrameProbeStatus::ProbePendingApiWiring,
-        WgcOneFrameProbeFallback::ExistingScreenshotPath,
-        Some(WgcOneFrameProbeError::NativeApiNotWired),
-        "WGC one-frame probe request was accepted as a placeholder, but native API wiring is pending.",
-    )
+pub fn planned_wgc_one_frame_smoke_report() -> WgcOneFrameSmokeReport {
+    WgcOneFrameSmokeReport::from_plan(default_wgc_one_frame_probe_plan())
+}
+
+pub fn resolve_wgc_one_frame_smoke_report(
+    request: WgcOneFrameProbeRequest,
+) -> WgcOneFrameSmokeReport {
+    WgcOneFrameSmokeReport::from_plan(resolve_wgc_one_frame_probe_plan(request))
 }
 
 pub fn run_wgc_one_frame_probe_placeholder(
@@ -254,6 +118,12 @@ pub fn run_wgc_one_frame_probe_placeholder(
 mod tests {
     use super::*;
 
+    const REAL_API_PROBE_ENV: &str = "YSN_WGC_REAL_API_PROBE_SMOKE";
+
+    fn real_api_probe_enabled() -> bool {
+        std::env::var(REAL_API_PROBE_ENV).ok().as_deref() == Some("1")
+    }
+
     #[test]
     fn default_plan_is_disabled_and_falls_back() {
         let plan = default_wgc_one_frame_probe_plan();
@@ -264,17 +134,96 @@ mod tests {
             WgcOneFrameProbeFallback::ExistingScreenshotPath
         );
         assert!(plan.error.is_none());
+        assert_eq!(plan.diagnostics.next_stage, Some(WgcContractStage::Device));
     }
 
     #[test]
-    fn explicit_probe_never_calls_real_api_in_placeholder_phase() {
+    fn default_smoke_report_never_claims_frame_capture() {
+        let report = planned_wgc_one_frame_smoke_report();
+        assert_eq!(report.status, WgcOneFrameSmokeStatus::NotRun);
+        assert!(!report.attempted_real_wgc_api);
+        assert!(!report.frame_capture_attempted);
+        assert!(!report.frame_capture_confirmed);
+    }
+
+    #[test]
+    fn ready_to_attempt_still_does_not_claim_frame_capture() {
+        let report = resolve_wgc_one_frame_smoke_report(WgcOneFrameProbeRequest {
+            explicit_opt_in: true,
+            allow_real_wgc_api: true,
+            frame_timeout_ms: 500,
+        });
+        if report.should_attempt_probe {
+            assert_eq!(report.status, WgcOneFrameSmokeStatus::ReadyToAttempt);
+        }
+        assert!(!report.attempted_real_wgc_api);
+        assert!(!report.frame_capture_attempted);
+        assert!(!report.frame_capture_confirmed);
+    }
+
+    #[test]
+    fn contract_splits_device_framepool_and_session_requirements() {
+        let contract = WgcOneFrameProbeContract::guarded_one_frame(250);
+        let diagnostics =
+            WgcOneFrameProbeDiagnostics::from_contract(contract, WgcNativeApiProbe::supported());
+        assert_eq!(contract.framepool.frame_timeout_ms, 250);
+        for stage in [
+            WgcContractStage::Device,
+            WgcContractStage::FramePool,
+            WgcContractStage::Session,
+        ] {
+            assert!(diagnostics
+                .missing_requirements
+                .iter()
+                .any(|requirement| requirement.stage() == stage));
+        }
+    }
+
+    #[test]
+    fn explicit_placeholder_resolves_diagnostics_without_real_api() {
+        let plan =
+            resolve_wgc_one_frame_probe_plan(WgcOneFrameProbeRequest::explicit_placeholder(500));
+        assert_eq!(plan.status, WgcOneFrameProbeStatus::GuardedDiagnosticsReady);
+        assert!(!plan.should_attempt_probe);
+        assert!(matches!(
+            plan.error,
+            Some(WgcOneFrameProbeError::ContractNotReady { .. })
+        ));
+        assert!(plan
+            .diagnostics
+            .api_probe
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("skipped"));
+    }
+
+    #[test]
+    #[ignore = "requires real WGC IsSupported probe and YSN_WGC_REAL_API_PROBE_SMOKE=1"]
+    fn explicit_real_api_probe_preserves_recoverable_fallback() {
+        if !real_api_probe_enabled() {
+            eprintln!("skipping WGC real API probe smoke; set {REAL_API_PROBE_ENV}=1 to run");
+            return;
+        }
+
         let plan = resolve_wgc_one_frame_probe_plan(WgcOneFrameProbeRequest {
             explicit_opt_in: true,
             allow_real_wgc_api: true,
             frame_timeout_ms: 500,
         });
-        assert_eq!(plan.status, WgcOneFrameProbeStatus::FallbackPlanned);
-        assert_eq!(plan.error, Some(WgcOneFrameProbeError::RealApiCallRejected));
-        assert!(!plan.should_attempt_probe);
+        assert_eq!(
+            plan.fallback,
+            WgcOneFrameProbeFallback::DesktopDuplicationPlaceholder
+        );
+        if plan.should_attempt_probe {
+            assert_eq!(plan.status, WgcOneFrameProbeStatus::ProbeReady);
+            assert!(plan.error.is_none());
+        } else {
+            assert_eq!(plan.status, WgcOneFrameProbeStatus::FallbackPlanned);
+            assert!(matches!(
+                plan.error,
+                Some(WgcOneFrameProbeError::NativeApiUnavailable { .. })
+            ));
+        }
     }
 }
