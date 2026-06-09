@@ -10,9 +10,9 @@ set "TARGET_EXE=%TAURI_DIR%\target\release\%APP_EXE_NAME%.exe"
 set "LEGACY_ROOT_EXE=%ROOT%tauri-client.exe"
 set "LEGACY_PORTABLE_EXE=%PORTABLE_DIR%\tauri-client.exe"
 set "NO_PAUSE="
+set "AUTO_LAUNCH=1"
 
-if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
-if /I "%~1"=="/no-pause" set "NO_PAUSE=1"
+call :parse_args %*
 
 echo(=== YSN Screenshot Translator - portable build ===
 echo(
@@ -23,6 +23,7 @@ call :prepare_output || goto :fail
 call :build_tauri || goto :fail
 call :copy_portable || goto :fail
 call :build_launcher || goto :fail
+call :launch_portable || goto :fail
 
 echo(
 echo(=== Build succeeded ===
@@ -32,6 +33,15 @@ echo(Root launcher: %ROOT%%APP_EXE_NAME%.exe
 echo(Copy the whole portable directory to another computer, not only the exe.
 echo(
 goto :done
+
+:parse_args
+if "%~1"=="" exit /b 0
+if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
+if /I "%~1"=="/no-pause" set "NO_PAUSE=1"
+if /I "%~1"=="--no-launch" set "AUTO_LAUNCH="
+if /I "%~1"=="/no-launch" set "AUTO_LAUNCH="
+shift
+goto :parse_args
 
 :fail
 set "EXIT_CODE=%errorlevel%"
@@ -193,6 +203,22 @@ if exist "%LAUNCHER_OUT%" (
   echo([error] Failed to build root launcher
   exit /b 1
 )
+
+:launch_portable
+if not defined AUTO_LAUNCH (
+  echo([launch] Auto launch disabled
+  echo(
+  exit /b 0
+)
+set "PORTABLE_EXE=%PORTABLE_DIR%\%APP_EXE_NAME%.exe"
+if not exist "%PORTABLE_EXE%" (
+  echo([error] Cannot launch missing executable: %PORTABLE_EXE%
+  exit /b 1
+)
+echo([launch] Starting %PORTABLE_EXE%
+start "" /D "%PORTABLE_DIR%" "%PORTABLE_EXE%"
+echo(
+exit /b 0
 
 :done
 if not defined NO_PAUSE pause

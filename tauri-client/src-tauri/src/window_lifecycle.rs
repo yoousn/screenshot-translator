@@ -13,12 +13,16 @@ const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 #[cfg(target_os = "windows")]
 const SW_SHOW: i32 = 5;
 #[cfg(target_os = "windows")]
+const SW_SHOWNOACTIVATE: i32 = 4;
+#[cfg(target_os = "windows")]
 const HWND_TOPMOST: isize = -1;
 #[cfg(target_os = "windows")]
 const SWP_NOSIZE: u32 = 0x0001;
 #[cfg(target_os = "windows")]
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
+#[cfg(target_os = "windows")]
+const SWP_FRAMECHANGED: u32 = 0x0020;
 #[cfg(target_os = "windows")]
 const SWP_SHOWWINDOW: u32 = 0x0040;
 #[cfg(target_os = "windows")]
@@ -29,6 +33,14 @@ const HWND_NOTOPMOST: isize = -2;
 const HIDDEN_MAIN_PARK_X: i32 = -32000;
 #[cfg(target_os = "windows")]
 const HIDDEN_MAIN_PARK_Y: i32 = -32000;
+#[cfg(target_os = "windows")]
+const GWL_EXSTYLE: i32 = -20;
+#[cfg(target_os = "windows")]
+const WS_EX_TOOLWINDOW: isize = 0x00000080;
+#[cfg(target_os = "windows")]
+const WS_EX_APPWINDOW: isize = 0x00040000;
+#[cfg(target_os = "windows")]
+const WS_EX_NOACTIVATE: isize = 0x08000000;
 
 #[derive(Debug, Clone, Copy)]
 struct MainWindowScreenshotState {
@@ -185,8 +197,119 @@ pub fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWind
     }
 }
 
+#[cfg(target_os = "windows")]
+fn screenshot_overlay_ex_style(current_ex_style: isize, no_activate: bool) -> isize {
+    let mut next = (current_ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW;
+    if no_activate {
+        next |= WS_EX_NOACTIVATE;
+    } else {
+        next &= !WS_EX_NOACTIVATE;
+    }
+    next
+}
+
+pub fn apply_screenshot_overlay_window_styles<W: tauri::Runtime>(
+    window: &tauri::WebviewWindow<W>,
+    no_activate: bool,
+) {
+    let _ = window.set_skip_taskbar(true);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        let hwnd = hwnd.0 as isize;
+        unsafe {
+            let current = win32::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if current == 0 {
+                println!(
+                    "[window-trace] source=screenshot-overlay-style action=skip-empty-style hwnd={}",
+                    hwnd
+                );
+                return;
+            }
+            let next = screenshot_overlay_ex_style(current, no_activate);
+            if next != current {
+                let _ = win32::SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+            }
+            let _ = win32::SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            println!(
+                "[window-trace] source=screenshot-overlay-style action=apply hwnd={} no_activate={} appwindow_removed={} toolwindow={} noactivate_style={}",
+                hwnd,
+                no_activate,
+                next & WS_EX_APPWINDOW == 0,
+                next & WS_EX_TOOLWINDOW != 0,
+                next & WS_EX_NOACTIVATE != 0
+            );
+        }
+    }
+}
+
 pub fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
     let _ = window.set_skip_taskbar(true);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        let hwnd = hwnd.0 as isize;
+        if !screenshot_focus_on_ready_enabled() {
+            apply_screenshot_overlay_window_styles(window, true);
+            let _ = window.set_always_on_top(true);
+            unsafe {
+                let _ = win32::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                let _ = win32::SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+                let _ = win32::DwmFlush();
+            }
+            println!(
+                "[window-trace] source=show-screenshot-overlay action=show-noactivate hwnd={}",
+                hwnd
+            );
+            return;
+        }
+        apply_screenshot_overlay_window_styles(window, false);
+        let _ = window.show();
+        let _ = window.set_always_on_top(true);
+        unsafe {
+            let _ = win32::SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            let _ = win32::BringWindowToTop(hwnd);
+            let _ = win32::SetForegroundWindow(hwnd);
+            let _ = win32::SetActiveWindow(hwnd);
+            let _ = win32::SetFocus(hwnd);
+        }
+        println!(
+            "[window-trace] source=show-screenshot-overlay action=show-activate hwnd={} reason=YSN_SCREENSHOT_FOCUS_ON_READY",
+            hwnd
+        );
+        return;
+    }
+    let _ = window.show();
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+}
+
+pub fn activate_screenshot_overlay_window_for_interaction<W: tauri::Runtime>(
+    window: &tauri::WebviewWindow<W>,
+) {
+    apply_screenshot_overlay_window_styles(window, false);
     let _ = window.show();
     let _ = window.set_always_on_top(true);
     #[cfg(target_os = "windows")]
@@ -207,9 +330,84 @@ pub fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::Webview
             let _ = win32::SetActiveWindow(hwnd);
             let _ = win32::SetFocus(hwnd);
         }
-        return;
+        println!(
+            "[window-trace] source=screenshot-overlay-interaction action=activate hwnd={}",
+            hwnd
+        );
     }
     let _ = window.set_focus();
+}
+
+#[tauri::command]
+pub async fn activate_screenshot_overlay_for_interaction(
+    app: tauri::AppHandle,
+    label: Option<String>,
+) -> Result<(), String> {
+    let target_label = label.unwrap_or_else(|| "screenshot".to_string());
+    if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
+        return Ok(());
+    }
+    let Some(screenshot_win) = app.get_webview_window(&target_label) else {
+        return Err(format!(
+            "Screenshot overlay window not found: {}",
+            target_label
+        ));
+    };
+    activate_screenshot_overlay_window_for_interaction(&screenshot_win);
+    Ok(())
+}
+
+fn screenshot_focus_on_ready_enabled() -> bool {
+    std::env::var("YSN_SCREENSHOT_FOCUS_ON_READY")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+#[cfg(test)]
+mod screenshot_overlay_show_policy_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn focus_on_ready_is_disabled_unless_explicitly_enabled() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        std::env::remove_var("YSN_SCREENSHOT_FOCUS_ON_READY");
+        assert!(!screenshot_focus_on_ready_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_FOCUS_ON_READY", "0");
+        assert!(!screenshot_focus_on_ready_enabled());
+
+        std::env::set_var("YSN_SCREENSHOT_FOCUS_ON_READY", "1");
+        assert!(screenshot_focus_on_ready_enabled());
+        std::env::remove_var("YSN_SCREENSHOT_FOCUS_ON_READY");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn screenshot_overlay_style_hides_taskbar_and_avoids_activation() {
+        let current = WS_EX_APPWINDOW;
+
+        let next = screenshot_overlay_ex_style(current, true);
+
+        assert_eq!(next & WS_EX_APPWINDOW, 0);
+        assert_ne!(next & WS_EX_TOOLWINDOW, 0);
+        assert_ne!(next & WS_EX_NOACTIVATE, 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn screenshot_overlay_focus_rollback_still_hides_taskbar() {
+        let current = WS_EX_APPWINDOW | WS_EX_NOACTIVATE;
+
+        let next = screenshot_overlay_ex_style(current, false);
+
+        assert_eq!(next & WS_EX_APPWINDOW, 0);
+        assert_ne!(next & WS_EX_TOOLWINDOW, 0);
+        assert_eq!(next & WS_EX_NOACTIVATE, 0);
+    }
 }
 
 pub fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {

@@ -63,3 +63,4 @@ server/*.png
 /YSN截图翻译-v*/
 /tauri-client/src-tauri/resources/ffmpeg/*
 !/tauri-client/src-tauri/resources/ffmpeg/.gitkeep
+.codex-analysis

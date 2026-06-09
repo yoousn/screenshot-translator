@@ -11,7 +11,7 @@ $portableDir = Join-Path $projectRoot "release\YSN-Screenshot-Translator"
 
 if ($Build) {
     $buildScript = Join-Path $projectRoot "build.bat"
-    & cmd /c "`"$buildScript`" --no-pause"
+    & cmd /c "`"$buildScript`" --no-pause --no-launch"
     if ($LASTEXITCODE -ne 0) {
         throw "build.bat failed with exit code $LASTEXITCODE"
     }

@@ -295,13 +295,12 @@ export function useScreenshotLoader({
         } else {
           logScreenshotBaseline(remoteSessionId || sessionId, "overlay_already_visible", performance.now() - frontendSessionStartedAtRef.current);
         }
-        const focusWindow = () => {
+        const focusCanvas = () => {
           const canvasEl = document.querySelector("canvas");
           if (canvasEl) canvasEl.focus({ preventScroll: true });
-          getCurrentWindow().setFocus().catch(() => {});
         };
-        focusWindow();
-        window.setTimeout(focusWindow, 60);
+        focusCanvas();
+        window.setTimeout(focusCanvas, 60);
         captureAnalysisImageData(img, sessionId, remoteSessionId);
         window.setTimeout(() => {
           if (sessionId === captureIdRef.current) {
@@ -381,7 +380,22 @@ export function useScreenshotLoader({
     if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
     if (ArrayBuffer.isView(raw)) return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
     if (Array.isArray(raw)) return new Uint8Array(raw as number[]);
+    if (raw && typeof raw === "object") {
+      const boxed = raw as { data?: unknown; bytes?: unknown; buffer?: unknown };
+      for (const value of [boxed.data, boxed.bytes, boxed.buffer]) {
+        const normalized = normalizeScreenshotBytes(value);
+        if (normalized) return normalized;
+      }
+    }
     return null;
+  };
+
+  const describeScreenshotBytesShape = (raw: unknown) => {
+    if (raw instanceof ArrayBuffer) return `ArrayBuffer byteLength=${raw.byteLength}`;
+    if (ArrayBuffer.isView(raw)) return `${raw.constructor.name} byteLength=${raw.byteLength}`;
+    if (Array.isArray(raw)) return `Array length=${raw.length}`;
+    if (raw && typeof raw === "object") return `object keys=${Object.keys(raw as Record<string, unknown>).slice(0, 8).join(",")}`;
+    return typeof raw;
   };
 
   const loadImageFromBytes = (raw: unknown, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
@@ -398,7 +412,15 @@ export function useScreenshotLoader({
     if (sessionId !== captureIdRef.current) return false;
     const data = normalizeScreenshotBytes(raw);
     const expectedBytes = width * height * 4;
-    if (!data || width <= 0 || height <= 0 || data.byteLength < expectedBytes) return false;
+    if (!data || width <= 0 || height <= 0 || data.byteLength < expectedBytes) {
+      logScreenshotBaseline(
+        remoteSessionId || sessionId,
+        "rgba_rejected",
+        performance.now() - frontendSessionStartedAtRef.current,
+        `shape=${describeScreenshotBytesShape(raw)} normalized_bytes=${data?.byteLength || 0} expected=${expectedBytes} size=${width}x${height}`
+      );
+      return false;
+    }
     const rgbaStartedAt = performance.now();
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = width;

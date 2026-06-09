@@ -200,6 +200,8 @@ pub(crate) mod win32 {
         pub fn SetLayeredWindowAttributes(hwnd: isize, crKey: u32, bAlpha: u8, dwFlags: u32)
             -> i32;
         pub fn SetWindowDisplayAffinity(hWnd: isize, dwAffinity: u32) -> i32;
+        pub fn GetWindowLongPtrW(hWnd: isize, nIndex: i32) -> isize;
+        pub fn SetWindowLongPtrW(hWnd: isize, nIndex: i32, dwNewLong: isize) -> isize;
         pub fn GetCursorPos(lpPoint: *mut POINT) -> i32;
         pub fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
         pub fn MonitorFromPoint(pt: POINT, dwFlags: u32) -> isize;
@@ -424,6 +426,7 @@ pub fn run() {
             get_window_rects,
             get_text_source_snapshot,
             overlay_ready_to_show,
+            activate_screenshot_overlay_for_interaction,
             get_screenshot_pointer_state,
             build_native_selected_image_bridge,
             copy_native_selected_output_to_clipboard,

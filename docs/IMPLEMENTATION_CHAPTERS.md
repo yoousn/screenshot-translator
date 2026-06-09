@@ -8,10 +8,18 @@
 - C/E selected-output technical acceptance is complete as of Chapter 250: Overall 100%, Plan C 100%, Plan E 100%.
 - The product is not yet bug-free and not yet WeChat/QQ screenshot maturity; the active phase is release/manual QA, no-flicker polish, compatibility, and rollout policy.
 - Chapter 251 fixed the first-frame `Alt+A` gray-shell timing path by deferring native window visibility until the screenshot image, mask, first candidate pass, and one frontend animation frame are ready.
+- Chapter 252 removed a frontend duplicate-payload hot-path regression and restored the RGBA direct-canvas path in the screenshot WebView. Guarded auto-smoke now shows `payload_duplicate_skipped`, `rgba_canvas_ready`, first paint around `158ms` from frontend session start, and pre-show candidate first batch around `169ms`.
+- Chapter 253 changed the default screenshot helper show path to Windows no-activate presentation and removed the frontend first-frame `setFocus()` call. `build.bat` now auto-launches the portable exe after a successful ordinary build, while `pack_release.ps1 -Build` passes `--no-launch`.
+- Chapter 254 release-level `Alt+A` check found and fixed the no-activate `Esc` cancellation gap by registering a temporary global Escape shortcut only while screenshot capture is active.
+- Chapter 255 researched the `Alt+A` sub-50ms target. The next speed slice should measure and optimize `hotkey -> visible/interactable shell` separately from `hotkey -> real RGBA image ready` and `hotkey -> detailed window candidates ready`.
 - Normal users still keep transparent screenshot windows by default; automation/diagnostic behavior remains guarded by explicit env flags.
 
 ### Current Hot Paths
 - `Alt+A` screenshot startup now routes through hidden shell prep -> RGBA payload -> frontend paint/candidate readiness -> `overlay_ready_to_show`.
+- The current default path still waits for real image paint and a pre-show `loadWindowRects(true)` candidate pass before first visible show; that protects first-frame polish but prevents a stable 50ms visible-shell target.
+- The frontend now deduplicates same-session screenshot payloads before starting another image-load session, and RGBA byte payloads accept boxed Tauri response shapes before falling back to PNG/base64.
+- `overlay_ready_to_show` now defaults to `ShowWindow(SW_SHOWNOACTIVATE)` plus `SetWindowPos(... SWP_NOACTIVATE ...)` for the screenshot helper, with `YSN_SCREENSHOT_FOCUS_ON_READY=1` as a diagnostic rollback.
+- Because the screenshot helper is now shown without activation, screenshot capture temporarily registers global `Escape` as a cancellation fallback and removes it on cancel/force-close/repeat-hotkey cleanup.
 - WGC/DXGI selected-output diagnostics and copy/save candidates remain guarded and should not become default production behavior without a rollout chapter.
 - Manual QA still needs rebuilt-release validation for first visible frame, hand drag, copy/save/OCR/translate, focus cleanup, Alt-Tab cleanup, multi-monitor, DPI, and scaling.
 
@@ -21,12 +29,16 @@
 - Passed recently: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture`.
 - Passed recently: `cd tauri-client; npx tsc --noEmit`.
 - Passed recently: `cd tauri-client; npm run build`.
+- Passed recently: `cd tauri-client; npm run check:i18n`.
+- Passed recently: `cd tauri-client; npm run check:ocr-processing`.
+- Passed recently: `cmd /c "build.bat --no-pause"`; it rebuilt the portable output and auto-launched `release\YSN-Screenshot-Translator\YsnTrans.exe`.
+- Passed recently: release-level automated `Alt+A` check against `release\YSN-Screenshot-Translator\YsnTrans.exe`: start screenshot, show-noactivate, RGBA ready, foreground retained, and Esc cancellation confirmed.
 - Passed recently: `git diff --check` with existing LF-to-CRLF warnings only.
 
 ### Next Recommended Chapter
-- Chapter 252: close old `YsnTrans.exe`, launch/rebuild the updated app, and manually retest `Alt+A` with a phone/video or desktop recording.
-- Required retest: first visible frame should already contain the screenshot dim layer and UI candidate; no separate empty gray flash before the candidate.
-- If retest passes, continue release QA; if it fails, add visible-frame probes and move toward native first-frame presentation.
+- Chapter 256: implement a guarded fast-visible-shell experiment for `Alt+A`: show a polished dim/crosshair shell first, keep RGBA image and detailed window candidates asynchronous, and log `hotkey -> shell_show_returned`, `shell_event -> overlay_ready_to_show_returned`, `image_ready`, and `candidate_ready`.
+- OCR/translation should remain a quick regression smoke only, not a development focus, unless manual QA proves the screenshot lifecycle broke them.
+- After the speed slice, rerun manual release QA for no white/black/gray flash, no taskbar helper flash, no focus steal before user interaction, accurate first drag, repeat `Alt+A/Esc`, copy, and Save As.
 
 ## Documentation Maintenance Policy
 
@@ -1763,3 +1775,279 @@ Older chapters are intentionally summarized here to keep this file fast to open 
 - Chapter 252 should build or launch the updated app, close any old `YsnTrans.exe` instance first, then manually retest `Alt+A` with a phone/video or desktop recording.
 - Required retest: first visible frame should already contain the screenshot dim layer and UI candidate, with no separate empty gray flash before the candidate.
 - If the retest passes, continue rollout QA for copy/save/OCR/translate/focus cleanup; if it fails, add a visible-frame timestamp probe and move toward native first-frame presentation.
+
+## Chapter 252 - Screenshot Payload Dedup And RGBA Hot-Path Restore (2026-06-09)
+
+> Chapter status: completed for this frontend screenshot-startup hot-path fix and guarded auto-smoke validation. This chapter does not claim full QQ/WeChat/PixPin-grade manual acceptance, and it does not change normal-user transparency defaults or selected-output rollout policy.
+
+### Goals
+- Continue from Chapter 251 by launching the updated app path and checking whether the deferred first-frame route still wastes time before the overlay becomes visible.
+- Remove any duplicated frontend image-load work that can delay `Alt+A` readiness or make first-frame timing inconsistent.
+- Restore the intended RGBA direct-canvas hot path so the frontend does not fall back through PNG/base64 when the Rust payload is already RGBA.
+- Keep the change focused on startup stability and latency rather than adding new screenshot features.
+
+### External Findings
+- Microsoft `SetWindowPos` documentation was rechecked for the focus/taskbar investigation because `SWP_NOACTIVATE` is the relevant official primitive for a future show-without-activation experiment.
+- Tauri v2 window documentation was rechecked for `skip_taskbar`, `visible`, and focus behavior. No focus-policy code change was made in this chapter because the lower-risk duplicate payload/RGBA regression was a clear local root cause.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+  - Adds a same-session screenshot payload signature gate covering `sessionId`, `kind`, dimensions, byte count, path, and base64 length.
+  - Skips duplicate pending payloads after a real `screenshot-updated` event has already started the frontend session.
+  - Logs `payload_duplicate_skipped` so future smokes can prove the guard is active.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Extends screenshot byte normalization to accept boxed object shapes with `data`, `bytes`, or `buffer`, in addition to `ArrayBuffer`, typed arrays, and arrays.
+  - Adds `rgba_rejected` diagnostics with byte shape, normalized length, expected RGBA length, and dimensions when the direct path cannot be used.
+  - Allows the existing `rgba_canvas_ready` path to complete before PNG/base64 fallback.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the current resume snapshot and records Chapter 252 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Before the fix, guarded `tauri dev` auto-smoke showed the same `ss-1` screenshot being processed multiple times: repeated `frontend_session_start`, repeated `rgba_fetch_end`, then `binary_fetch_end`, `base64_fetch_end`, and PNG image loading.
+- Before the fix, the run reached `first_paint` at about `198ms` from frontend session start, `pre_show_candidate_first_batch` at about `414ms`, and `overlay_ready_to_show_returned` at about `670ms`.
+- After the fix, guarded `tauri dev` auto-smoke showed `payload_duplicate_skipped source=screenshot-pending-payload`.
+- After the fix, the same route hit `rgba_fetch_end` at about `149ms`, `rgba_canvas_ready` at about `155ms`, `mask_canvas_ready` at about `157ms`, `first_paint` at about `158ms`, and `pre_show_candidate_first_batch` at about `169ms`.
+- After the fix, the smoke no longer fell through to `binary_fetch_end`, `base64_fetch_end`, or PNG `file_load_*` for the RGBA payload.
+- The smoke still reported `overlay_ready_to_show_returned` at about `462ms`; this is improved from the pre-fix smoke but still needs manual visible-frame validation and a better end-to-end visible timestamp bridge.
+
+### Explicit Non-Goals
+- Did not alter ordinary-user transparent screenshot windows.
+- Did not enable WGC/DXGI selected-output copy/save candidates by default.
+- Did not change copy, save, OCR, translation, annotation, recording, or selected-output behavior.
+- Did not split the oversized `ScreenshotPage.tsx` or `useScreenshotLoader.ts` files in this chapter.
+- Did not claim human-visible no-flicker acceptance without a rebuilt release/manual video pass.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cd tauri-client; npm run build`; Vite still reports the existing dynamic/static import and chunk-size warnings only.
+- Passed: guarded `tauri dev` auto-smoke with `YSN_SCREENSHOT_AUTO_START_SMOKE=1`, `YSN_SCREENSHOT_AUTOMATION_WINDOW=1`, and `VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT=0`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git still reports existing LF-to-CRLF working-copy notices only.
+
+### Line Counts And Structure Audit
+- Selected file line counts before appending Chapter 252: `docs/IMPLEMENTATION_CHAPTERS.md` 1769 / 1473 non-empty, `ScreenshotPage.tsx` 986 / 920 non-empty, `useScreenshotLoader.ts` 572 / 529 non-empty.
+- Recursive `screenshot_native` audit after Chapter 252 code changes: 64 Rust files; >500 physical: 3; >500 non-empty: 0; >400 physical: 12; >400 non-empty: 7. Current physical top is `selected_image_bridge.rs` 547 / 484, `wgc_contract.rs` 527 / 400, `dxgi_capture.rs` 502 / 456, `win32_overlay.rs` 492 / 441, `gpu_device.rs` 488 / 444, `d3d11_frame.rs` 476 / 432, `selection_state.rs` 463 / 409, `dxgi_output.rs` 450 / 406, `win32_overlay_pump.rs` 435 / 398, `overlay.rs` 431 / 378, `wgc_session.rs` 420 / 400, `overlay_renderer.rs` 408 / 365.
+
+### Known Risks
+- The visible-frame result still needs manual release validation with a phone/video or desktop recording; logs prove less duplicated work, not the final human-visible polish.
+- `overlay_ready_to_show_returned` is still measured from frontend session start, while Rust `overlay_show_result` currently measures only command-local duration. A future chapter should add a reliable end-to-end `hotkey -> visible/show-return` bridge before making stricter latency claims.
+- `ScreenshotPage.tsx` and `useScreenshotLoader.ts` remain large; further screenshot behavior changes should extract focused helpers instead of growing these files.
+- The working tree still shows `tauri-client/src-tauri/Cargo.toml` as modified by Git line-ending state, but it has no content diff from this chapter.
+
+### Next Recommended Chapter
+- Chapter 253 should launch or rebuild the updated app and perform manual `Alt+A` release QA: first visible frame, no white/black/gray flash, no taskbar helper flash, hand drag, copy, save, OCR, translate, Esc cleanup, focus restore, and Alt-Tab cleanup.
+- If manual QA still shows a late or empty visible frame, add explicit `hotkey -> native show requested -> frontend show returned -> first interactive input` probes and evaluate a show-without-activation/focus-split experiment under a guard.
+
+## Chapter 253 - No-Activate First-Frame Show And Build Auto-Launch (2026-06-09)
+
+> Chapter status: completed for this `Alt+A` first-frame focus/taskbar disturbance reduction slice and the requested `build.bat` auto-launch behavior. This chapter does not claim final QQ/WeChat/PixPin-grade manual acceptance; it prepares the next manual release QA pass.
+
+### Goals
+- Keep the current sprint focused on `Alt+A` first frame, no white/black/gray flash, no focus steal, and no taskbar disturbance.
+- Stop the screenshot helper from using forced foreground activation during the first visible frame.
+- Keep a diagnostic rollback for the old focus-on-show behavior in case manual QA finds a platform-specific input regression.
+- After this task, update `build.bat` so a normal successful build automatically opens the generated portable exe.
+
+### External Findings
+- Microsoft `SetWindowPos` documentation confirms `SWP_NOACTIVATE` is the supported flag for changing window position/Z-order without activating the window.
+- Microsoft `ShowWindow` documentation confirms `SW_SHOWNOACTIVATE` displays a window in its recent size/position without activating it.
+- Microsoft extended window style documentation confirms `WS_EX_NOACTIVATE` / `WS_EX_TOOLWINDOW` are the relevant longer-term primitives for avoiding activation and taskbar/Alt-Tab presence.
+- Tauri v2 window documentation confirms `setFocus()` brings a window to the front and focuses it, so it should not be part of the first-frame display path when the product goal is no focus steal.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+  - Changes `show_screenshot_overlay_window` default Windows path to `ShowWindow(SW_SHOWNOACTIVATE)` plus `SetWindowPos(HWND_TOPMOST, ... SWP_SHOWWINDOW | SWP_NOACTIVATE)`.
+  - Removes default first-frame calls to `SetForegroundWindow`, `SetActiveWindow`, and `SetFocus` for the screenshot helper.
+  - Adds diagnostic rollback `YSN_SCREENSHOT_FOCUS_ON_READY=1` for the old activate-on-ready path.
+  - Adds a unit test proving focus-on-ready is disabled unless explicitly enabled.
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+  - Removes the post-show `getCurrentWindow().setFocus()` call from the first-frame ready path.
+  - Keeps canvas-level focus attempts so keyboard handling can still be prepared without explicitly activating the native window.
+  - Retains the Chapter 252 boxed RGBA byte normalization and duplicate payload guard support.
+- `build.bat`
+  - Adds multi-argument parsing.
+  - Adds default auto-launch of `release\YSN-Screenshot-Translator\YsnTrans.exe` after successful portable build and root launcher build.
+  - Adds `--no-launch` / `/no-launch` for automation and packaging scenarios.
+- `pack_release.ps1`
+  - Changes `-Build` mode to call `build.bat --no-pause --no-launch`, preventing package builds from opening and potentially locking the app.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Updates the resume snapshot and records Chapter 253 evidence, validation, risks, and next recommended chapter.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Guarded auto-smoke with `YSN_SCREENSHOT_AUTO_START_SMOKE=1`, `YSN_SCREENSHOT_AUTOMATION_WINDOW=1`, and `VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT=0` produced `source=show-screenshot-overlay action=show-noactivate`.
+- The same smoke retained Chapter 252 behavior: `payload_duplicate_skipped source=screenshot-pending-payload`, `rgba_fetch_end`, and `rgba_canvas_ready`, with no PNG/base64 fallback.
+- In the smoke run, frontend `first_paint` was around `183ms`, `overlay_ready_to_show_called` around `453ms`, and `overlay_ready_to_show_returned` around `506ms` from frontend session start. Candidate preload was slower in this run than Chapter 252 and remains a next inspection point if manual QA feels delayed.
+- `cmd /c "build.bat --no-pause"` rebuilt the portable output and auto-launched `D:\Desktop\自制截图\release\YSN-Screenshot-Translator\YsnTrans.exe`; the launched process was verified and then closed after validation.
+
+### Explicit Non-Goals
+- Did not change OCR or translation behavior. They remain quick regression smokes only while this sprint focuses on screenshot feel.
+- Did not enable selected-output WGC/DXGI copy/save candidates by default.
+- Did not introduce full `WS_EX_NOACTIVATE` / `WS_EX_TOOLWINDOW` style rewriting for Tauri WebView windows; this chapter only changes the first visible show call.
+- Did not claim final no-flicker/no-taskbar/no-focus acceptance without a human-visible release recording.
+- Did not commit, push, tag, or create release artifacts beyond the local build output generated by `build.bat`.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_overlay_show_policy_tests -- --nocapture` with `1 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: guarded `tauri dev` auto-smoke showing `show-noactivate`.
+- Passed: `cmd /c "build.bat --no-pause"`; portable exe and root launcher were rebuilt, and the portable exe auto-launched.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git still reports existing LF-to-CRLF working-copy notices only.
+
+### Line Counts And Structure Audit
+- Selected file line counts before appending Chapter 253: `docs/IMPLEMENTATION_CHAPTERS.md` 1840 / 1531 non-empty, `build.bat` 225 / 207 non-empty, `pack_release.ps1` 46 / 37 non-empty, `window_lifecycle.rs` 1082 / 1010 non-empty, `useScreenshotLoader.ts` 571 / 528 non-empty, `ScreenshotPage.tsx` 986 / 920 non-empty.
+- Recursive `screenshot_native` audit after Chapter 253 code changes: 64 Rust files; >500 physical: 3; >500 non-empty: 0; >400 physical: 12; >400 non-empty: 7. Current physical top is `selected_image_bridge.rs` 547 / 484, `wgc_contract.rs` 527 / 400, `dxgi_capture.rs` 502 / 456, `win32_overlay.rs` 492 / 441, `gpu_device.rs` 488 / 444, `d3d11_frame.rs` 476 / 432, `selection_state.rs` 463 / 409, `dxgi_output.rs` 450 / 406, `win32_overlay_pump.rs` 435 / 398, `overlay.rs` 431 / 378, `wgc_session.rs` 420 / 400, `overlay_renderer.rs` 408 / 365.
+
+### Known Risks
+- No-activate show can reduce focus stealing and taskbar disturbance, but manual testing must verify pointer drag and keyboard shortcuts still behave naturally after the user interacts with the overlay.
+- Candidate preload took about `453ms` in the Chapter 253 smoke. If the user still perceives a delay, the next bottleneck may be `loadWindowRects(true)` before first visible show rather than the show call itself.
+- `window_lifecycle.rs`, `ScreenshotPage.tsx`, and `useScreenshotLoader.ts` remain large. More lifecycle work should extract focused helpers/tests instead of continuing to grow these files.
+- The working tree still shows `tauri-client/src-tauri/Cargo.toml` as modified by Git line-ending state, with no content diff from this chapter.
+
+### Next Recommended Chapter
+- Chapter 254 should run manual release QA only for the screenshot feel loop: `Alt+A` first visible frame, no white/black/gray flash, no taskbar helper flash, no focus steal before user interaction, first drag accuracy, repeat `Alt+A/Esc`, copy, Save As, and cleanup.
+- If manual QA finds delayed candidates, move candidate preload after first visible show or split display-candidate readiness into a minimal monitor/display candidate first pass plus async detailed window candidates.
+
+## Chapter 254 - Release Alt+A Check And Escape Cancel Fallback (2026-06-09)
+
+> Chapter status: completed for this release-level `Alt+A` check and the no-activate Escape cancellation fix. The product is closer to QQ/WeChat screenshot feel on startup and cancellation, but still needs human-visible manual QA for drag feel, taskbar flashes, copy/save, and repeated use.
+
+### Goals
+- Check whether the rebuilt release `Alt+A` path has obvious problems after Chapter 253.
+- Judge the current gap against QQ/WeChat-style screenshot basics: fast entry, no visible focus steal, no taskbar disturbance, and immediate cancellation.
+- Fix any hard blocker found during the check instead of leaving it to the next round.
+
+### Findings
+- `Alt+A` did trigger the release screenshot flow successfully.
+- Release logs showed the desired first-frame path: `show-noactivate`, `rgba_canvas_ready`, and `show-noactivate` window presentation.
+- Foreground remained on the external test window after `Alt+A`, matching the no-focus-steal goal.
+- A hard gap was found: because the screenshot helper was no longer activated, pressing `Esc` before user interaction did not cancel the screenshot. This is not acceptable for QQ/WeChat-style behavior.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/hotkeys.rs`
+  - Adds a temporary capture-only global `Escape` shortcut.
+  - Registers it only while `CAPTURING` is true.
+  - Dispatches `cancel_screenshot` for the primary screenshot window.
+  - Unregisters it when capture ends.
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+  - Registers the temporary Escape shortcut after screenshot capture starts.
+  - Unregisters it on repeat-hotkey cancel, force close, `cancel_screenshot`, and startup failure.
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records Chapter 254 release check, fix, validation, and next recommended manual QA.
+
+### Deleted Files
+- None.
+
+### Evidence Added
+- Before the fix, release `Alt+A` produced `show-noactivate` and kept foreground on the external test window, but `Esc` did not produce cancel/cleanup logs.
+- After the fix, release `Alt+A` produced:
+  - `[shortcut] registered capture Escape shortcut`
+  - `phase=capture_end elapsed_ms=113`
+  - `phase=rgba_canvas_ready elapsed_ms=96`
+  - `phase=first_paint elapsed_ms=100`
+  - `source=show-screenshot-overlay action=show-noactivate`
+- After pressing `Esc`, release logs produced:
+  - `[shortcut] unregistered capture Escape shortcut`
+  - `reason=cancel-screenshot-target`
+  - `reason=cancel-screenshot`
+  - focus restore back to the remembered pre-screenshot foreground target.
+- `build.bat --no-pause` was rerun after the Rust change and rebuilt the release portable exe; it auto-launched successfully as requested in Chapter 253.
+
+### Explicit Non-Goals
+- Did not change OCR or translation.
+- Did not test full manual drag/copy/save with a human-visible recording in this chapter.
+- Did not claim final QQ/WeChat parity because visual smoothness, taskbar flashing, and repeated manual operation still need a video/manual pass.
+- Did not add global `Ctrl+C` or `Ctrl+S` shortcuts while unfocused; after user drag/click, the screenshot window can still request focus through the existing interaction path. Copy/save remain next manual QA items.
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cmd /c "build.bat --no-pause"` after the Escape shortcut fix.
+- Passed: release-level automated `Alt+A` / `Esc` check with redirected release logs.
+- Passed: `git diff --check`; Git still reports existing LF-to-CRLF working-copy notices only.
+
+### Line Counts And Structure Audit
+- Selected file line counts before appending Chapter 254: `docs/IMPLEMENTATION_CHAPTERS.md` 1922 / 1600 non-empty, `hotkeys.rs` 289 / 269 non-empty, `screenshot_commands.rs` 5054 / 4758 non-empty, `window_lifecycle.rs` 1082 / 1010 non-empty, `useScreenshotLoader.ts` 571 / 528 non-empty, `ScreenshotPage.tsx` 986 / 920 non-empty, `build.bat` 225 / 207 non-empty, `pack_release.ps1` 46 / 37 non-empty.
+
+### Current QQ/WeChat Gap Assessment
+- Closer than before on the core entry path: release `Alt+A` is fast, uses RGBA direct canvas, shows without activation, and now supports immediate `Esc`.
+- Still not fully QQ/WeChat-grade until manual QA confirms no visible white/black/gray flash, no taskbar flash, first drag accuracy, and stable repeat cycles.
+- The next likely risk is copy/save keyboard behavior before or after user interaction, because no-activate display intentionally avoids focusing the screenshot helper at first show.
+
+### Next Recommended Chapter
+- Chapter 255 should be a human-visible release QA pass: `Alt+A`, immediate `Esc`, repeat `Alt+A/Esc`, first drag, window candidate accuracy, copy, Save As, and taskbar/focus observation by video.
+- If `Ctrl+C` / `Ctrl+S` fail before the screenshot helper receives focus, either focus only after the first pointer interaction or add temporary capture-only global copy/save shortcuts with strict `CAPTURING` guards.
+
+## Chapter 255 - Alt+A Sub-50ms Startup Strategy Research (2026-06-09)
+
+> Chapter status: completed for research and implementation direction only. This chapter does not change runtime behavior and does not claim `Alt+A` has reached 50ms.
+
+### Goals
+- Answer whether the project can reach a QQ/WeChat/PixPin-like `Alt+A` feel by showing a screenshot shell before RGBA image and detailed window candidates are ready.
+- Compare the idea against Snow Shot's implementation pattern and current Windows/WebView2 capabilities.
+- Keep OCR and translation out of this speed sprint unless screenshot lifecycle changes regress their basic entry points.
+
+### Findings
+- Current default path optimizes first-frame polish, not raw first-visible latency: backend emits `screenshot-shell`, then the frontend waits for RGBA image paint and currently runs a pre-show `loadWindowRects(true)` candidate pass before calling `overlay_ready_to_show`.
+- Recent evidence showed `capture_end` around `113ms`, `rgba_canvas_ready` around `96-100ms`, and prior `overlay_ready_to_show_returned` values well above a 50ms visible-shell target when candidate preload was included.
+- Snow Shot at `mg-chao/snow-shot` commit `c7f2d9f` separates screenshot capture from window/bounding-box show work. Its draw page starts `captureAllMonitorsAction(...)` and `initCaptureBoundingBoxInfoAndShowWindow()` as concurrent promises, then feeds image data later through capture-ready/load events.
+- Snow Shot's Windows path also uses WebView2 SharedBuffer APIs in its webview crate for large screenshot payload transfer, and keeps UI/window-element data in separate cached structures such as RTree-backed UI automation candidates.
+- Microsoft WebView2 exposes `CreateSharedBuffer` and `PostSharedBufferToScript`, which maps to Snow Shot's lower-copy screenshot transfer approach and is relevant for the longer-term route if RGBA transfer itself remains a bottleneck.
+- Windows `WS_EX_NOACTIVATE`, `WS_EX_TOOLWINDOW`, `SW_SHOWNOACTIVATE`, and no-activate `SetWindowPos` remain necessary protections for any fast-shell path because speed work can otherwise reintroduce focus steal or taskbar disturbance.
+
+### Recommendation
+- Do not show a blank white/black transparent shell. Use a polished minimal first frame: transparent no-activate overlay, immediate dim layer, crosshair cursor, monitor bounds, and safe cancellation.
+- Treat `50ms` as `hotkey_received -> shell visible/interactable`, not as `hotkey_received -> full screenshot image + all window candidates ready`.
+- Make detailed window candidates asynchronous. The first 50-150ms can support free selection and monitor-bound snapping, then upgrade to precise window/element candidates when `loadWindowRects(true)` finishes.
+- Gate image-dependent actions: copy, save, OCR, translate, color pick, and selected-output readback must either wait for RGBA readiness or show a short internal pending state. They must never produce empty output from shell-only state.
+- Add explicit metrics before judging success: `hotkey_received`, `overlay_window_prepared`, `shell_show_returned`, `screenshot-shell received`, `overlay_ready_to_show_returned`, `rgba_canvas_ready`, `candidate_first_batch`, and first pointer-down.
+
+### Modified Files
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+  - Records the Chapter 255 research decision and changes the next recommended chapter from manual QA to a guarded fast-visible-shell experiment.
+
+### Explicit Non-Goals
+- Did not change screenshot startup code in this chapter.
+- Did not change OCR, translation, copy, save, selected-output, or packaging behavior.
+- Did not test focus/taskbar regressions after a speed rewrite; those checks must run after the fast-shell experiment lands.
+
+### Validation
+- Read-only/local research only.
+- Compared current hot-path source references in `useScreenshotLoader.ts`, `ScreenshotPage.tsx`, and `screenshot_commands.rs`.
+- Compared Snow Shot source references in `src/pages/draw/page.tsx`, `src-tauri/src-crates/tauri-commands/screenshot/src/lib.rs`, `src-tauri/src-crates/webview/src/windows/mod.rs`, and UI automation cache code.
+
+### Known Risks
+- Shell-first display can create a visible "image pops in later" effect if RGBA readiness remains around 100ms. The first shell frame must be intentionally designed so this feels like instant screenshot mode, not a flicker.
+- If users drag before RGBA arrives, the selection rectangle can be geometrically valid but visually less informative. Copy/save must wait for image readiness.
+- Candidate-asynchronous startup means precise window snapping may not be available in the earliest frames. This is acceptable only if free selection remains accurate and candidate upgrade is visually stable.
+- Any fast path can bypass no-activate/taskbar style application if not routed through the existing window lifecycle helpers.
+
+### Next Recommended Chapter
+- Chapter 256 should implement the guarded fast-visible-shell experiment:
+  - remove `loadWindowRects(true)` from the pre-show blocking path;
+  - let `screenshot-shell` display an intentional dim/crosshair shell immediately;
+  - keep RGBA image fill and detailed candidates asynchronous;
+  - block or await image-dependent actions until image readiness;
+  - log the new speed markers and then rebuild for release QA.

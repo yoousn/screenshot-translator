@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import type { Rect, Annotation, Point, AnnotationTool } from "../types/screenshot";
 import type { Config } from "../types/config";
+import { invoke } from "@tauri-apps/api/core";
 import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
 import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { getDetectionCandidatesAt } from "../utils/detectionCandidates";
@@ -223,7 +224,11 @@ export function useScreenshotInteraction({
       requestAnimationFrame(focusScreenshotCanvas);
     };
     import("@tauri-apps/api/window").then((m) => {
-      m.getCurrentWindow().setFocus().then(focusCanvas).catch(focusCanvas);
+      const currentWindow = m.getCurrentWindow();
+      invoke("activate_screenshot_overlay_for_interaction", { label: currentWindow.label })
+        .then(() => currentWindow.setFocus())
+        .then(focusCanvas)
+        .catch(() => currentWindow.setFocus().then(focusCanvas).catch(focusCanvas));
     });
     focusCanvas();
   };

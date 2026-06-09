@@ -1,11 +1,13 @@
 use crate::*;
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 pub struct AppShortcutStatus(pub std::sync::Mutex<Result<(), String>>);
 
 const DEFAULT_SCREENSHOT_HOTKEY: &str = "Alt+A";
 const TRANSLATE_HOTKEY_LABEL: &str = "Alt+T";
 const RECORDING_HOTKEY_LABEL: &str = "Alt+R";
+static CAPTURE_ESCAPE_SHORTCUT_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 fn now_epoch_millis() -> u64 {
     SystemTime::now()
@@ -134,6 +136,7 @@ pub fn register_global_shortcuts(
     app.global_shortcut()
         .unregister_all()
         .map_err(|e| e.to_string())?;
+    CAPTURE_ESCAPE_SHORTCUT_REGISTERED.store(false, AtomicOrdering::SeqCst);
     let mut errors = Vec::new();
 
     if !screenshot_hotkey.trim().is_empty() {
@@ -217,6 +220,48 @@ pub fn register_global_shortcuts(
         Ok(())
     } else {
         Err(errors.join("; "))
+    }
+}
+
+fn capture_escape_shortcut() -> Shortcut {
+    Shortcut::new(None, Code::Escape)
+}
+
+pub fn register_capture_escape_shortcut(app: &tauri::AppHandle) {
+    if CAPTURE_ESCAPE_SHORTCUT_REGISTERED.swap(true, AtomicOrdering::SeqCst) {
+        return;
+    }
+    if let Err(error) = app.global_shortcut().on_shortcut(
+        capture_escape_shortcut(),
+        move |app, _shortcut, event| {
+            if event.state() != ShortcutState::Pressed || !CAPTURING.load(Ordering::SeqCst) {
+                return;
+            }
+            let app_h = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    cancel_screenshot(app_h, Some("screenshot".to_string()), Some(true)).await
+                {
+                    eprintln!("Failed to cancel screenshot from Escape: {error}");
+                }
+            });
+        },
+    ) {
+        CAPTURE_ESCAPE_SHORTCUT_REGISTERED.store(false, AtomicOrdering::SeqCst);
+        eprintln!("[shortcut] Failed to register capture Escape shortcut: {error}");
+    } else {
+        println!("[shortcut] registered capture Escape shortcut");
+    }
+}
+
+pub fn unregister_capture_escape_shortcut(app: &tauri::AppHandle) {
+    if !CAPTURE_ESCAPE_SHORTCUT_REGISTERED.swap(false, AtomicOrdering::SeqCst) {
+        return;
+    }
+    if let Err(error) = app.global_shortcut().unregister(capture_escape_shortcut()) {
+        eprintln!("[shortcut] Failed to unregister capture Escape shortcut: {error}");
+    } else {
+        println!("[shortcut] unregistered capture Escape shortcut");
     }
 }
 

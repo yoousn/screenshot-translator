@@ -637,6 +637,7 @@ pub fn ensure_screenshot_window(
             }
         } else {
             let _ = win.set_skip_taskbar(true);
+            crate::window_lifecycle::apply_screenshot_overlay_window_styles(&win, true);
             return Ok(win);
         }
     }
@@ -650,6 +651,7 @@ pub fn ensure_screenshot_window(
 
     if let Some(win) = app.get_webview_window("screenshot") {
         let _ = win.set_skip_taskbar(true);
+        crate::window_lifecycle::apply_screenshot_overlay_window_styles(&win, true);
         return Ok(win);
     }
 
@@ -671,6 +673,7 @@ pub fn ensure_screenshot_window(
     .build()
     .map_err(|e| format!("Create screenshot window failed: {}", e))?;
     let _ = win.set_skip_taskbar(true);
+    crate::window_lifecycle::apply_screenshot_overlay_window_styles(&win, true);
     disable_windows_transition(&win);
     hide_window_without_activation(&win);
     Ok(win)
@@ -2649,6 +2652,7 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
         println!("[screenshot-trace] start_screenshot: CAPTURING was already true, canceling active screenshot");
         crate::screenshot_native::advance_run_generation();
         let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("repeat-hotkey-cancel");
+        unregister_capture_escape_shortcut(&app);
         close_screenshot_windows(&app, true);
         CAPTURING.store(false, Ordering::SeqCst);
         clear_latest_screenshot_payload();
@@ -2657,11 +2661,13 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
     }
     let run_generation = crate::screenshot_native::begin_run_generation();
     println!("[screenshot-trace] start_screenshot: CAPTURING is now true");
+    register_capture_escape_shortcut(&app);
 
-    match start_screenshot_impl(app, mode, run_generation).await {
+    match start_screenshot_impl(app.clone(), mode, run_generation).await {
         Ok(()) => Ok(()),
         Err(e) => {
             CAPTURING.store(false, Ordering::SeqCst);
+            unregister_capture_escape_shortcut(&app);
             Err(e)
         }
     }
@@ -2672,6 +2678,7 @@ pub async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String
     println!("[screenshot-trace] enter force_close_screenshots");
     crate::screenshot_native::advance_run_generation();
     let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("force-close-screenshots");
+    unregister_capture_escape_shortcut(&app);
     close_screenshot_windows(&app, true);
     CAPTURING.store(false, Ordering::SeqCst);
     crate::window_lifecycle::restore_main_window_after_screenshot(&app, "force-close-screenshots");
@@ -2710,6 +2717,7 @@ pub async fn cancel_screenshot(
         crate::window_lifecycle::suppress_next_screenshot_restore();
     }
     let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("cancel-screenshot");
+    unregister_capture_escape_shortcut(&app);
     if let Some(target_label) = label {
         if target_label == "screenshot" || target_label.starts_with("screenshot_") {
             if let Some(screenshot_win) = app.get_webview_window(&target_label) {

@@ -46,6 +46,7 @@ export default function ScreenshotPage() {
   const liveToolbarRectRef = useRef<Rect | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const autoAcceptanceSmokeStartedRef = useRef(false);
+  const lastScreenshotPayloadSignatureRef = useRef<string | null>(null);
   
   const [isSelecting, setIsSelecting] = useState(false);
   const [rect, setRect] = useState<Rect>(EMPTY_RECT);
@@ -685,7 +686,27 @@ export default function ScreenshotPage() {
     let unlistenEvent: (() => void) | null = null;
     let unlistenRecordingEnded: (() => void) | null = null;
 
+    const getPayloadSignature = (payload: ScreenshotUpdatedPayload | null | undefined) => {
+      if (!payload || typeof payload === "string") return null;
+      if (!payload.sessionId) return null;
+      return [
+        payload.sessionId,
+        payload.kind || "object",
+        payload.width || 0,
+        payload.height || 0,
+        payload.bytes || 0,
+        payload.path || "",
+        payload.base64 ? payload.base64.length : 0,
+      ].join("|");
+    };
+
     const handleScreenshotPayload = (payload: ScreenshotUpdatedPayload | null | undefined, source: string) => {
+      const signature = getPayloadSignature(payload);
+      if (signature && signature === lastScreenshotPayloadSignatureRef.current) {
+        invoke("log_screenshot_perf", { message: `[baseline] session=${(payload as any)?.sessionId || "unknown"} phase=payload_duplicate_skipped elapsed_ms=0 source=${source}` }).catch(() => {});
+        return;
+      }
+      if (signature) lastScreenshotPayloadSignatureRef.current = signature;
       primeTextSourceSnapshot(source, 160);
       if (typeof payload === "string") {
         if (payload) loadFullscreenFromBase64(payload, screenshotModeRef.current || "normal");
