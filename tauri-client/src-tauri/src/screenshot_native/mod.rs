@@ -61,6 +61,7 @@ pub mod win32_desktop_update_pulse;
 pub mod win32_input;
 pub mod win32_overlay;
 pub mod win32_overlay_dispatch;
+pub mod win32_overlay_input;
 pub mod win32_overlay_pump;
 
 pub use candidates::{CandidateKind, SelectionCandidate};
@@ -97,7 +98,8 @@ pub use monitor_output_mapping::{
 pub use native_overlay_session::{
     begin_cpu_native_overlay_session, cancel_cpu_native_overlay_session,
     cancel_cpu_native_overlay_session_if_matches, cleanup_stale_cpu_native_overlay_session,
-    cpu_native_overlay_session_diagnostics, raise_cpu_native_overlay_session,
+    cpu_native_overlay_selection_snapshot, cpu_native_overlay_session_diagnostics,
+    raise_cpu_native_overlay_session, NativeOverlaySelectionSnapshot,
     NativeOverlaySessionDiagnostics, NativeOverlaySessionError, NativeOverlaySessionRuntime,
     NativeOverlaySessionState,
 };
@@ -125,11 +127,16 @@ pub use session::{
 };
 pub use win32_overlay::{
     create_win32_overlay, destroy_win32_overlay, hide_win32_overlay, set_win32_overlay_bitmap,
-    set_win32_overlay_selection, show_win32_overlay, Win32OverlayConfig, Win32OverlayError,
-    Win32OverlayHandle, Win32OverlayLifecycleState, Win32OverlaySelectionRect, Win32OverlayWindow,
+    set_win32_overlay_candidate, set_win32_overlay_selection, show_win32_overlay,
+    Win32OverlayConfig, Win32OverlayError, Win32OverlayHandle, Win32OverlayLifecycleState,
+    Win32OverlaySelectionRect, Win32OverlayWindow,
 };
 pub use win32_overlay_dispatch::{
     input_event_label, run_win32_overlay_message_tuple_diagnostic_pump, Win32OverlayWaitResult,
+};
+pub use win32_overlay_input::{
+    win32_overlay_native_input_snapshot, win32_overlay_native_input_started,
+    Win32OverlayNativeInputPhase, Win32OverlayNativeInputSnapshot,
 };
 pub use win32_overlay_pump::{
     classify_pump_event, run_win32_overlay_diagnostic_pump, win32_overlay_pump_contract,

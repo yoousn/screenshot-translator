@@ -276,8 +276,22 @@ export function useScreenshotLoader({
       if (!overlayVisibleRef.current) return;
       if (!loggedStart && (hasSelectedRef.current || rectRef.current.w > 5 || rectRef.current.h > 5)) return;
       const pointerState = await invoke<any>("get_screenshot_pointer_state", { label: getCurrentWindow().label, sessionId: String(sessionKey) }).catch(() => null);
-      const preCapture = pointerState?.preCapture;
+      const nativeOverlay = pointerState?.nativeOverlay;
+      if (nativeOverlay?.cancelled === true && String(nativeOverlay.sessionId) === String(sessionKey)) {
+        logScreenshotBaseline(
+          sessionKey,
+          "native_overlay_cancel_received",
+          performance.now() - frontendSessionStartedAtRef.current,
+          `phase=${String(nativeOverlay.phase || "cancelled")} event_seq=${Number(nativeOverlay.eventSeq) || 0}`
+        );
+        await cancelScreenshot("native-overlay-cancelled");
+        return;
+      }
+      const preCapture = pointerState?.nativeOverlay?.available === true ? pointerState.nativeOverlay : pointerState?.preCapture;
       if (!preCapture || preCapture.available !== true || String(preCapture.sessionId) !== String(sessionKey)) return;
+      const source = String(preCapture.source || "pre-capture");
+      const phase = String(preCapture.phase || "unknown");
+      const eventSeq = Number(preCapture.eventSeq) || 0;
       const dragDistance = Number(preCapture.dragDistance) || 0;
       const leftDown = preCapture.leftDown === true;
       const completed = preCapture.completed === true;
@@ -293,7 +307,7 @@ export function useScreenshotLoader({
           sessionKey,
           "pre_show_drag_recovered",
           performance.now() - frontendSessionStartedAtRef.current,
-          `left_down=${leftDown} completed=${completed} drag=${Math.round(dragDistance)} rect=${Math.round(next.x)},${Math.round(next.y)},${Math.round(next.w)},${Math.round(next.h)}`
+          `source=${source} phase=${phase} event_seq=${eventSeq} left_down=${leftDown} completed=${completed} drag=${Math.round(dragDistance)} rect=${Math.round(next.x)},${Math.round(next.y)},${Math.round(next.w)},${Math.round(next.h)}`
         );
       }
       if (!leftDown) {
@@ -301,7 +315,7 @@ export function useScreenshotLoader({
           sessionKey,
           "pre_show_drag_finalized",
           performance.now() - frontendSessionStartedAtRef.current,
-          `valid=${valid} drag=${Math.round(dragDistance)}`
+          `source=${source} phase=${phase} event_seq=${eventSeq} valid=${valid} drag=${Math.round(dragDistance)}`
         );
         return;
       }

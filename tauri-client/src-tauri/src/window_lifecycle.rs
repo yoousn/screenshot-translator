@@ -385,6 +385,113 @@ mod screenshot_overlay_show_policy_tests {
         std::env::remove_var("YSN_SCREENSHOT_FOCUS_ON_READY");
     }
 
+    fn native_overlay_snapshot(
+        phase: crate::screenshot_native::Win32OverlayNativeInputPhase,
+        mouse_captured: bool,
+        completed: bool,
+        cancelled: bool,
+    ) -> crate::screenshot_native::NativeOverlaySelectionSnapshot {
+        crate::screenshot_native::NativeOverlaySelectionSnapshot {
+            hwnd: 42,
+            bounds: crate::screenshot_native::MonitorCaptureBounds::new(0, 0, 100, 100),
+            selection: Some(crate::screenshot_native::Win32OverlaySelectionRect {
+                left: 10,
+                top: 10,
+                right: 40,
+                bottom: 40,
+            }),
+            input_started: true,
+            mouse_captured,
+            completed,
+            cancelled,
+            phase,
+            event_seq: 1,
+        }
+    }
+
+    #[test]
+    fn native_first_frame_dismiss_waits_while_native_drag_is_active() {
+        let snapshot = native_overlay_snapshot(
+            crate::screenshot_native::Win32OverlayNativeInputPhase::Selecting,
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            native_first_frame_dismiss_decision(Some(snapshot), None, 40, None, 72, 900),
+            NativeFirstFrameDismissDecision::WaitForNativeDrag
+        );
+    }
+
+    #[test]
+    fn native_first_frame_dismiss_graces_completed_selection_for_handoff() {
+        let snapshot = native_overlay_snapshot(
+            crate::screenshot_native::Win32OverlayNativeInputPhase::Completed,
+            false,
+            true,
+            false,
+        );
+
+        assert_eq!(
+            native_first_frame_dismiss_decision(Some(snapshot), None, 120, Some(20), 72, 900),
+            NativeFirstFrameDismissDecision::WaitForWebViewHandoff
+        );
+        assert_eq!(
+            native_first_frame_dismiss_decision(Some(snapshot), None, 180, Some(80), 72, 900),
+            NativeFirstFrameDismissDecision::DismissNow
+        );
+    }
+
+    #[test]
+    fn native_first_frame_dismiss_has_a_timeout_escape_hatch() {
+        let snapshot = native_overlay_snapshot(
+            crate::screenshot_native::Win32OverlayNativeInputPhase::Selecting,
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            native_first_frame_dismiss_decision(Some(snapshot), None, 901, None, 72, 900),
+            NativeFirstFrameDismissDecision::ForceDismiss
+        );
+    }
+
+    #[test]
+    fn native_first_frame_dismiss_waits_for_precapture_drag_before_native_down() {
+        let pre_capture = crate::screenshot_commands::ScreenshotPointerPreCaptureActivity {
+            left_down: true,
+            completed: false,
+            has_drag: true,
+            drag_distance: 42.0,
+        };
+
+        assert_eq!(
+            native_first_frame_dismiss_decision(None, Some(pre_capture), 40, None, 72, 900),
+            NativeFirstFrameDismissDecision::WaitForNativeDrag
+        );
+    }
+
+    #[test]
+    fn native_first_frame_dismiss_graces_precapture_completion() {
+        let pre_capture = crate::screenshot_commands::ScreenshotPointerPreCaptureActivity {
+            left_down: false,
+            completed: true,
+            has_drag: true,
+            drag_distance: 80.0,
+        };
+
+        assert_eq!(
+            native_first_frame_dismiss_decision(None, Some(pre_capture), 120, Some(20), 72, 900),
+            NativeFirstFrameDismissDecision::WaitForWebViewHandoff
+        );
+        assert_eq!(
+            native_first_frame_dismiss_decision(None, Some(pre_capture), 180, Some(80), 72, 900),
+            NativeFirstFrameDismissDecision::DismissNow
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn screenshot_overlay_style_hides_taskbar_and_avoids_activation() {
@@ -866,13 +973,156 @@ fn native_first_frame_session_dismiss_delay_ms() -> u64 {
         .unwrap_or(64)
 }
 
+fn native_first_frame_session_handoff_grace_ms() -> u64 {
+    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION_HANDOFF_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(16, 250))
+        .unwrap_or(72)
+}
+
+fn native_first_frame_session_max_dismiss_ms() -> u64 {
+    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION_MAX_DISMISS_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(96, 1500))
+        .unwrap_or(900)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeFirstFrameDismissDecision {
+    DismissNow,
+    WaitForNativeDrag,
+    WaitForWebViewHandoff,
+    ForceDismiss,
+}
+
+fn native_first_frame_dismiss_decision(
+    snapshot: Option<crate::screenshot_native::NativeOverlaySelectionSnapshot>,
+    pre_capture: Option<crate::screenshot_commands::ScreenshotPointerPreCaptureActivity>,
+    elapsed_ms: u64,
+    completed_age_ms: Option<u64>,
+    handoff_grace_ms: u64,
+    max_dismiss_ms: u64,
+) -> NativeFirstFrameDismissDecision {
+    if elapsed_ms >= max_dismiss_ms {
+        return NativeFirstFrameDismissDecision::ForceDismiss;
+    }
+    if pre_capture
+        .map(|activity| activity.left_down && activity.has_drag)
+        .unwrap_or(false)
+    {
+        return NativeFirstFrameDismissDecision::WaitForNativeDrag;
+    }
+    if pre_capture
+        .map(|activity| activity.completed && activity.has_drag)
+        .unwrap_or(false)
+    {
+        return match completed_age_ms {
+            Some(age_ms) if age_ms >= handoff_grace_ms => {
+                NativeFirstFrameDismissDecision::DismissNow
+            }
+            _ => NativeFirstFrameDismissDecision::WaitForWebViewHandoff,
+        };
+    }
+    let Some(snapshot) = snapshot else {
+        return NativeFirstFrameDismissDecision::DismissNow;
+    };
+    if snapshot.cancelled {
+        return NativeFirstFrameDismissDecision::DismissNow;
+    }
+    if snapshot.completed {
+        return match completed_age_ms {
+            Some(age_ms) if age_ms >= handoff_grace_ms => {
+                NativeFirstFrameDismissDecision::DismissNow
+            }
+            _ => NativeFirstFrameDismissDecision::WaitForWebViewHandoff,
+        };
+    }
+    if snapshot.mouse_captured
+        || matches!(
+            snapshot.phase,
+            crate::screenshot_native::Win32OverlayNativeInputPhase::Selecting
+        )
+    {
+        return NativeFirstFrameDismissDecision::WaitForNativeDrag;
+    }
+    NativeFirstFrameDismissDecision::DismissNow
+}
+
 fn schedule_native_first_frame_session_dismiss(session_id: Option<String>) {
     let delay_ms = native_first_frame_session_dismiss_delay_ms();
+    let handoff_grace_ms = native_first_frame_session_handoff_grace_ms();
+    let max_dismiss_ms = native_first_frame_session_max_dismiss_ms();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let wait_started_at = std::time::Instant::now();
+        let mut completed_since: Option<std::time::Instant> = None;
+        let mut last_logged_decision: Option<NativeFirstFrameDismissDecision> = None;
+        let mut dismiss_reason = "webview-overlay-ready";
+
+        loop {
+            let snapshot = crate::screenshot_native::cpu_native_overlay_selection_snapshot(
+                session_id.as_deref(),
+            );
+            let pre_capture =
+                crate::screenshot_commands::read_screenshot_pointer_pre_capture_activity(
+                    session_id.as_deref(),
+                );
+            let completed_now = snapshot.map(|snapshot| snapshot.completed).unwrap_or(false)
+                || pre_capture
+                    .map(|activity| activity.completed && activity.has_drag)
+                    .unwrap_or(false);
+            if completed_now && completed_since.is_none() {
+                completed_since = Some(std::time::Instant::now());
+            }
+            if !completed_now {
+                completed_since = None;
+            }
+            let elapsed_ms = wait_started_at
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            let completed_age_ms = completed_since
+                .map(|instant| instant.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+            let decision = native_first_frame_dismiss_decision(
+                snapshot,
+                pre_capture,
+                elapsed_ms,
+                completed_age_ms,
+                handoff_grace_ms,
+                max_dismiss_ms,
+            );
+            if last_logged_decision != Some(decision)
+                && !matches!(decision, NativeFirstFrameDismissDecision::DismissNow)
+            {
+                println!(
+                    "[screenshot-trace] native_first_frame_session_dismiss_wait session={} decision={:?} elapsed_ms={} delay_ms={} handoff_grace_ms={} max_ms={}",
+                    session_id.as_deref().unwrap_or("unknown"),
+                    decision,
+                    elapsed_ms,
+                    delay_ms,
+                    handoff_grace_ms,
+                    max_dismiss_ms
+                );
+                last_logged_decision = Some(decision);
+            }
+            match decision {
+                NativeFirstFrameDismissDecision::DismissNow => break,
+                NativeFirstFrameDismissDecision::ForceDismiss => {
+                    dismiss_reason = "webview-overlay-ready-timeout";
+                    break;
+                }
+                NativeFirstFrameDismissDecision::WaitForNativeDrag
+                | NativeFirstFrameDismissDecision::WaitForWebViewHandoff => {
+                    tokio::time::sleep(Duration::from_millis(16)).await;
+                }
+            }
+        }
+
         let diagnostics = crate::screenshot_native::cancel_cpu_native_overlay_session_if_matches(
             session_id.as_deref(),
-            "webview-overlay-ready",
+            dismiss_reason,
         );
         let Some(diagnostics) = diagnostics else {
             return;
@@ -884,12 +1134,13 @@ fn schedule_native_first_frame_session_dismiss(session_id: Option<String>) {
             )
         {
             println!(
-                "[screenshot-trace] native_first_frame_session_dismissed session={} delay_ms={} state={} active={} visible={}",
+                "[screenshot-trace] native_first_frame_session_dismissed session={} delay_ms={} state={} active={} visible={} reason={}",
                 session_id.as_deref().unwrap_or("unknown"),
                 delay_ms,
                 diagnostics.state.as_str(),
                 diagnostics.active,
-                diagnostics.visible
+                diagnostics.visible,
+                dismiss_reason
             );
         }
     });

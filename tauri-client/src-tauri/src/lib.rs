@@ -165,6 +165,8 @@ pub(crate) mod win32 {
         pub fn SetForegroundWindow(hWnd: isize) -> i32;
         pub fn SetActiveWindow(hWnd: isize) -> isize;
         pub fn SetFocus(hWnd: isize) -> isize;
+        pub fn SetCapture(hWnd: isize) -> isize;
+        pub fn ReleaseCapture() -> i32;
         pub fn GetForegroundWindow() -> isize;
         pub fn GetShellWindow() -> isize;
         pub fn GetCurrentThreadId() -> u32;

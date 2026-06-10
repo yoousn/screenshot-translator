@@ -4,8 +4,10 @@ use std::time::Duration;
 
 use super::overlay_renderer::render_rgba_frame_to_overlay;
 use super::{
-    create_win32_overlay, destroy_win32_overlay, set_win32_overlay_bitmap, show_win32_overlay,
-    MonitorCaptureBounds, OverlayRenderReceipt, OverlayRenderTarget, RgbaFrame, Win32OverlayConfig,
+    create_win32_overlay, destroy_win32_overlay, set_win32_overlay_bitmap,
+    set_win32_overlay_candidate, show_win32_overlay, MonitorCaptureBounds, OverlayRenderReceipt,
+    OverlayRenderTarget, RgbaFrame, Win32OverlayConfig, Win32OverlayHandle,
+    Win32OverlayNativeInputPhase, Win32OverlaySelectionRect,
 };
 
 const OVERLAY_THREAD_START_TIMEOUT_MS: u64 = 500;
@@ -108,6 +110,19 @@ pub struct NativeOverlaySessionDiagnostics {
     pub rendered: bool,
     pub visible: bool,
     pub fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeOverlaySelectionSnapshot {
+    pub hwnd: isize,
+    pub bounds: MonitorCaptureBounds,
+    pub selection: Option<crate::screenshot_native::Win32OverlaySelectionRect>,
+    pub input_started: bool,
+    pub mouse_captured: bool,
+    pub completed: bool,
+    pub cancelled: bool,
+    pub phase: Win32OverlayNativeInputPhase,
+    pub event_seq: u64,
 }
 
 impl NativeOverlaySessionDiagnostics {
@@ -242,6 +257,7 @@ fn run_cpu_native_overlay_thread(
     started_sender: Sender<Result<NativeOverlayThreadStarted, String>>,
     command_receiver: Receiver<NativeOverlayThreadCommand>,
 ) {
+    let thread_started_at = std::time::Instant::now();
     let mut window = match create_win32_overlay(&config) {
         Ok(window) => window,
         Err(error) => {
@@ -253,9 +269,31 @@ fn run_cpu_native_overlay_thread(
     let started_result = (|| -> Result<NativeOverlayThreadStarted, String> {
         set_win32_overlay_bitmap(window.handle(), &frame.bytes, frame.width, frame.height)
             .map_err(|error| format!("native overlay render failed: {error}"))?;
+        let initial_candidate = current_native_candidate_rect(bounds, window.handle());
+        set_win32_overlay_candidate(window.handle(), initial_candidate);
+        if let Some(candidate) = initial_candidate {
+            log_native_overlay_thread_event(
+                &session_id,
+                "native_candidate_first_rect",
+                &thread_started_at,
+                &format!(
+                    "rect={},{},{},{}",
+                    candidate.left,
+                    candidate.top,
+                    candidate.right.saturating_sub(candidate.left),
+                    candidate.bottom.saturating_sub(candidate.top)
+                ),
+            );
+        }
         let render_target = OverlayRenderTarget::hwnd(hwnd, bounds.width, bounds.height);
         show_win32_overlay(&mut window, &config)
             .map_err(|error| format!("native overlay show failed: {error}"))?;
+        log_native_overlay_thread_event(
+            &session_id,
+            "native_overlay_first_paint",
+            &thread_started_at,
+            &format!("hwnd={hwnd} size={}x{}", bounds.width, bounds.height),
+        );
         let render_receipt = render_rgba_frame_to_overlay(render_target, &frame).ok();
         Ok(NativeOverlayThreadStarted {
             hwnd,
@@ -269,25 +307,110 @@ fn run_cpu_native_overlay_thread(
 
     let started_at = std::time::Instant::now();
     let mut last_selection: Option<(i32, i32, i32, i32)> = None;
+    let mut last_candidate = current_native_candidate_rect(bounds, window.handle());
+    let mut last_candidate_refresh: Option<std::time::Instant> = None;
+    let mut last_native_input_phase: Option<Win32OverlayNativeInputPhase> = None;
+    let mut native_handoff_ready_logged = false;
     loop {
         pump_overlay_thread_messages(hwnd);
 
-        let current_selection =
-            crate::screenshot_commands::read_screenshot_pointer_pre_capture_selection(&session_id);
-        if current_selection != last_selection {
-            last_selection = current_selection;
-            let new_selection_rect = current_selection.map(|(x, y, w, h)| {
-                crate::screenshot_native::Win32OverlaySelectionRect {
-                    left: x - bounds.origin_x,
-                    top: y - bounds.origin_y,
-                    right: x - bounds.origin_x + w,
-                    bottom: y - bounds.origin_y + h,
+        let native_input_snapshot =
+            crate::screenshot_native::win32_overlay_native_input_snapshot(window.handle());
+        let native_input_started = native_input_snapshot
+            .map(|snapshot| snapshot.native_input_started)
+            .unwrap_or(false);
+        if let Some(snapshot) =
+            native_input_snapshot.filter(|snapshot| snapshot.native_input_started)
+        {
+            if last_native_input_phase.is_none() {
+                log_native_overlay_thread_event(
+                    &session_id,
+                    "native_input_ready",
+                    &thread_started_at,
+                    &format!(
+                        "phase={} event_seq={} captured={}",
+                        snapshot.phase.as_str(),
+                        snapshot.event_seq,
+                        snapshot.mouse_captured
+                    ),
+                );
+            }
+            if snapshot.phase.handoff_ready() && !native_handoff_ready_logged {
+                native_handoff_ready_logged = true;
+                log_native_overlay_thread_event(
+                    &session_id,
+                    "native_selection_handoff_ready",
+                    &thread_started_at,
+                    &format!(
+                        "phase={} event_seq={} has_selection={}",
+                        snapshot.phase.as_str(),
+                        snapshot.event_seq,
+                        snapshot.selection.is_some()
+                    ),
+                );
+            }
+            if Some(snapshot.phase) != last_native_input_phase {
+                match snapshot.phase {
+                    Win32OverlayNativeInputPhase::Completed => {
+                        log_native_overlay_thread_event(
+                            &session_id,
+                            "native_selection_completed",
+                            &thread_started_at,
+                            &native_input_snapshot_detail(snapshot),
+                        );
+                    }
+                    Win32OverlayNativeInputPhase::Cancelled => {
+                        log_native_overlay_thread_event(
+                            &session_id,
+                            "native_selection_cancelled",
+                            &thread_started_at,
+                            &native_input_snapshot_detail(snapshot),
+                        );
+                    }
+                    Win32OverlayNativeInputPhase::Idle
+                    | Win32OverlayNativeInputPhase::Started
+                    | Win32OverlayNativeInputPhase::Selecting => {}
                 }
-            });
-            crate::screenshot_native::set_win32_overlay_selection(
-                window.handle(),
-                new_selection_rect,
-            );
+                last_native_input_phase = Some(snapshot.phase);
+            }
+        }
+        if native_input_started {
+            if last_candidate.is_some() {
+                last_candidate = None;
+                set_win32_overlay_candidate(window.handle(), None);
+            }
+        } else if last_candidate_refresh
+            .map(|instant| instant.elapsed() >= Duration::from_millis(16))
+            .unwrap_or(true)
+        {
+            last_candidate_refresh = Some(std::time::Instant::now());
+            let current_candidate = current_native_candidate_rect(bounds, window.handle());
+            if current_candidate != last_candidate {
+                last_candidate = current_candidate;
+                set_win32_overlay_candidate(window.handle(), current_candidate);
+            }
+        }
+
+        if !native_input_started {
+            let current_selection =
+                crate::screenshot_commands::read_screenshot_pointer_pre_capture_selection(
+                    &session_id,
+                );
+            if current_selection != last_selection {
+                last_selection = current_selection;
+                let new_selection_rect = current_selection.map(|(x, y, w, h)| {
+                    crate::screenshot_native::Win32OverlaySelectionRect {
+                        left: x - bounds.origin_x,
+                        top: y - bounds.origin_y,
+                        right: x - bounds.origin_x + w,
+                        bottom: y - bounds.origin_y + h,
+                    }
+                });
+                crate::screenshot_native::set_win32_overlay_selection(
+                    window.handle(),
+                    new_selection_rect,
+                );
+            }
         }
 
         match command_receiver.recv_timeout(Duration::from_millis(4)) {
@@ -456,6 +579,43 @@ pub fn cpu_native_overlay_session_diagnostics() -> NativeOverlaySessionDiagnosti
         .unwrap_or_else(NativeOverlaySessionDiagnostics::empty)
 }
 
+pub fn cpu_native_overlay_selection_snapshot(
+    session_id: Option<&str>,
+) -> Option<NativeOverlaySelectionSnapshot> {
+    let guard = session_store().lock().ok()?;
+    let session = guard.as_ref()?;
+    if let Some(expected_session_id) = session_id {
+        if session.session_id != expected_session_id {
+            return None;
+        }
+    }
+    if !matches!(
+        session.state,
+        NativeOverlaySessionState::Created
+            | NativeOverlaySessionState::Rendered
+            | NativeOverlaySessionState::Visible
+    ) {
+        return None;
+    }
+    let input = crate::screenshot_native::win32_overlay_native_input_snapshot(
+        crate::screenshot_native::Win32OverlayHandle::new(session.hwnd),
+    )?;
+    if !input.native_input_started {
+        return None;
+    }
+    Some(NativeOverlaySelectionSnapshot {
+        hwnd: session.hwnd,
+        bounds: session.bounds,
+        selection: input.selection,
+        input_started: input.native_input_started,
+        mouse_captured: input.mouse_captured,
+        completed: input.completed,
+        cancelled: input.cancelled,
+        phase: input.phase,
+        event_seq: input.event_seq,
+    })
+}
+
 pub fn cleanup_stale_cpu_native_overlay_session(
     generation: u64,
 ) -> NativeOverlaySessionDiagnostics {
@@ -478,6 +638,127 @@ pub fn cleanup_stale_cpu_native_overlay_session(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn current_native_candidate_rect(
+    bounds: MonitorCaptureBounds,
+    overlay_handle: Win32OverlayHandle,
+) -> Option<Win32OverlaySelectionRect> {
+    let (cursor_x, cursor_y) = crate::window_targets::get_cursor_position()?;
+
+    for hwnd in crate::window_targets::taskbar_windows_at_cursor(cursor_x, cursor_y) {
+        if let Some(rect) = crate::window_targets::hwnd_rect(hwnd, false)
+            .and_then(|rect| rect_to_overlay_candidate(rect, bounds, 12))
+        {
+            return Some(rect);
+        }
+    }
+
+    let excluded_hwnds = vec![overlay_handle.hwnd()];
+    let windows =
+        crate::window_targets::top_level_windows_at_cursor(cursor_x, cursor_y, excluded_hwnds);
+    if let Some(hwnd) = windows.first().copied() {
+        for child in crate::window_targets::child_windows_at_cursor(hwnd, cursor_x, cursor_y)
+            .into_iter()
+            .rev()
+            .take(1)
+        {
+            if let Some(rect) = crate::window_targets::hwnd_rect(child, false)
+                .and_then(|rect| rect_to_overlay_candidate(rect, bounds, 12))
+            {
+                return Some(rect);
+            }
+        }
+        if let Some(rect) = crate::window_targets::hwnd_rect(hwnd, true)
+            .and_then(|rect| rect_to_overlay_candidate(rect, bounds, 50))
+        {
+            return Some(rect);
+        }
+    }
+
+    Some(Win32OverlaySelectionRect {
+        left: 0,
+        top: 0,
+        right: bounds.width.min(i32::MAX as u32) as i32,
+        bottom: bounds.height.min(i32::MAX as u32) as i32,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_native_candidate_rect(
+    _bounds: MonitorCaptureBounds,
+    _overlay_handle: Win32OverlayHandle,
+) -> Option<Win32OverlaySelectionRect> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn rect_to_overlay_candidate(
+    rect: crate::win32::RECT,
+    bounds: MonitorCaptureBounds,
+    min_size: i32,
+) -> Option<Win32OverlaySelectionRect> {
+    let bounds_right = bounds
+        .origin_x
+        .saturating_add(bounds.width.min(i32::MAX as u32) as i32);
+    let bounds_bottom = bounds
+        .origin_y
+        .saturating_add(bounds.height.min(i32::MAX as u32) as i32);
+    let left = rect.left.max(bounds.origin_x);
+    let top = rect.top.max(bounds.origin_y);
+    let right = rect.right.min(bounds_right);
+    let bottom = rect.bottom.min(bounds_bottom);
+    if right.saturating_sub(left) < min_size || bottom.saturating_sub(top) < min_size {
+        return None;
+    }
+    Some(Win32OverlaySelectionRect {
+        left: left.saturating_sub(bounds.origin_x),
+        top: top.saturating_sub(bounds.origin_y),
+        right: right.saturating_sub(bounds.origin_x),
+        bottom: bottom.saturating_sub(bounds.origin_y),
+    })
+}
+
+fn log_native_overlay_thread_event(
+    session_id: &str,
+    phase: &str,
+    started_at: &std::time::Instant,
+    detail: &str,
+) {
+    println!(
+        "[screenshot-baseline] session={} phase={} elapsed_ms={} {}",
+        session_id,
+        phase,
+        started_at.elapsed().as_millis(),
+        detail
+    );
+}
+
+fn native_input_snapshot_detail(
+    snapshot: crate::screenshot_native::Win32OverlayNativeInputSnapshot,
+) -> String {
+    let rect = snapshot
+        .selection
+        .map(|selection| {
+            format!(
+                "{},{},{},{}",
+                selection.left,
+                selection.top,
+                selection.right.saturating_sub(selection.left),
+                selection.bottom.saturating_sub(selection.top)
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "phase={} event_seq={} captured={} completed={} cancelled={} rect={}",
+        snapshot.phase.as_str(),
+        snapshot.event_seq,
+        snapshot.mouse_captured,
+        snapshot.completed,
+        snapshot.cancelled,
+        rect
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +777,41 @@ mod tests {
             "cpu-rgba-win32"
         );
         assert_eq!(NativeOverlaySessionState::Visible.as_str(), "visible");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn rect_to_overlay_candidate_clips_to_capture_bounds() {
+        let rect = crate::win32::RECT {
+            left: -10,
+            top: 10,
+            right: 120,
+            bottom: 140,
+        };
+        let bounds = MonitorCaptureBounds::new(0, 0, 100, 100);
+
+        assert_eq!(
+            rect_to_overlay_candidate(rect, bounds, 12),
+            Some(Win32OverlaySelectionRect {
+                left: 0,
+                top: 10,
+                right: 100,
+                bottom: 100,
+            })
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn rect_to_overlay_candidate_rejects_tiny_rects() {
+        let rect = crate::win32::RECT {
+            left: 10,
+            top: 10,
+            right: 16,
+            bottom: 16,
+        };
+        let bounds = MonitorCaptureBounds::new(0, 0, 100, 100);
+
+        assert_eq!(rect_to_overlay_candidate(rect, bounds, 12), None);
     }
 }

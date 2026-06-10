@@ -3403,3 +3403,129 @@ Alt+A
 ### Next Steps
 - Implement full `WM_LBUTTONDOWN`, `WM_MOUSEMOVE`, and `WM_LBUTTONUP` handling in `win32_overlay_wnd_proc` so the native overlay can own input instead of only polling pre-capture state.
 - Expand native rendering to also include candidate window rectangles.
+
+## Chapter 269: Native First Frame Screenshot Session (Phase 2 Native Input Overlay)
+
+### Goals Completed
+- Converted the guarded native first-frame overlay from mouse-transparent visual/pre-capture mode into a real native input overlay for the first screenshot-selection phase.
+- Replaced `WM_NCHITTEST -> HTTRANSPARENT` with a client hit-test result so the native overlay can receive mouse messages instead of passing them through.
+- Added per-HWND native input state in `win32_overlay.rs`, backed by the existing `SelectionState` state machine.
+- Handled `WM_LBUTTONDOWN`, `WM_MOUSEMOVE`, `WM_LBUTTONUP`, `WM_KEYDOWN`, `WM_SYSKEYDOWN`, and `WM_KILLFOCUS` in the native overlay window procedure.
+- Added `SetCapture(hwnd)` on primary-button down and `ReleaseCapture()` on button up, terminal state, or focus loss, so a drag remains owned by the native overlay even if the pointer leaves the original point.
+- Native overlay drag transitions now update the GDI-rendered selected region directly, while cancel/armed transitions clear the previous selected region.
+- Kept the `YSN_NATIVE_FIRST_FRAME_SESSION=1` guard. Default production behavior remains the Chapter 268 WebView SharedBuffer/transparent-input-shell path until visual/release smoke proves the guarded native session.
+- Prevented pointer pre-capture polling from overwriting native overlay selection rendering once native input has started. The global pre-capture path still remains available for WebView handoff/recovery.
+- Added a native overlay selection snapshot for the active screenshot session, exposed through `get_screenshot_pointer_state` as `nativeOverlay`.
+- Updated both screenshot recovery paths to prefer `nativeOverlay` selection data when available and fall back to `preCapture` only when native data is unavailable.
+- Added `source=native-overlay` / `source=pre-capture` recovery logging so guarded smoke can prove which handoff path restored the WebView selection.
+- Added native input phase and event sequence tracking (`idle`, `started`, `selecting`, `completed`, `cancelled`) so WebView handoff can distinguish a live native drag, completed native selection, and native cancel even when no selected rectangle exists.
+- The native overlay thread now logs `native_input_ready`, `native_selection_handoff_ready`, `native_selection_completed`, and `native_selection_cancelled` with event sequence and rectangle details for guarded timing smoke.
+- `get_screenshot_pointer_state.nativeOverlay` now includes `phase`, `eventSeq`, and `handoffReady`; the WebView recovery paths log these values and cancel the screenshot when native overlay reports `cancelled`.
+- Added native candidate rectangle painting in the GDI overlay: the first frame now seeds a cursor-under candidate before the overlay is shown, then refreshes it while no native drag is active.
+- The native overlay thread now logs `native_candidate_first_rect` and `native_overlay_first_paint` for guarded first-frame timing evidence.
+- Reused existing Win32 window-target helpers to resolve taskbar, child control, top-level window, and display fallback candidates without adding a new dependency.
+- Added native candidate and selection border drawing with bitmap-bound clipping so negative coordinates and monitor edges do not produce invalid GDI rectangles.
+- Added Win32 `SetCapture` and `ReleaseCapture` bindings.
+- Cleaned up native overlay input state when an overlay is destroyed or receives `WM_NCDESTROY`.
+- Extracted native overlay input ownership, state, dispatch, and snapshot tests into `win32_overlay_input.rs` so `win32_overlay.rs` remains focused on HWND lifecycle and painting.
+
+### Modified Files
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay_input.rs`
+- `tauri-client/src-tauri/src/screenshot_native/native_overlay_session.rs`
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_input_smoke -- --nocapture` with `2 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib win32_overlay_input -- --nocapture` with `3 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib win32_overlay -- --nocapture` with `18 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_overlay_session -- --nocapture` with `4 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_first_frame_session_is_opt_in_until_visual_artifacts_are_fixed -- --nocapture` with `1 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib screenshot_window_transparency_tests -- --nocapture` with `5 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- This is still guarded by `YSN_NATIVE_FIRST_FRAME_SESSION=1` and has not yet passed a release visual smoke with repeated real `Alt+A` runs.
+- Native overlay now exposes phase/event-sequenced handoff data to WebView, but the final architecture still needs release smoke evidence that the WebView toolbar consistently joins without visual flash.
+- Native candidate/window rectangles are now drawn, but only with the existing fast Win32/window-target candidate source. UIAutomation-grade control candidates remain a later polish layer.
+- Native `Esc` handling clears/cancels the native overlay selection state, but full app-level cancel still relies on the existing global/WebView cancellation flow.
+- This phase does not yet prove P95 `hotkey -> mouse draggable <= 50ms`; it only removes the architectural blocker that prevented the native overlay from accepting the first drag.
+
+### Next Steps
+- Run guarded release visual smoke with `YSN_NATIVE_FIRST_FRAME_SESSION=1`, repeated third/fourth runs, immediate drag, rapid cancel, and frame analysis for black/white/color-shift flashes.
+- Only after that smoke passes, evaluate whether this guarded native path can become the default route.
+
+## Chapter 269: Native First Frame Screenshot Session (Phase 3 Handoff Timing And Visual Smoke)
+
+### Goals Completed
+- Fixed the first guarded release smoke race where a fixed native first-frame dismiss could destroy the native overlay before `WM_LBUTTONUP` / handoff was observed.
+- Changed native first-frame handoff so WebView no longer shows the early empty/transparent shell when `YSN_NATIVE_FIRST_FRAME_SESSION=1`; the WebView shell is deferred until screenshot RGBA is ready.
+- Preserved `nativeVisible=false` as the WebView-shell visibility meaning and added `nativeFirstFrame=true` only as a diagnostic payload flag, preventing the frontend from skipping `overlay_ready_to_show`.
+- Replaced fixed dismiss with state-aware dismiss:
+  - no active input: dismiss after the configured delay;
+  - native drag active: wait;
+  - pre-capture drag active before native HWND receives down: wait;
+  - completed selection: keep a short WebView handoff grace;
+  - timeout: force dismiss so the native overlay cannot block the app forever.
+- Added `YSN_NATIVE_FIRST_FRAME_SESSION_HANDOFF_GRACE_MS` and `YSN_NATIVE_FIRST_FRAME_SESSION_MAX_DISMISS_MS` guarded tuning knobs.
+- Added a small `ScreenshotPointerPreCaptureActivity` snapshot so native first-frame dismissal can see early mouse-down/drag activity without parsing frontend JSON.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_first_frame_dismiss -- --nocapture` with `5 passed`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_input_smoke -- --nocapture` with `2 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing chunk-size/dynamic-import warnings only.
+- Passed: `cd tauri-client; npm run check:i18n` with `566 zh-CN keys match 566 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+- Passed: `cmd /c "build.bat --no-pause"`.
+- Guarded release immediate-drag smoke: `tmp-runtime-logs/native-first-frame-immediate-smoke-20260611-051111-out.log`.
+  - `stderrLength=0`.
+  - `hotkey_received=6`.
+  - `native_first_frame_visible=6`.
+  - `native_overlay_first_paint=6`.
+  - `native_input_ready=6`.
+  - `native_selection_handoff_ready=6`.
+  - `native_selection_completed=6`.
+  - `native_selection_cancelled=0`.
+  - `native_first_frame_session_dismiss_wait=12`.
+  - `native_first_frame_session_dismissed=6`.
+  - `pre_show_drag_recovered=6`.
+  - `pre_show_drag_finalized=6`.
+- Guarded release visual smoke:
+  - Video: `tmp-runtime-logs/native-first-frame-visual-20260611-051302.mp4`.
+  - App log: `tmp-runtime-logs/native-first-frame-visual-20260611-051302-app-out.log`.
+  - Extracted/analyzed `330` frames at reduced size.
+  - `blackFrames=0`, `whiteFrames=0`, `largeDiffFrames=0`, `brightnessJumps=0`.
+  - `meanMin=86.92`, `meanMax=160.87`, `maxAvgDiff=72.68`.
+  - App log had `hotkey_received=3`, `native_first_frame_visible=3`, `pre_show_drag_recovered=3`, `pre_show_drag_finalized=3`, `native_first_frame_session_dismissed=3`, and `stderrLength=0`.
+
+### Known Risks
+- The guarded native route is materially improved, but it is still not enabled by default.
+- Immediate-drag smoke now proves the native/pre-capture first-stage can preserve selection and avoid premature dismiss, but it is not a true low-level mouse hook yet.
+- Visual smoke did not find black/white/high-diff flash frames, but this is automated frame analysis, not a human visual QA pass across monitors/DPI/apps.
+- Current measured `native_first_frame_visible` in release smoke is still roughly `76-108ms`, not the target `<=60ms`; the capture/presenter path must still move closer to a prewarmed native/DXGI first frame before claiming QQ/WeChat/Snow Shot parity.
+- Some visual-smoke rounds use `pre-capture` as the WebView finalization source when the mouse down starts before native HWND can own the first button event. This is acceptable as a guarded fallback, but a real low-level hook remains the cleaner 0-50ms input fallback.
+
+### Next Steps
+- Add a real low-level mouse hook fallback for the first 0-50ms so pre-HWND mouse down/up is captured as structured native input rather than only pre-capture polling.
+- Move native first-frame presentation earlier in the pipeline by starting native overlay before WebView shared-buffer posting where safe, then continue toward precreated hidden HWND and preinitialized native capture resources.
+- Keep `YSN_NATIVE_FIRST_FRAME_SESSION=1` guarded until manual release QA confirms no black/white/color flash, immediate drag, cancel, copy/save/OCR/translate, multi-monitor, and DPI behavior.

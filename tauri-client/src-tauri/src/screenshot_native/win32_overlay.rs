@@ -1,4 +1,13 @@
 #[cfg(target_os = "windows")]
+use super::win32_input::{
+    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SYSKEYDOWN,
+};
+#[cfg(target_os = "windows")]
+use super::win32_overlay_input::{
+    apply_win32_overlay_input, clear_win32_overlay_input_state,
+    initialize_win32_overlay_input_state,
+};
+#[cfg(target_os = "windows")]
 use crate::win32;
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
@@ -284,8 +293,13 @@ fn create_platform_overlay(
     }
 
     let window = Win32OverlayWindow::from_handle(Win32OverlayHandle::new(hwnd));
+    initialize_win32_overlay_input_state(window.handle());
     if config.exclude_from_capture {
-        set_capture_exclusion(window.handle(), true)?;
+        if let Err(error) = set_capture_exclusion(window.handle(), true) {
+            clear_win32_overlay_input_state(window.handle());
+            let _ = unsafe { win32::DestroyWindow(hwnd) };
+            return Err(error);
+        }
     }
 
     Ok(window)
@@ -298,6 +312,7 @@ struct Win32OverlayBitmap {
     dimmed_bgra_bytes: Arc<[u8]>,
     width: u32,
     height: u32,
+    candidate: Option<Win32OverlaySelectionRect>,
     selection: Option<Win32OverlaySelectionRect>,
 }
 
@@ -360,6 +375,7 @@ pub fn set_win32_overlay_bitmap(
                 bgra_bytes,
                 width,
                 height,
+                candidate: None,
                 selection: None,
             },
         );
@@ -386,6 +402,31 @@ pub fn set_win32_overlay_selection(
     unsafe {
         win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0);
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_win32_overlay_candidate(
+    handle: Win32OverlayHandle,
+    candidate: Option<Win32OverlaySelectionRect>,
+) {
+    if !handle.is_valid() {
+        return;
+    }
+    if let Ok(mut guard) = overlay_bitmap_store().lock() {
+        if let Some(bitmap) = guard.get_mut(&handle.hwnd()) {
+            bitmap.candidate = candidate;
+        }
+    }
+    unsafe {
+        win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_win32_overlay_candidate(
+    _handle: Win32OverlayHandle,
+    _candidate: Option<Win32OverlaySelectionRect>,
+) {
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -437,6 +478,7 @@ fn create_platform_overlay(
 #[cfg(target_os = "windows")]
 fn destroy_platform_overlay(handle: Win32OverlayHandle) -> Result<(), Win32OverlayError> {
     clear_win32_overlay_bitmap(handle);
+    clear_win32_overlay_input_state(handle);
     let ok = unsafe { win32::DestroyWindow(handle.hwnd()) };
     if ok == 0 {
         Err(Win32OverlayError::DestroyWindowFailed)
@@ -563,10 +605,48 @@ unsafe extern "system" fn win32_overlay_wnd_proc(
             paint_overlay_bitmap(hwnd);
             return 0;
         }
-        WM_NCHITTEST => return HTTRANSPARENT,
+        WM_NCHITTEST => return native_overlay_hit_test_result(),
+        WM_LBUTTONDOWN | WM_MOUSEMOVE | WM_LBUTTONUP | WM_KEYDOWN | WM_SYSKEYDOWN
+        | WM_KILLFOCUS => {
+            if dispatch_win32_overlay_input(hwnd, message, w_param, l_param) {
+                return 0;
+            }
+        }
+        WM_NCDESTROY => {
+            clear_win32_overlay_bitmap(Win32OverlayHandle::new(hwnd));
+            clear_win32_overlay_input_state(Win32OverlayHandle::new(hwnd));
+        }
         _ => {}
     }
     win32::DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+#[cfg(target_os = "windows")]
+fn dispatch_win32_overlay_input(hwnd: isize, message: u32, w_param: usize, l_param: isize) -> bool {
+    let dispatch = apply_win32_overlay_input(hwnd, message, w_param, l_param);
+    if !dispatch.handled {
+        return false;
+    }
+
+    if dispatch.set_capture {
+        unsafe {
+            let _ = win32::SetCapture(hwnd);
+        }
+    }
+    if let Some(selection) = dispatch.selection {
+        set_win32_overlay_selection(Win32OverlayHandle::new(hwnd), selection);
+    }
+    if dispatch.release_capture {
+        unsafe {
+            let _ = win32::ReleaseCapture();
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "windows")]
+const fn native_overlay_hit_test_result() -> isize {
+    HTCLIENT
 }
 
 #[cfg(target_os = "windows")]
@@ -628,6 +708,17 @@ fn paint_overlay_bitmap(hwnd: isize) {
             );
         }
 
+        if let Some(candidate) = bitmap.candidate {
+            paint_overlay_rect_outline(
+                hdc,
+                candidate,
+                bitmap.width as i32,
+                bitmap.height as i32,
+                CANDIDATE_BORDER_COLORREF,
+                2,
+            );
+        }
+
         // 2. Paint the selected region from the original image over the dimmed background
         if let Some(sel) = bitmap.selection {
             let width = bitmap.width as i32;
@@ -658,10 +749,98 @@ fn paint_overlay_bitmap(hwnd: isize) {
                         SRCCOPY,
                     );
                 }
+                paint_overlay_rect_outline(
+                    hdc,
+                    Win32OverlaySelectionRect {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    },
+                    width,
+                    height,
+                    SELECTION_BORDER_COLORREF,
+                    2,
+                );
             }
         }
     }
     let _ = unsafe { win32::EndPaint(hwnd, &paint as *const win32::PAINTSTRUCT) };
+}
+
+#[cfg(target_os = "windows")]
+fn paint_overlay_rect_outline(
+    hdc: isize,
+    rect: Win32OverlaySelectionRect,
+    width: i32,
+    height: i32,
+    color: u32,
+    thickness: i32,
+) {
+    let Some((left, top, right, bottom)) = clamp_overlay_rect(rect, width, height) else {
+        return;
+    };
+    let thickness = thickness
+        .max(1)
+        .min((right - left).max(1))
+        .min((bottom - top).max(1));
+    let brush = unsafe { win32::CreateSolidBrush(color) };
+    if brush == 0 {
+        return;
+    }
+    let rects = [
+        win32::RECT {
+            left,
+            top,
+            right,
+            bottom: (top + thickness).min(bottom),
+        },
+        win32::RECT {
+            left,
+            top: (bottom - thickness).max(top),
+            right,
+            bottom,
+        },
+        win32::RECT {
+            left,
+            top,
+            right: (left + thickness).min(right),
+            bottom,
+        },
+        win32::RECT {
+            left: (right - thickness).max(left),
+            top,
+            right,
+            bottom,
+        },
+    ];
+    for rect in rects {
+        unsafe {
+            let _ = win32::FillRect(hdc, &rect as *const win32::RECT, brush);
+        }
+    }
+    unsafe {
+        let _ = win32::DeleteObject(brush);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn clamp_overlay_rect(
+    rect: Win32OverlaySelectionRect,
+    width: i32,
+    height: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let left = rect.left.min(rect.right).max(0).min(width);
+    let right = rect.left.max(rect.right).max(0).min(width);
+    let top = rect.top.min(rect.bottom).max(0).min(height);
+    let bottom = rect.top.max(rect.bottom).max(0).min(height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((left, top, right, bottom))
 }
 
 #[cfg(target_os = "windows")]
@@ -704,7 +883,9 @@ const WM_ERASEBKGND: u32 = 0x0014;
 #[cfg(target_os = "windows")]
 const WM_PAINT: u32 = 0x000F;
 #[cfg(target_os = "windows")]
-const HTTRANSPARENT: isize = -1;
+const WM_NCDESTROY: u32 = 0x0082;
+#[cfg(target_os = "windows")]
+const HTCLIENT: isize = 1;
 #[cfg(target_os = "windows")]
 const WS_EX_NOACTIVATE: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
@@ -741,6 +922,10 @@ const BI_RGB: u32 = 0;
 const DIB_RGB_COLORS: u32 = 0;
 #[cfg(target_os = "windows")]
 const SRCCOPY: u32 = 0x00CC0020;
+#[cfg(target_os = "windows")]
+const CANDIDATE_BORDER_COLORREF: u32 = 0x00FFB000;
+#[cfg(target_os = "windows")]
+const SELECTION_BORDER_COLORREF: u32 = 0x00FF7716;
 
 #[cfg(target_os = "windows")]
 #[link(name = "gdi32")]
@@ -794,5 +979,40 @@ mod tests {
         let window = Win32OverlayWindow::from_handle(Win32OverlayHandle::null());
         let diagnostic = diagnose_win32_overlay_lifecycle(&window, &config);
         assert!(diagnostic.requires_recovery());
+    }
+
+    #[test]
+    fn native_overlay_hit_test_claims_client_input() {
+        assert_eq!(native_overlay_hit_test_result(), HTCLIENT);
+    }
+
+    #[test]
+    fn clamp_overlay_rect_clips_to_bitmap_bounds() {
+        assert_eq!(
+            clamp_overlay_rect(
+                Win32OverlaySelectionRect {
+                    left: -10,
+                    top: 4,
+                    right: 40,
+                    bottom: 60,
+                },
+                32,
+                48,
+            ),
+            Some((0, 4, 32, 48))
+        );
+        assert_eq!(
+            clamp_overlay_rect(
+                Win32OverlaySelectionRect {
+                    left: 20,
+                    top: 20,
+                    right: 20,
+                    bottom: 40,
+                },
+                32,
+                48,
+            ),
+            None
+        );
     }
 }

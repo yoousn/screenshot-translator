@@ -759,8 +759,19 @@ export default function ScreenshotPage() {
           label: getCurrentWindow().label,
           sessionId,
         }).catch(() => null);
-        const preCapture = pointerState?.preCapture;
+        const nativeOverlay = pointerState?.nativeOverlay;
+        if (nativeOverlay?.cancelled === true && String(nativeOverlay.sessionId) === sessionId) {
+          invoke("log_screenshot_perf", {
+            message: `[baseline] session=${sessionId} phase=shell_native_overlay_cancel_received elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} phase_value=${String(nativeOverlay.phase || "cancelled")} event_seq=${Number(nativeOverlay.eventSeq) || 0}`,
+          }).catch(() => {});
+          cancelScreenshot("native-overlay-cancelled");
+          return;
+        }
+        const preCapture = pointerState?.nativeOverlay?.available === true ? pointerState.nativeOverlay : pointerState?.preCapture;
         if (!preCapture || preCapture.available !== true || String(preCapture.sessionId) !== sessionId) return;
+        const source = String(preCapture.source || "pre-capture");
+        const phase = String(preCapture.phase || "unknown");
+        const eventSeq = Number(preCapture.eventSeq) || 0;
         const dragDistance = Number(preCapture.dragDistance) || 0;
         const leftDown = preCapture.leftDown === true;
         const completed = preCapture.completed === true;
@@ -773,12 +784,12 @@ export default function ScreenshotPage() {
         if (!loggedStart) {
           loggedStart = true;
           invoke("log_screenshot_perf", {
-            message: `[baseline] session=${sessionId} phase=shell_pre_capture_drag_recovered elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} left_down=${leftDown} completed=${completed} valid=${valid} drag=${Math.round(dragDistance)} rect=${Math.round(next.x)},${Math.round(next.y)},${Math.round(next.w)},${Math.round(next.h)}`,
+            message: `[baseline] session=${sessionId} phase=shell_pre_capture_drag_recovered elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} source=${source} phase_value=${phase} event_seq=${eventSeq} left_down=${leftDown} completed=${completed} valid=${valid} drag=${Math.round(dragDistance)} rect=${Math.round(next.x)},${Math.round(next.y)},${Math.round(next.w)},${Math.round(next.h)}`,
           }).catch(() => {});
         }
         if (!leftDown) {
           invoke("log_screenshot_perf", {
-            message: `[baseline] session=${sessionId} phase=shell_pre_capture_drag_finalized elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} valid=${valid} drag=${Math.round(dragDistance)}`,
+            message: `[baseline] session=${sessionId} phase=shell_pre_capture_drag_finalized elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} source=${source} phase_value=${phase} event_seq=${eventSeq} valid=${valid} drag=${Math.round(dragDistance)}`,
           }).catch(() => {});
           return;
         }

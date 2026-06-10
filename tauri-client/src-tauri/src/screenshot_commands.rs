@@ -40,6 +40,14 @@ struct ScreenshotPointerPreCapture {
     max_drag_distance: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ScreenshotPointerPreCaptureActivity {
+    pub left_down: bool,
+    pub completed: bool,
+    pub has_drag: bool,
+    pub drag_distance: f64,
+}
+
 fn now_epoch_millis_local() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1008,13 +1016,15 @@ fn prepare_screenshot_overlay_window(
         ),
     );
     let transparent = screenshot_window_transparency_enabled();
-    let show_shell_before_ready = screenshot_early_visible_shell_enabled();
+    let native_first_frame = native_first_frame_session_enabled();
+    let show_shell_before_ready = screenshot_early_visible_shell_enabled() && !native_first_frame;
     let _ = screenshot_win.emit("screenshot-mode", screenshot_mode.to_string());
     let shell_payload = serde_json::json!({
             "mode": screenshot_mode,
             "sessionId": session_id,
             "transparent": transparent,
             "nativeVisible": false,
+            "nativeFirstFrame": native_first_frame,
             "showOnShellReady": show_shell_before_ready,
             "deferredShowUntilReady": !show_shell_before_ready,
             "screen": {
@@ -1180,6 +1190,31 @@ pub(crate) fn read_screenshot_pointer_pre_capture_selection(
     }
 }
 
+pub(crate) fn read_screenshot_pointer_pre_capture_activity(
+    expected_session_id: Option<&str>,
+) -> Option<ScreenshotPointerPreCaptureActivity> {
+    let Ok(guard) = get_screenshot_pointer_pre_capture_store().lock() else {
+        return None;
+    };
+    let Some(state) = guard.as_ref() else {
+        return None;
+    };
+    if let Some(expected_session_id) = expected_session_id {
+        if state.session_id != expected_session_id {
+            return None;
+        }
+    }
+    if state.started_at.elapsed() > std::time::Duration::from_millis(2500) {
+        return None;
+    }
+    Some(ScreenshotPointerPreCaptureActivity {
+        left_down: state.left_down,
+        completed: state.completed,
+        has_drag: state.max_drag_distance >= 3.0,
+        drag_distance: state.max_drag_distance,
+    })
+}
+
 fn screenshot_pointer_pre_capture_json(session_id: Option<&str>) -> serde_json::Value {
     let Ok(guard) = get_screenshot_pointer_pre_capture_store().lock() else {
         return serde_json::Value::Null;
@@ -1227,6 +1262,82 @@ fn screenshot_pointer_pre_capture_json(session_id: Option<&str>) -> serde_json::
         "startedAgeMs": state.started_at.elapsed().as_millis(),
         "updatedAgeMs": state.updated_at.elapsed().as_millis()
     })
+}
+
+fn native_overlay_selection_json(session_id: Option<&str>) -> serde_json::Value {
+    let Some(snapshot) =
+        crate::screenshot_native::cpu_native_overlay_selection_snapshot(session_id)
+    else {
+        return serde_json::Value::Null;
+    };
+    let base = serde_json::json!({
+        "sessionId": session_id.unwrap_or("unknown"),
+        "inputStarted": snapshot.input_started,
+        "leftDown": snapshot.mouse_captured,
+        "completed": snapshot.completed,
+        "cancelled": snapshot.cancelled,
+        "phase": snapshot.phase.as_str(),
+        "eventSeq": snapshot.event_seq,
+        "handoffReady": snapshot.phase.handoff_ready(),
+        "source": "native-overlay",
+        "hwnd": snapshot.hwnd
+    });
+    let Some(selection) = snapshot.selection else {
+        let mut value = base;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("available".to_string(), serde_json::Value::Bool(false));
+        }
+        return value;
+    };
+    let left = selection.left.min(selection.right);
+    let top = selection.top.min(selection.bottom);
+    let right = selection.left.max(selection.right);
+    let bottom = selection.top.max(selection.bottom);
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    if width <= 0 || height <= 0 {
+        let mut value = base;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("available".to_string(), serde_json::Value::Bool(false));
+        }
+        return value;
+    }
+    let drag_distance = (f64::from(width).powi(2) + f64::from(height).powi(2)).sqrt();
+    let mut value = base;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("available".to_string(), serde_json::Value::Bool(true));
+        object.insert("x".to_string(), serde_json::json!(left));
+        object.insert("y".to_string(), serde_json::json!(top));
+        object.insert("currentX".to_string(), serde_json::json!(right));
+        object.insert("currentY".to_string(), serde_json::json!(bottom));
+        object.insert(
+            "globalX".to_string(),
+            serde_json::json!(snapshot.bounds.origin_x + left),
+        );
+        object.insert(
+            "globalY".to_string(),
+            serde_json::json!(snapshot.bounds.origin_y + top),
+        );
+        object.insert(
+            "currentGlobalX".to_string(),
+            serde_json::json!(snapshot.bounds.origin_x + right),
+        );
+        object.insert(
+            "currentGlobalY".to_string(),
+            serde_json::json!(snapshot.bounds.origin_y + bottom),
+        );
+        object.insert("dragDistance".to_string(), serde_json::json!(drag_distance));
+        object.insert(
+            "rect".to_string(),
+            serde_json::json!({
+                "x": left,
+                "y": top,
+                "w": width,
+                "h": height
+            }),
+        );
+    }
+    value
 }
 
 pub async fn start_screenshot_impl(
@@ -1521,7 +1632,8 @@ pub fn get_screenshot_pointer_state(
         "y": global_y - window_y,
         "globalX": global_x,
         "globalY": global_y,
-        "preCapture": screenshot_pointer_pre_capture_json(session_id.as_deref())
+        "preCapture": screenshot_pointer_pre_capture_json(session_id.as_deref()),
+        "nativeOverlay": native_overlay_selection_json(session_id.as_deref())
     }))
 }
 
