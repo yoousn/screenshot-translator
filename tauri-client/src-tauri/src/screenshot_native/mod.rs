@@ -125,8 +125,8 @@ pub use session::{
 };
 pub use win32_overlay::{
     create_win32_overlay, destroy_win32_overlay, hide_win32_overlay, set_win32_overlay_bitmap,
-    show_win32_overlay, Win32OverlayConfig, Win32OverlayError, Win32OverlayHandle,
-    Win32OverlayLifecycleState, Win32OverlayWindow,
+    set_win32_overlay_selection, show_win32_overlay, Win32OverlayConfig, Win32OverlayError,
+    Win32OverlayHandle, Win32OverlayLifecycleState, Win32OverlaySelectionRect, Win32OverlayWindow,
 };
 pub use win32_overlay_dispatch::{
     input_event_label, run_win32_overlay_message_tuple_diagnostic_pump, Win32OverlayWaitResult,

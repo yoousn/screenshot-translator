@@ -100,8 +100,8 @@ fn native_overlay_mvp_fallback_plan() -> crate::screenshot_native::NativeOverlay
     )
 }
 
-fn native_first_frame_shield_enabled() -> bool {
-    std::env::var("YSN_NATIVE_FIRST_FRAME_SHIELD")
+fn native_first_frame_session_enabled() -> bool {
+    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION")
         .ok()
         .as_deref()
         == Some("1")
@@ -863,17 +863,17 @@ mod screenshot_window_transparency_tests {
     }
 
     #[test]
-    fn native_first_frame_shield_is_opt_in_until_visual_artifacts_are_fixed() {
+    fn native_first_frame_session_is_opt_in_until_visual_artifacts_are_fixed() {
         let _guard = TEST_LOCK.lock().unwrap();
-        std::env::remove_var("YSN_NATIVE_FIRST_FRAME_SHIELD");
-        assert!(!native_first_frame_shield_enabled());
+        std::env::remove_var("YSN_NATIVE_FIRST_FRAME_SESSION");
+        assert!(!native_first_frame_session_enabled());
 
-        std::env::set_var("YSN_NATIVE_FIRST_FRAME_SHIELD", "1");
-        assert!(native_first_frame_shield_enabled());
+        std::env::set_var("YSN_NATIVE_FIRST_FRAME_SESSION", "1");
+        assert!(native_first_frame_session_enabled());
 
-        std::env::set_var("YSN_NATIVE_FIRST_FRAME_SHIELD", "0");
-        assert!(!native_first_frame_shield_enabled());
-        std::env::remove_var("YSN_NATIVE_FIRST_FRAME_SHIELD");
+        std::env::set_var("YSN_NATIVE_FIRST_FRAME_SESSION", "0");
+        assert!(!native_first_frame_session_enabled());
+        std::env::remove_var("YSN_NATIVE_FIRST_FRAME_SESSION");
     }
 
     #[test]
@@ -1150,6 +1150,36 @@ fn start_screenshot_pointer_pre_capture(session_id: &str, origin_x: i32, origin_
     });
 }
 
+pub(crate) fn read_screenshot_pointer_pre_capture_selection(
+    expected_session_id: &str,
+) -> Option<(i32, i32, i32, i32)> {
+    let Ok(guard) = get_screenshot_pointer_pre_capture_store().lock() else {
+        return None;
+    };
+    let Some(state) = guard.as_ref() else {
+        return None;
+    };
+    if state.session_id != expected_session_id {
+        return None;
+    }
+    let (Some((down_x, down_y)), Some((latest_x, latest_y))) =
+        (state.down_global, state.latest_global)
+    else {
+        return None;
+    };
+    let left = down_x.min(latest_x);
+    let top = down_y.min(latest_y);
+    let right = down_x.max(latest_x);
+    let bottom = down_y.max(latest_y);
+    let w = right - left;
+    let h = bottom - top;
+    if w > 5 && h > 5 {
+        Some((left, top, w, h))
+    } else {
+        None
+    }
+}
+
 fn screenshot_pointer_pre_capture_json(session_id: Option<&str>) -> serde_json::Value {
     let Ok(guard) = get_screenshot_pointer_pre_capture_store().lock() else {
         return serde_json::Value::Null;
@@ -1364,7 +1394,7 @@ pub async fn start_screenshot_impl(
         ),
     }
 
-    if native_first_frame_shield_enabled() {
+    if native_first_frame_session_enabled() {
         let bounds = crate::screenshot_native::MonitorCaptureBounds::new(
             screen_info.0,
             screen_info.1,
@@ -1380,12 +1410,12 @@ pub async fn start_screenshot_impl(
             Ok(diagnostics) => log_cpu_native_overlay_diagnostics(
                 &session_id,
                 &started_at,
-                "native_first_frame_shield_visible",
+                "native_first_frame_visible",
                 diagnostics,
             ),
             Err(error) => log_screenshot_baseline(
                 &session_id,
-                "native_first_frame_shield_fallback",
+                "native_first_frame_fallback",
                 &started_at,
                 &format!("reason={error}"),
             ),
@@ -1393,9 +1423,9 @@ pub async fn start_screenshot_impl(
     } else {
         log_screenshot_baseline(
             &session_id,
-            "native_first_frame_shield_disabled",
+            "native_first_frame_session_disabled",
             &started_at,
-            "set YSN_NATIVE_FIRST_FRAME_SHIELD=1 only for native shield diagnostics; default disabled to avoid black/color-shift fullscreen artifacts",
+            "set YSN_NATIVE_FIRST_FRAME_SESSION=1 only for guarded native-session diagnostics; default remains WebView SharedBuffer/transparent-shell path",
         );
     }
 

@@ -836,19 +836,19 @@ pub async fn overlay_ready_to_show(
     }
     let started_at = std::time::Instant::now();
     show_screenshot_overlay_window(&screenshot_win);
-    let shield_raise =
+    let session_raise =
         crate::screenshot_native::raise_cpu_native_overlay_session("webview-overlay-ready-topmost");
-    if shield_raise.active || shield_raise.visible {
+    if session_raise.active || session_raise.visible {
         println!(
-            "[screenshot-trace] native_first_frame_shield_raised session={} state={} active={} visible={} hwnd={}",
+            "[screenshot-trace] native_first_frame_session_raised session={} state={} active={} visible={} hwnd={}",
             session_id.as_deref().unwrap_or("unknown"),
-            shield_raise.state.as_str(),
-            shield_raise.active,
-            shield_raise.visible,
-            shield_raise.hwnd.unwrap_or(0)
+            session_raise.state.as_str(),
+            session_raise.active,
+            session_raise.visible,
+            session_raise.hwnd.unwrap_or(0)
         );
     }
-    schedule_native_first_frame_shield_dismiss(session_id.clone());
+    schedule_native_first_frame_session_dismiss(session_id.clone());
     println!(
         "[screenshot-baseline] session={} phase=overlay_show_result elapsed_ms={} label={}",
         session_id.unwrap_or_else(|| "unknown".to_string()),
@@ -858,16 +858,16 @@ pub async fn overlay_ready_to_show(
     Ok(())
 }
 
-fn native_first_frame_shield_dismiss_delay_ms() -> u64 {
-    std::env::var("YSN_NATIVE_FIRST_FRAME_SHIELD_DISMISS_MS")
+fn native_first_frame_session_dismiss_delay_ms() -> u64 {
+    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION_DISMISS_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(|value| value.clamp(16, 500))
         .unwrap_or(64)
 }
 
-fn schedule_native_first_frame_shield_dismiss(session_id: Option<String>) {
-    let delay_ms = native_first_frame_shield_dismiss_delay_ms();
+fn schedule_native_first_frame_session_dismiss(session_id: Option<String>) {
+    let delay_ms = native_first_frame_session_dismiss_delay_ms();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         let diagnostics = crate::screenshot_native::cancel_cpu_native_overlay_session_if_matches(
@@ -884,7 +884,7 @@ fn schedule_native_first_frame_shield_dismiss(session_id: Option<String>) {
             )
         {
             println!(
-                "[screenshot-trace] native_first_frame_shield_dismissed session={} delay_ms={} state={} active={} visible={}",
+                "[screenshot-trace] native_first_frame_session_dismissed session={} delay_ms={} state={} active={} visible={}",
                 session_id.as_deref().unwrap_or("unknown"),
                 delay_ms,
                 diagnostics.state.as_str(),

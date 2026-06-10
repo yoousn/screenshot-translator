@@ -24,7 +24,7 @@
 ### Current Hot Paths
 - `Alt+A` default screenshot startup now starts native capture first, prepares the screenshot WebView/window in parallel, shows a transparent input shell when the shell has painted, pushes captured RGBA through direct WebView2 SharedBuffer, paints the real screenshot to canvas, then keeps the already-visible overlay on top.
 - The screenshot helper and WebView2 backing are transparent by default. The early shell is allowed to receive mouse input, but its canvas is cleared and it does not draw the dim mask until real screenshot pixels are ready.
-- Rollbacks/diagnostics: `YSN_SCREENSHOT_DEFER_VISIBLE_SHELL=1` or `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=0` restores deferred-show behavior; `YSN_SCREENSHOT_OPAQUE_WINDOW=1` or `YSN_SCREENSHOT_TRANSPARENT_WINDOW=0` forces the opaque helper path; `YSN_NATIVE_FIRST_FRAME_SHIELD=1` enables the diagnostic-only native shield; `YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE=1` opts the screenshot helper back into Windows capture exclusion; request-style SharedBuffer and old IPC/PNG/base64 payloads remain fallbacks.
+- Rollbacks/diagnostics: `YSN_SCREENSHOT_DEFER_VISIBLE_SHELL=1` or `YSN_SCREENSHOT_EARLY_VISIBLE_SHELL=0` restores deferred-show behavior; `YSN_SCREENSHOT_OPAQUE_WINDOW=1` or `YSN_SCREENSHOT_TRANSPARENT_WINDOW=0` forces the opaque helper path; `YSN_NATIVE_FIRST_FRAME_SESSION=1` enables the guarded native first-frame session experiment; `YSN_SCREENSHOT_EXCLUDE_FROM_CAPTURE=1` opts the screenshot helper back into Windows capture exclusion; request-style SharedBuffer and old IPC/PNG/base64 payloads remain fallbacks.
 - Native pre-show mouse drag recovery records the first left-button drag after `Alt+A` and now filters pointer state by session id before the frontend recovers it.
 - Repeated screenshots reuse unchanged fullscreen helper bounds instead of calling `set_position` / `set_size` every run, reducing later-run window-compositor churn.
 - Frontend shell mode no longer displays a gray layer before screenshot pixels arrive. The default `screenshot-shell` event now presents a transparent input shell only, clears the shell canvas, and defers toolbar/mask UI until `screenshotState === "ready"`.
@@ -35,7 +35,7 @@
 - Because the screenshot helper is now shown without activation, screenshot capture temporarily registers global `Escape` as a cancellation fallback and removes it on cancel/force-close/repeat-hotkey cleanup.
 - WGC/DXGI selected-output diagnostics and copy/save candidates remain guarded and should not become default production behavior without a rollout chapter.
 - Manual QA is still needed to prove human-visible feel parity with QQ/WeChat/Snow Shot; automated smoke can prove timing/order/stability and no recorded black/white frames, but not every compositor frame seen by the eye.
-- The next intended hot path is `Alt+A -> native screenshot session -> native first frame/mask/candidate/input -> WebView toolbar handoff`, with a low-level/global mouse hook only as the earliest input fallback. The old diagnostic `YSN_NATIVE_FIRST_FRAME_SHIELD` is not the target architecture and must not be re-enabled as the production solution.
+- The next intended hot path is `Alt+A -> native screenshot session -> native first frame/mask/candidate/input -> WebView toolbar handoff`, with a low-level/global mouse hook only as the earliest input fallback. The old full-screen native shield from Chapters 262-263 is not the target architecture and must not be re-enabled as the production solution.
 
 ### Latest Validation Snapshot
 - Passed recently: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
@@ -3361,10 +3361,45 @@ Alt+A
 ### Rollback And Diagnostics
 
 - Keep an explicit env rollback to the Chapter 268 WebView SharedBuffer/transparent-shell path.
-- Keep the old `YSN_NATIVE_FIRST_FRAME_SHIELD=1` diagnostic separate and off by default.
+- Keep the old full-screen native shield from Chapters 262-263 separate and off by default.
 - Log whether each screenshot used `native_first_frame_session`, `low_level_mouse_fallback`, `webview_handoff`, or a fallback route.
 - On any native-session failure, cancel/cleanup native HWND/hooks and fall back to the existing WebView SharedBuffer path rather than leaving an invisible or input-blocking overlay.
 
 ### Next Chapter Entry Point
 
 - Start Chapter 269 by extracting a focused native screenshot session owner around the existing Win32 overlay/input primitives, then prove a minimal native first frame can show real screenshot pixels, draw a dim mask/candidate, accept drag, cancel cleanly, and hand off to the current WebView toolbar path.
+
+## Chapter 269: Native First Frame Screenshot Session (Phase 1 Guarded Experiment)
+
+### Goals Completed
+- Implemented real-time synchronization between the native pointer capture (`ScreenshotPointerPreCapture`) and the native overlay rendering loop (`win32_overlay.rs`).
+- The `ysn-native-first-frame-session` thread now periodically polls for selection rectangle changes and updates the Win32 overlay selection bounds.
+- Visual mask logic inside `StretchDIBits` handles drawing a pre-computed 50% dimmed background, avoids per-frame full image clones by storing shared `Arc<[u8]>` buffers, and copies the selected region over it using GDI `StretchDIBits`. Dimming preserves the alpha channel.
+- Added `YSN_NATIVE_FIRST_FRAME_SESSION=1` guard to keep this path experimental and avoid regression.
+- Maintained `HTTRANSPARENT` for `WM_NCHITTEST`; this keeps the experiment mouse-transparent and relies on pointer pre-capture polling until the native input state machine is implemented.
+- Restored invalid bitmap dimension errors, kept bitmap length overflow checks, exposed a local `Win32OverlaySelectionRect`, and restored a `native_first_frame_session_disabled` log for default-path observability.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_native/native_overlay_session.rs`
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
+- `tauri-client/src-tauri/src/screenshot_native/mod.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Validation
+- Passed: `git diff --check` with existing LF-to-CRLF working-copy warnings only.
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client/src-tauri/Cargo.toml --lib native_first_frame_session_is_opt_in_until_visual_artifacts_are_fixed -- --nocapture` with `1 passed`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+
+### Known Risks
+- This is still a guarded visual/pre-capture experiment, not the completed Chapter 269 architecture.
+- Native mouse input is not implemented yet because the overlay still returns `HTTRANSPARENT`.
+- Native window/candidate rectangles are not rendered yet.
+- No release visual smoke has been run yet with `YSN_NATIVE_FIRST_FRAME_SESSION=1`.
+
+### Next Steps
+- Implement full `WM_LBUTTONDOWN`, `WM_MOUSEMOVE`, and `WM_LBUTTONUP` handling in `win32_overlay_wnd_proc` so the native overlay can own input instead of only polling pre-capture state.
+- Expand native rendering to also include candidate window rectangles.

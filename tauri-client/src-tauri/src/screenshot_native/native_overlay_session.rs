@@ -196,10 +196,12 @@ pub fn begin_cpu_native_overlay_session(
     let thread_config = config.clone();
     let thread_bounds = bounds;
     let thread_frame = frame.clone();
+    let thread_session_id = session_id.clone();
     std::thread::Builder::new()
-        .name("ysn-first-frame-shield".to_string())
+        .name("ysn-native-first-frame-session".to_string())
         .spawn(move || {
             run_cpu_native_overlay_thread(
+                thread_session_id,
                 thread_config,
                 thread_bounds,
                 thread_frame,
@@ -233,6 +235,7 @@ pub fn begin_cpu_native_overlay_session(
 }
 
 fn run_cpu_native_overlay_thread(
+    session_id: String,
     config: Win32OverlayConfig,
     bounds: MonitorCaptureBounds,
     frame: RgbaFrame,
@@ -265,8 +268,28 @@ fn run_cpu_native_overlay_thread(
     }
 
     let started_at = std::time::Instant::now();
+    let mut last_selection: Option<(i32, i32, i32, i32)> = None;
     loop {
         pump_overlay_thread_messages(hwnd);
+
+        let current_selection =
+            crate::screenshot_commands::read_screenshot_pointer_pre_capture_selection(&session_id);
+        if current_selection != last_selection {
+            last_selection = current_selection;
+            let new_selection_rect = current_selection.map(|(x, y, w, h)| {
+                crate::screenshot_native::Win32OverlaySelectionRect {
+                    left: x - bounds.origin_x,
+                    top: y - bounds.origin_y,
+                    right: x - bounds.origin_x + w,
+                    bottom: y - bounds.origin_y + h,
+                }
+            });
+            crate::screenshot_native::set_win32_overlay_selection(
+                window.handle(),
+                new_selection_rect,
+            );
+        }
+
         match command_receiver.recv_timeout(Duration::from_millis(4)) {
             Ok(NativeOverlayThreadCommand::Raise { reason, reply }) => {
                 let result = show_win32_overlay(&mut window, &config)

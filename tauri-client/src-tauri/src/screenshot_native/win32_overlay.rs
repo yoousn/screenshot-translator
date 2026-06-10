@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 #[cfg(target_os = "windows")]
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Win32OverlayHandle {
@@ -292,11 +292,21 @@ fn create_platform_overlay(
 }
 
 #[cfg(target_os = "windows")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Win32OverlayBitmap {
-    bgra_bytes: Vec<u8>,
+    bgra_bytes: Arc<[u8]>,
+    dimmed_bgra_bytes: Arc<[u8]>,
     width: u32,
     height: u32,
+    selection: Option<Win32OverlaySelectionRect>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Win32OverlaySelectionRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
 }
 
 #[cfg(target_os = "windows")]
@@ -318,29 +328,71 @@ pub fn set_win32_overlay_bitmap(
     if width == 0 || height == 0 {
         return Err(Win32OverlayError::InvalidConfig("bitmap dimensions"));
     }
-    let expected_len = usize::try_from(width)
-        .ok()
-        .and_then(|w| w.checked_mul(usize::try_from(height).ok()?))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or(Win32OverlayError::InvalidConfig("bitmap size"))?;
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|a| a.checked_mul(4));
+    let Some(expected_len) = expected_len else {
+        return Err(Win32OverlayError::InvalidConfig(
+            "bitmap dimensions overflow",
+        ));
+    };
     if bytes.len() != expected_len {
         return Err(Win32OverlayError::InvalidConfig("bitmap bytes"));
     }
-    let bgra_bytes = rgba_to_bgra_dib_bytes(bytes);
+    let bgra_bytes: Arc<[u8]> = Arc::from(rgba_to_bgra_dib_bytes(bytes));
     if let Ok(mut guard) = overlay_bitmap_store().lock() {
         guard.insert(
             handle.hwnd(),
             Win32OverlayBitmap {
+                dimmed_bgra_bytes: Arc::from(
+                    bgra_bytes
+                        .chunks_exact(4)
+                        .flat_map(|chunk| {
+                            [
+                                chunk[0].saturating_sub(chunk[0] / 2),
+                                chunk[1].saturating_sub(chunk[1] / 2),
+                                chunk[2].saturating_sub(chunk[2] / 2),
+                                chunk[3],
+                            ]
+                        })
+                        .collect::<Vec<u8>>(),
+                ),
                 bgra_bytes,
                 width,
                 height,
+                selection: None,
             },
         );
     }
     unsafe {
-        let _ = win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0);
+        win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0);
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_win32_overlay_selection(
+    handle: Win32OverlayHandle,
+    selection: Option<Win32OverlaySelectionRect>,
+) {
+    if !handle.is_valid() {
+        return;
+    }
+    if let Ok(mut guard) = overlay_bitmap_store().lock() {
+        if let Some(bitmap) = guard.get_mut(&handle.hwnd()) {
+            bitmap.selection = selection;
+        }
+    }
+    unsafe {
+        win32::InvalidateRect(handle.hwnd(), std::ptr::null(), 0);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_win32_overlay_selection(
+    _handle: Win32OverlayHandle,
+    _selection: Option<Win32OverlaySelectionRect>,
+) {
 }
 
 #[cfg(target_os = "windows")]
@@ -506,12 +558,12 @@ unsafe extern "system" fn win32_overlay_wnd_proc(
     l_param: isize,
 ) -> isize {
     match message {
-        WM_NCHITTEST => return HTTRANSPARENT,
         WM_ERASEBKGND => return 1,
         WM_PAINT => {
             paint_overlay_bitmap(hwnd);
             return 0;
         }
+        WM_NCHITTEST => return HTTRANSPARENT,
         _ => {}
     }
     win32::DefWindowProcW(hwnd, message, w_param, l_param)
@@ -557,24 +609,56 @@ fn paint_overlay_bitmap(hwnd: isize) {
             },
             colors: [0; 3],
         };
-        let dst_width = (paint.rc_paint.right - paint.rc_paint.left).max(bitmap.width as i32);
-        let dst_height = (paint.rc_paint.bottom - paint.rc_paint.top).max(bitmap.height as i32);
+        // 1. Paint the full dimmed image
         unsafe {
             let _ = StretchDIBits(
                 hdc,
                 0,
                 0,
-                dst_width,
-                dst_height,
+                bitmap.width as i32,
+                bitmap.height as i32,
                 0,
                 0,
                 bitmap.width as i32,
                 bitmap.height as i32,
-                bitmap.bgra_bytes.as_ptr().cast(),
-                &info,
+                bitmap.dimmed_bgra_bytes.as_ptr() as *const std::ffi::c_void,
+                &info as *const BitmapInfo as *const _,
                 DIB_RGB_COLORS,
                 SRCCOPY,
             );
+        }
+
+        // 2. Paint the selected region from the original image over the dimmed background
+        if let Some(sel) = bitmap.selection {
+            let width = bitmap.width as i32;
+            let height = bitmap.height as i32;
+            let left = sel.left.min(sel.right).max(0).min(width);
+            let right = sel.left.max(sel.right).max(0).min(width);
+            let top = sel.top.min(sel.bottom).max(0).min(height);
+            let bottom = sel.top.max(sel.bottom).max(0).min(height);
+            let sel_w = right - left;
+            let sel_h = bottom - top;
+
+            if sel_w > 0 && sel_h > 0 {
+                // For top-down DIBs (biHeight < 0), StretchDIBits source coords use top-left origin.
+                unsafe {
+                    let _ = StretchDIBits(
+                        hdc,
+                        left,
+                        top,
+                        sel_w,
+                        sel_h,
+                        left,
+                        top,
+                        sel_w,
+                        sel_h,
+                        bitmap.bgra_bytes.as_ptr() as *const std::ffi::c_void,
+                        &info as *const BitmapInfo as *const _,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    );
+                }
+            }
         }
     }
     let _ = unsafe { win32::EndPaint(hwnd, &paint as *const win32::PAINTSTRUCT) };
