@@ -233,8 +233,8 @@ export function useRecordingControl() {
     cancelledRef.current = true;
     allowCloseRef.current = true;
     
-    await winRef.current.setAlwaysOnTop(false).catch(() => {});
-    await winRef.current.hide().catch(() => {});
+    await withTimeout(winRef.current.setAlwaysOnTop(false).catch(() => {}), 150);
+    await withTimeout(winRef.current.hide().catch(() => {}), 150);
     await invoke("hide_main_window").catch(() => {});
     
     setOverlayBusy(true);

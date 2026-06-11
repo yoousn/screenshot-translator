@@ -46,6 +46,8 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         newApiDomain: DEFAULT_LLM_TRANSLATION_DOMAIN,
         deeplEndpoint: "https://api-free.deepl.com",
         deeplFormality: "default",
+        edgeSnapEnabled: true,
+        edgeSnapDistance: 8,
       }}
       onFinish={controller.onFinish}
       onValuesChange={controller.handleFormChange}

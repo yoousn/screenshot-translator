@@ -213,6 +213,34 @@ export function useScreenshotInteraction({
   const lastMouseRef = sharedLastMouseRef || internalLastMouseRef;
   const firstPointerDownSessionRef = useRef<string | null>(null);
 
+  const drawRafRef = useRef<number | null>(null);
+  const drawRectRef = useRef<Rect | null>(null);
+
+  const scheduleDraw = (x: number, y: number, w: number, h: number) => {
+    drawRectRef.current = { x, y, w, h };
+    if (drawRafRef.current === null) {
+      drawRafRef.current = requestAnimationFrame(() => {
+        drawRafRef.current = null;
+        if (drawRectRef.current) {
+          draw(drawRectRef.current.x, drawRectRef.current.y, drawRectRef.current.w, drawRectRef.current.h);
+        }
+      });
+    }
+  };
+
+  const cancelScheduledDraw = () => {
+    if (drawRafRef.current !== null) {
+      cancelAnimationFrame(drawRafRef.current);
+      drawRafRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      cancelScheduledDraw();
+    };
+  }, []);
+
   function EMPTY_RECT(): Rect {
     return { x: 0, y: 0, w: 0, h: 0 };
   }
@@ -364,6 +392,8 @@ export function useScreenshotInteraction({
       if (hasSelectedRef.current) {
         updateCurrentRect(EMPTY_RECT(), true);
         setSelection(false);
+        cancelScheduledDraw();
+        draw(0, 0, 0, 0);
       } else {
         cancelScreenshot();
       }
@@ -545,7 +575,7 @@ export function useScreenshotInteraction({
         setSelection(false);
         const next = { x: Math.min(startPosRef.current.x, cx), y: Math.min(startPosRef.current.y, cy), w: Math.abs(startPosRef.current.x - cx), h: Math.abs(startPosRef.current.y - cy) };
         updateCurrentRect(next, false);
-        draw(next.x, next.y, next.w, next.h);
+        scheduleDraw(next.x, next.y, next.w, next.h);
       }
       return;
     }
@@ -564,7 +594,7 @@ export function useScreenshotInteraction({
         h: rectRef.current.h,
       };
       updateCurrentRect(next, false);
-      draw(next.x, next.y, next.w, next.h);
+      scheduleDraw(next.x, next.y, next.w, next.h);
       return;
     }
 
@@ -581,9 +611,13 @@ export function useScreenshotInteraction({
       if (handle.includes("w")) x1 = r.x + dx;
       if (handle.includes("s")) y2 = r.y + r.h + dy;
       if (handle.includes("n")) y1 = r.y + dy;
-      const next = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+      const newX = Math.min(x1, x2);
+      const newY = Math.min(y1, y2);
+      const newW = Math.abs(x2 - x1);
+      const newH = Math.abs(y2 - y1);
+      const next = { x: Math.round(newX), y: Math.round(newY), w: Math.round(newW), h: Math.round(newH) };
       updateCurrentRect(next, false);
-      draw(next.x, next.y, next.w, next.h);
+      scheduleDraw(next.x, next.y, next.w, next.h);
       return;
     }
 
@@ -595,7 +629,10 @@ export function useScreenshotInteraction({
         snapY.push(wr.y, wr.y + wr.h);
       }
       const snap = (val: number, refs: number[]) => {
-        const dist = 15;
+        const enabled = configRef.current?.edgeSnapEnabled ?? true;
+        if (!enabled) return val;
+        const dist = configRef.current?.edgeSnapDistance ?? 8;
+        if (dist <= 0) return val;
         for (const r of refs) if (Math.abs(val - r) < dist) return r;
         return val;
       };
@@ -604,7 +641,7 @@ export function useScreenshotInteraction({
       selectionDragDistanceRef.current = Math.max(selectionDragDistanceRef.current, Math.hypot(snapCx - startPosRef.current.x, snapCy - startPosRef.current.y));
       const next = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
       updateCurrentRect(next, false);
-      draw(next.x, next.y, next.w, next.h);
+      scheduleDraw(next.x, next.y, next.w, next.h);
       return;
     }
 
@@ -658,6 +695,8 @@ export function useScreenshotInteraction({
     isDraggingRef.current = false;
     isResizingRef.current = null;
     updateCurrentRect({ ...rectRef.current }, true);
+    cancelScheduledDraw();
+    draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
     if (pendingDetection && !wasSelecting && !isDraggingRef.current && !isResizingRef.current) {
       selectDetectedRect(pendingDetection);
       return;
@@ -692,6 +731,7 @@ export function useScreenshotInteraction({
     isDraggingAnnotationRef.current = false;
     isResizingAnnotationRef.current = false;
     annotationResizeHandleRef.current = null;
+    cancelScheduledDraw();
   };
 
   const handleDoubleClick = () => {

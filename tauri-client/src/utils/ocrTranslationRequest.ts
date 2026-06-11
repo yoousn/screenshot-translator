@@ -279,11 +279,13 @@ export const validateAndNormalizeTranslationResults = (
   blocks: OcrBlock[],
   translations: string[],
   targetLang: string,
+  providerError?: string,
 ) => {
   const normalizedTranslations = normalizeTranslationResults(blocks, translations);
   const quality = evaluateTranslationQuality(blocks, translations, normalizedTranslations, targetLang);
-  if (quality.translatableCount > 0 && quality.translatedCount === 0) {
-    throw new Error(`翻译服务没有返回可用译文：${quality.translatableCount} 行可翻译文本仍是原文或为空。请检查翻译服务地址、令牌和当前翻译通道后重试。`);
+  if (quality.translatableCount > 0 && quality.missingCount === quality.translatableCount) {
+    const errorSuffix = providerError ? `（服务端原因：${providerError}）` : "";
+    throw new Error(`翻译服务没有返回可用译文：${quality.translatableCount} 行可翻译文本仍是原文或为空。请检查翻译服务地址、令牌和当前翻译通道后重试。${errorSuffix}`);
   }
   return { translations: normalizedTranslations, quality };
 };

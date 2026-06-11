@@ -104,6 +104,7 @@ type TranslationServiceResponse = {
   serverUrl?: string;
   cache_hits?: number;
   timings?: TranslationServiceTimings;
+  provider_error?: string;
 };
 
 const DEFAULT_TRANSLATION_TIMEOUT_MS = 9000;
@@ -369,7 +370,7 @@ export const translateOcrBlocks = async (
     throw new Error(normalizeLocalTranslateError(error));
   }
   const retryMs = Math.round(performance.now() - retryStarted);
-  const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(ocrBlocks, translations, targetLang);
+  const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(ocrBlocks, translations, targetLang, transData.provider_error);
   translationMemoryStats.stored = storeTranslationMemory(ocrBlocks, normalizedTranslations, preferredSourceLang, targetLang, transData.channel || memoryChannel);
 
   const renderStarted = performance.now();

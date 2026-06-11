@@ -537,6 +537,7 @@ pub fn concat_recording_segments(
     ];
     if let Err(transcode_error) = run_ffmpeg_merge(&ffmpeg, &transcode_args) {
         let _ = fs::remove_file(&list_path);
+        let _ = fs::remove_file(&save_path);
         return Err(format!(
             "ffmpeg failed to merge recording segments.\ncopy attempt:\n{}\ntranscode fallback:\n{}",
             copy_error, transcode_error

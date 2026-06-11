@@ -1,4 +1,4 @@
-import { Card, Col, Form, InputNumber, Row, Switch, Typography } from "antd";
+import { Card, Col, Form, InputNumber, Row, Switch, Typography, Slider } from "antd";
 import { useI18n } from "../../i18n";
 
 const { Text } = Typography;
@@ -53,6 +53,33 @@ export default function ScreenshotRecognitionCard() {
           <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
             {labels.visualDetectionSensitivityDesc}
           </Text>
+        </Col>
+      </Row>
+      <Row gutter={[24, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} sm={12}>
+          <Form.Item label="窗口边缘吸附" name="edgeSnapEnabled" valuePropName="checked" style={{ marginBottom: 6 }}>
+            <Switch />
+          </Form.Item>
+          <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
+            启用后，拖动框选时会自动贴近附近窗口边缘。
+          </Text>
+        </Col>
+        <Col xs={24} sm={12}>
+          <Form.Item noStyle shouldUpdate={(prev, curr) => prev.edgeSnapEnabled !== curr.edgeSnapEnabled}>
+            {({ getFieldValue }) => {
+              const enabled = getFieldValue("edgeSnapEnabled");
+              return (
+                <div>
+                  <Form.Item label="边缘吸附阈值" name="edgeSnapDistance" style={{ marginBottom: 6 }}>
+                    <Slider min={0} max={20} step={1} disabled={!enabled} marks={{ 0: "0", 8: "8px", 20: "20" }} style={{ width: "100%", margin: "8px 0" }} />
+                  </Form.Item>
+                  <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
+                    推荐 6–10px，数值越大越容易吸附；设为 0 等于关闭。
+                  </Text>
+                </div>
+              );
+            }}
+          </Form.Item>
         </Col>
       </Row>
     </Card>

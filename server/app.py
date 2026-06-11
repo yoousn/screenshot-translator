@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
 import hashlib
+import secrets
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata
 from security import normalize_relay_base_url, normalize_public_base_url, request_relay_url
@@ -32,10 +33,9 @@ app.add_middleware(
 
 # 🔑 启动时打印当前 client_token，供运维人员在客户端配置
 _startup_cfg = load_server_config()
-_token_val = "<redacted>"
-logger.warning("[Security] client_token is configured: <redacted>")
+logger.warning("[Security] client_token is configured: %s", _startup_cfg.get("client_token"))
 logger.warning("[Security] 请将此 token 填入客户端「系统设置 → 令牌」中，或通过环境变量 SS_TRANSLATOR_TOKEN 覆盖。")
-del _startup_cfg, _token_val
+del _startup_cfg
 
 
 _config_cache = None
@@ -52,7 +52,8 @@ def get_config():
 
 def verify_token(x_api_key: str):
     cfg = get_config()
-    if not x_api_key or x_api_key != cfg["client_token"]:
+    client_token = cfg.get("client_token", "")
+    if not x_api_key or not client_token or not secrets.compare_digest(x_api_key, client_token):
         logger.error("[verify_token] Unauthorized client token request.")
         raise HTTPException(status_code=401, detail="Unauthorized client token.")
 
@@ -225,7 +226,7 @@ async def translate_text_endpoint(
         stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
     except Exception as e:
         logger.warning("translate_text batch failed; returning aligned blank translations without slow per-item retry: %s", e)
-        stats_ref["provider_failures"] += len(texts)
+        stats_ref["provider_failures"] += 1
         stats_ref["provider_misses"] = max(0, len(texts) - stats_ref["cache_hits"])
         total_ms = int((time.perf_counter() - request_started_at) * 1000)
         cache_hits = stats_ref["cache_hits"]
@@ -234,6 +235,7 @@ async def translate_text_endpoint(
             "translations": [""] * len(texts),
             "cache_hits": cache_hits,
             "channel": get_config().get("active_channel", "google"),
+            "provider_error": str(e),
             "timings": {
                 "total_ms": total_ms,
                 "provider_ms": stats_ref["provider_ms"],

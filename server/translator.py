@@ -753,9 +753,11 @@ class DeepLTranslator(BaseTranslator):
         source_code = self._source_lang_code(source_lang)
         if source_code:
             pairs.append(("source_lang", source_code))
-        pairs.append(("target_lang", self._target_lang_code(target_lang)))
+        target_code = self._target_lang_code(target_lang)
+        pairs.append(("target_lang", target_code))
         if self.formality in {"default", "more", "less", "prefer_more", "prefer_less"}:
-            pairs.append(("formality", self.formality))
+            if target_code in {"DE", "FR", "IT", "ES", "NL", "PL", "PT-BR", "PT-PT", "JA", "RU"}:
+                pairs.append(("formality", self.formality))
         return pairs
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:

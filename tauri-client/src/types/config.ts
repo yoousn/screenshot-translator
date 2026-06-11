@@ -20,4 +20,6 @@ export interface Config {
   imageSaveDefaultDir?: string;
   imageSaveRememberLastDir?: boolean;
   imageSaveLastDir?: string;
+  edgeSnapEnabled?: boolean;
+  edgeSnapDistance?: number;
 }

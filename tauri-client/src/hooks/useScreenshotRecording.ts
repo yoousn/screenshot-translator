@@ -285,7 +285,8 @@ export function useScreenshotRecording({
   const startRecording = async () => {
     if (isRecordingBusyRef.current) return;
     try {
-      const active = await invoke<boolean>('is_recording_active').catch(() => false);
+      const info = await invoke('get_recording_info').catch(() => null) as { isRecording?: boolean } | null;
+      const active = !!info?.isRecording;
       if (active) {
         message.error('当前已有录像正在进行，请先停止');
         return;
