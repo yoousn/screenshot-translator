@@ -55,8 +55,14 @@ server/*.png
 /ffmpeg/
 /tauri-client/src-tauri/resources/ocr/*
 !/tauri-client/src-tauri/resources/ocr/.gitkeep
+/tauri-client/src-tauri/resources/rapidocr/*
+!/tauri-client/src-tauri/resources/rapidocr/.gitkeep
+/models/rapidocr/*
+!/models/rapidocr/.gitkeep
 # Release artifacts
+/build/
 /release/
+/scripts/release/
 /ScreenshotTranslator_Windows*.zip
 /YSN-Screenshot-Translator-*.zip
 /YSN截图翻译-*.zip

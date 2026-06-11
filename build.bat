@@ -5,22 +5,29 @@ set "ROOT=%~dp0"
 set "CLIENT_DIR=%ROOT%tauri-client"
 set "TAURI_DIR=%CLIENT_DIR%\src-tauri"
 set "PORTABLE_DIR=%ROOT%release\YSN-Screenshot-Translator"
+set "ARTIFACT_ROOT=%ROOT%build"
 set "APP_EXE_NAME=YsnTrans"
 set "TARGET_EXE=%TAURI_DIR%\target\release\%APP_EXE_NAME%.exe"
 set "LEGACY_ROOT_EXE=%ROOT%tauri-client.exe"
 set "LEGACY_PORTABLE_EXE=%PORTABLE_DIR%\tauri-client.exe"
 set "NO_PAUSE="
 set "AUTO_LAUNCH=1"
+set "INSTALLERS=1"
+set "APP_VERSION=dev"
+set "INSTALLER_OUTPUT_DIR="
 
 call :parse_args %*
+call :resolve_version || goto :fail
+set "INSTALLER_OUTPUT_DIR=%ARTIFACT_ROOT%\x64_v%APP_VERSION%"
 
-echo(=== YSN Screenshot Translator - portable build ===
+echo(=== YSN Screenshot Translator - build ===
 echo(
 
 call :kill_running || goto :fail
 call :check_inputs || goto :fail
 call :prepare_output || goto :fail
 call :build_tauri || goto :fail
+call :copy_installers || goto :fail
 call :copy_portable || goto :fail
 call :build_launcher || goto :fail
 call :launch_portable || goto :fail
@@ -30,6 +37,7 @@ echo(=== Build succeeded ===
 echo(Portable directory: %PORTABLE_DIR%
 echo(Executable: %PORTABLE_DIR%\%APP_EXE_NAME%.exe
 echo(Root launcher: %ROOT%%APP_EXE_NAME%.exe
+if defined INSTALLERS echo(Installers: %INSTALLER_OUTPUT_DIR%
 echo(Copy the whole portable directory to another computer, not only the exe.
 echo(
 goto :done
@@ -40,8 +48,20 @@ if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
 if /I "%~1"=="/no-pause" set "NO_PAUSE=1"
 if /I "%~1"=="--no-launch" set "AUTO_LAUNCH="
 if /I "%~1"=="/no-launch" set "AUTO_LAUNCH="
+if /I "%~1"=="--no-installers" set "INSTALLERS="
+if /I "%~1"=="/no-installers" set "INSTALLERS="
+if /I "%~1"=="--portable-only" set "INSTALLERS="
+if /I "%~1"=="/portable-only" set "INSTALLERS="
 shift
 goto :parse_args
+
+:resolve_version
+for /f "usebackq delims=" %%V in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { ((Get-Content -LiteralPath '%TAURI_DIR%\tauri.conf.json' -Raw) | ConvertFrom-Json).version } catch { '' }"`) do set "APP_VERSION=%%V"
+if "%APP_VERSION%"=="" set "APP_VERSION=dev"
+set "APP_VERSION=%APP_VERSION: =_%"
+echo([prepare] Build artifact version: %APP_VERSION%
+echo(
+exit /b 0
 
 :fail
 set "EXIT_CODE=%errorlevel%"
@@ -137,9 +157,13 @@ echo(
 exit /b 0
 
 :build_tauri
-echo([1/2] Building Vite frontend and Rust backend ...
+echo([1/4] Building Vite frontend and Rust backend ...
 pushd "%CLIENT_DIR%" >nul
-call npx tauri build --no-bundle
+if defined INSTALLERS (
+  call npx tauri build
+) else (
+  call npx tauri build --no-bundle
+)
 set "BUILD_CODE=%errorlevel%"
 popd >nul
 if not "%BUILD_CODE%"=="0" (
@@ -150,12 +174,54 @@ if not exist "%TARGET_EXE%" (
   echo([error] Build finished but exe was not found: %TARGET_EXE%
   exit /b 1
 )
-echo([1/2] Build completed
+echo([1/4] Build completed
+echo(
+exit /b 0
+
+:copy_installers
+if not defined INSTALLERS (
+  echo([2/4] Installer bundling disabled
+  echo(
+  exit /b 0
+)
+echo([2/4] Copying installers to root build output ...
+set "BUNDLE_DIR=%TAURI_DIR%\target\release\bundle"
+if not exist "%BUNDLE_DIR%" (
+  echo([error] Installer bundle directory was not found: %BUNDLE_DIR%
+  exit /b 1
+)
+if exist "%INSTALLER_OUTPUT_DIR%" (
+  rmdir /S /Q "%INSTALLER_OUTPUT_DIR%" >nul 2>nul
+  if exist "%INSTALLER_OUTPUT_DIR%" (
+    echo([error] Could not clean installer output directory: %INSTALLER_OUTPUT_DIR%
+    exit /b 1
+  )
+)
+mkdir "%INSTALLER_OUTPUT_DIR%" >nul 2>nul
+if not exist "%INSTALLER_OUTPUT_DIR%" (
+  echo([error] Failed to create installer output directory: %INSTALLER_OUTPUT_DIR%
+  exit /b 1
+)
+set "FOUND_INSTALLER="
+for /R "%BUNDLE_DIR%" %%F in (*.msi *-setup.exe) do (
+  set "FOUND_INSTALLER=1"
+  copy /Y "%%~fF" "%INSTALLER_OUTPUT_DIR%\%%~nxF" >nul
+  if errorlevel 1 (
+    echo([error] Failed to copy installer: %%~fF
+    exit /b 1
+  )
+  echo([2/4] Copied %%~nxF
+)
+if not defined FOUND_INSTALLER (
+  echo([error] No .msi or *-setup.exe installers were found under: %BUNDLE_DIR%
+  exit /b 1
+)
+echo([2/4] Installers are ready: %INSTALLER_OUTPUT_DIR%
 echo(
 exit /b 0
 
 :copy_portable
-echo([2/2] Copying portable runtime files ...
+echo([3/4] Copying portable runtime files ...
 copy /Y "%TARGET_EXE%" "%PORTABLE_DIR%\%APP_EXE_NAME%.exe" >nul
 if errorlevel 1 (
   echo([error] Failed to copy exe
@@ -171,12 +237,12 @@ if errorlevel 8 (
   echo([error] Failed to copy RapidOCR models
   exit /b 1
 )
-echo([2/2] Portable directory is ready
+echo([3/4] Portable directory is ready
 echo(
 exit /b 0
 
 :build_launcher
-echo([3/3] Building root launcher ...
+echo([4/4] Building root launcher ...
 set "LAUNCHER_SRC=%ROOT%scripts\launcher.rs"
 set "LAUNCHER_RC=%ROOT%scripts\launcher.rc"
 set "LAUNCHER_OBJ=%ROOT%scripts\launcher.o"
@@ -184,7 +250,7 @@ set "LAUNCHER_OUT=%ROOT%%APP_EXE_NAME%.exe"
 
 where windres >nul 2>nul
 if %errorlevel% equ 0 (
-  echo([3/3] Compiling launcher resources ...
+  echo([4/4] Compiling launcher resources ...
   windres -i "%LAUNCHER_RC%" -o "%LAUNCHER_OBJ%" >nul 2>nul
 )
 
@@ -196,7 +262,7 @@ if exist "%LAUNCHER_OBJ%" (
 )
 
 if exist "%LAUNCHER_OUT%" (
-  echo([3/3] Root launcher compiled successfully
+  echo([4/4] Root launcher compiled successfully
   echo(
   exit /b 0
 ) else (

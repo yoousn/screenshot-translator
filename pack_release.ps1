@@ -8,6 +8,19 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $portableDir = Join-Path $projectRoot "release\YSN-Screenshot-Translator"
+$tauriConfig = Join-Path $projectRoot "tauri-client\src-tauri\tauri.conf.json"
+
+$resolvedVersion = $Version.Trim()
+if (-not $resolvedVersion) {
+    if (Test-Path -LiteralPath $tauriConfig) {
+        $resolvedVersion = ((Get-Content -LiteralPath $tauriConfig -Raw) | ConvertFrom-Json).version
+    }
+}
+if (-not $resolvedVersion) {
+    $resolvedVersion = "dev"
+}
+$safeVersion = $resolvedVersion -replace '[^\w\.-]', '_'
+$artifactDir = Join-Path $projectRoot "build\x64_v$safeVersion"
 
 if ($Build) {
     $buildScript = Join-Path $projectRoot "build.bat"
@@ -18,7 +31,6 @@ if ($Build) {
 }
 
 if ($Version.Trim()) {
-    $safeVersion = $Version.Trim() -replace '[^\w\.-]', '_'
     $OutputName = "ScreenshotTranslator_Windows_$safeVersion.zip"
 }
 
@@ -34,7 +46,9 @@ foreach ($path in $required) {
     }
 }
 
-$zipPath = Join-Path (Join-Path $projectRoot "release") $OutputName
+New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+$zipPath = Join-Path $artifactDir $OutputName
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
