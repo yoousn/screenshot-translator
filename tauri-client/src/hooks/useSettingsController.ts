@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
 import type { FormInstance } from "antd";
@@ -14,7 +14,23 @@ type ServerChannelPayload = {
   config: Record<string, string>;
 };
 
+type SaveSettingsOptions = {
+  showMessage?: boolean;
+  successMessage?: string;
+  syncServer?: boolean;
+};
+
 const trimTrailingSlash = (value: string) => value.replace(/\/$/, "");
+const PRIVATE_TRANSLATION_ERROR_PATTERN =
+  /https?:\/\/|x-api-key|client[_\s-]*token|ocr\.yousn\.me|serverUrl|lanServerUrl|\b(?:\d{1,3}\.){3}\d{1,3}\b/i;
+
+const publicTranslationServiceError = (error: unknown) => {
+  const messageText = error instanceof Error ? error.message : String(error);
+  if (PRIVATE_TRANSLATION_ERROR_PATTERN.test(messageText)) {
+    return "翻译服务暂不可用，请稍后重试。";
+  }
+  return messageText;
+};
 
 const buildServerUrlCandidates = (values: any) => {
   const remoteUrl = values.serverUrl || "";
@@ -49,7 +65,8 @@ const requestJsonFromCandidates = async <T>(
       errors.push(`${serverUrl}: ${error?.message || error}`);
     }
   }
-  throw new Error(errors.join("; "));
+  console.warn("Translation service request failed", { path, errors });
+  throw new Error("翻译服务暂不可用，请稍后重试。");
 };
 
 export default function useSettingsController(form: FormInstance, onConfigSaved: () => void) {
@@ -63,20 +80,34 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   const [currentChannel, setCurrentChannel] = useState<string>("google");
   const [channelTestStatuses, setChannelTestStatuses] = useState<TranslationChannelTestStatuses>({});
   const [serverChannelStatus, setServerChannelStatus] = useState<ServerChannelStatus>({});
+  const autoSaveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const isLoadingSettingsRef = useRef(false);
 
   useEffect(() => {
     loadSettings();
+    return () => {
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+    };
   }, []);
 
   const loadSettings = async () => {
+    isLoadingSettingsRef.current = true;
     try {
       const configStr = await invoke<string>("get_config");
       const parsedConfig = JSON.parse(configStr || "{}");
+      const normalizedConfig = {
+        ...parsedConfig,
+        imageSaveNameFormat: !parsedConfig.imageSaveNameFormat || parsedConfig.imageSaveNameFormat === "yyyyMMdd_HHmm"
+          ? "yyyyMMdd_HHmmss"
+          : parsedConfig.imageSaveNameFormat,
+      };
 
       form.setFieldsValue({
-        ...parsedConfig,
-        newApiPrompt: parsedConfig.newApiPrompt || DEFAULT_LLM_TRANSLATION_PROMPT,
-        newApiDomain: parsedConfig.newApiDomain || DEFAULT_LLM_TRANSLATION_DOMAIN,
+        ...normalizedConfig,
+        newApiPrompt: normalizedConfig.newApiPrompt || DEFAULT_LLM_TRANSLATION_PROMPT,
+        newApiDomain: normalizedConfig.newApiDomain || DEFAULT_LLM_TRANSLATION_DOMAIN,
       });
       if (parsedConfig.channel) {
         setCurrentChannel(parsedConfig.channel);
@@ -96,6 +127,8 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     } catch (error) {
       console.error(error);
       message.error("加载设置失败，请检查本地配置文件是否损坏。");
+    } finally {
+      isLoadingSettingsRef.current = false;
     }
   };
 
@@ -118,7 +151,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     } catch (error) {
       console.warn("Failed to sync server active channel", error);
       setServerChannelStatus({
-        error: error instanceof Error ? error.message : String(error),
+        error: publicTranslationServiceError(error),
         checkedAt: new Date().toISOString(),
       });
     }
@@ -128,6 +161,14 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     if (changedValues.channel) {
       setCurrentChannel(String(changedValues.channel));
     }
+    if (isLoadingSettingsRef.current) return;
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void saveSettingsValues(form.getFieldsValue(true), { showMessage: false, syncServer: false });
+    }, 400);
   };
 
   const fetchModels = async () => {
@@ -138,7 +179,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     const newApiKey = form.getFieldValue("newApiKey");
 
     if (serverUrls.length === 0) {
-      message.error("请先填写并保存文本翻译服务地址。");
+      message.error("翻译服务未配置，请联系维护者。");
       return;
     }
     if (!newApiBase || !newApiKey) {
@@ -172,7 +213,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         throw new Error(resData.error || "模型列表拉取失败");
       }
     } catch (error: any) {
-      message.warning(`获取模型列表失败，不影响手动填写模型：${error.message || error}`);
+      message.warning(`获取模型列表失败，不影响手动填写模型：${publicTranslationServiceError(error)}`);
     } finally {
       setIsFetchingModels(false);
     }
@@ -184,7 +225,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     const clientToken = form.getFieldValue("clientToken") || "";
 
     if (serverUrls.length === 0) {
-      message.error("请先填写文本翻译服务地址。");
+      message.error("翻译服务未配置，请联系维护者。");
       return;
     }
 
@@ -253,7 +294,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         throw new Error(resData.error || "接口验证失败");
       }
     } catch (error: any) {
-      const errorMessage = error.message || String(error);
+      const errorMessage = publicTranslationServiceError(error);
       setChannelTestStatuses((prev) => ({
         ...prev,
         [channel]: {
@@ -300,7 +341,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     const serverUrls = buildServerUrlCandidates(values);
     const clientToken = values.clientToken || "";
     if (serverUrls.length === 0) {
-      throw new Error("请先填写文本翻译服务地址。");
+      throw new Error("翻译服务未配置，请联系维护者。");
     }
 
     const { serverUrl, data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/save", {
@@ -327,33 +368,8 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     });
   };
 
-  const activateGoogleChannel = async () => {
-    const values = { ...form.getFieldsValue(true), channel: "google" };
-    form.setFieldValue("channel", "google");
-    setCurrentChannel("google");
-    setIsActivatingGoogle(true);
-    try {
-      const savedServerUrl = await saveServerChannelConfig(values);
-      await saveLocalChannelOnly("google");
-      setServerChannelStatus({
-        activeChannel: "google",
-        serviceUrl: savedServerUrl,
-        checkedAt: new Date().toISOString(),
-      });
-      message.success("Google Translate 已设为当前活动通道。");
-      onConfigSaved();
-    } catch (error: any) {
-      setServerChannelStatus({
-        error: error.message || String(error),
-        checkedAt: new Date().toISOString(),
-      });
-      message.error(`Google 通道启用失败：${error.message || error}`);
-    } finally {
-      setIsActivatingGoogle(false);
-    }
-  };
-
-  const onFinish = async (values: any) => {
+  const saveSettingsValues = async (values: any, options: SaveSettingsOptions = {}) => {
+    const { showMessage = true, successMessage, syncServer = false } = options;
     setIsSaving(true);
     try {
       const { autostart: autostartVal, ...rawConfigValues } = values;
@@ -380,23 +396,28 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       await invoke("set_autostart_enabled", { enabled: Boolean(autostartVal) });
 
       let serverSaved = false;
-      try {
-        const savedServerUrl = await saveServerChannelConfig(configValues);
-        serverSaved = true;
-        setServerChannelStatus({
-          activeChannel: configValues.channel || "google",
-          serviceUrl: savedServerUrl,
-          checkedAt: new Date().toISOString(),
-        });
-      } catch (serverError: any) {
-        setServerChannelStatus({
-          error: serverError.message || String(serverError),
-          checkedAt: new Date().toISOString(),
-        });
-        message.warning(`本地设置已保存，但服务端翻译配置未同步：${serverError.message || serverError}`);
+      if (syncServer) {
+        try {
+          const savedServerUrl = await saveServerChannelConfig(configValues);
+          serverSaved = true;
+          setServerChannelStatus({
+            activeChannel: configValues.channel || "google",
+            serviceUrl: savedServerUrl,
+            checkedAt: new Date().toISOString(),
+          });
+        } catch (serverError: any) {
+          const errorMessage = publicTranslationServiceError(serverError);
+          setServerChannelStatus({
+            error: errorMessage,
+            checkedAt: new Date().toISOString(),
+          });
+          message.warning(`本地设置已保存，但服务端翻译配置未同步：${errorMessage}`);
+        }
       }
 
-      message.success(serverSaved ? "设置保存成功。" : "本地设置已保存。");
+      if (showMessage) {
+        message.success(successMessage || (syncServer && serverSaved ? "设置保存成功。" : "本地设置已保存。"));
+      }
       onConfigSaved();
     } catch (error: any) {
       message.error(`保存失败：${error.message || error}`);
@@ -405,9 +426,64 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
   };
 
+  const activateGoogleChannel = async () => {
+    const values = { ...form.getFieldsValue(true), channel: "google" };
+    form.setFieldValue("channel", "google");
+    setCurrentChannel("google");
+    setIsActivatingGoogle(true);
+    try {
+      const savedServerUrl = await saveServerChannelConfig(values);
+      await saveLocalChannelOnly("google");
+      setServerChannelStatus({
+        activeChannel: "google",
+        serviceUrl: savedServerUrl,
+        checkedAt: new Date().toISOString(),
+      });
+      message.success("Google Translate 已设为当前活动通道。");
+      onConfigSaved();
+    } catch (error: any) {
+      const errorMessage = publicTranslationServiceError(error);
+      setServerChannelStatus({
+        error: errorMessage,
+        checkedAt: new Date().toISOString(),
+      });
+      message.error(`Google 通道启用失败：${errorMessage}`);
+    } finally {
+      setIsActivatingGoogle(false);
+    }
+  };
+
+  const onFinish = async (values: any) => {
+    await saveSettingsValues(values, { showMessage: true, syncServer: true });
+  };
+
+  const applyHotkeyPatch = (patch: Record<string, string>, successMessage: string) => {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    form.setFieldsValue(patch);
+    void saveSettingsValues({ ...form.getFieldsValue(true), ...patch }, {
+      showMessage: true,
+      successMessage,
+      syncServer: false,
+    });
+  };
+
+  const updateHotkeyValue = (field: "hotkey" | "translateHotkey", value: string) => {
+    applyHotkeyPatch({ [field]: value }, "快捷键已保存并生效。");
+  };
+
+  const clearScreenshotHotkey = () => {
+    applyHotkeyPatch({ hotkey: "" }, "截图快捷键已清空并生效。");
+  };
+
+  const clearTranslateHotkey = () => {
+    applyHotkeyPatch({ translateHotkey: "" }, "翻译快捷键已清空并生效。");
+  };
+
   const restoreDefaultHotkeys = () => {
-    form.setFieldsValue({ hotkey: "Alt+A", translateHotkey: "Alt+T" });
-    message.success("已还原默认快捷键。");
+    applyHotkeyPatch({ hotkey: "Alt+A", translateHotkey: "Alt+T" }, "已还原默认快捷键并生效。");
   };
 
   return {
@@ -427,5 +503,8 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     testChannel,
     onFinish,
     restoreDefaultHotkeys,
+    updateHotkeyValue,
+    clearScreenshotHotkey,
+    clearTranslateHotkey,
   };
 }

@@ -4,6 +4,7 @@ import SettingsPageHeader from "../components/settings/SettingsPageHeader";
 import TranslationServiceCard from "../components/settings/TranslationServiceCard";
 import TranslationChannelCard from "../components/settings/TranslationChannelCard";
 import ScreenshotRecognitionCard from "../components/settings/ScreenshotRecognitionCard";
+import ImageSaveSettingsCard from "../components/settings/ImageSaveSettingsCard";
 import SystemHotkeyCard from "../components/settings/SystemHotkeyCard";
 import { DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT } from "../utils/defaultTranslationPrompt";
 import { DEFAULT_TRANSLATION_SERVICE_URL } from "../utils/translationService";
@@ -29,6 +30,10 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         fallbackToRemoteOcr: false,
         localOcrTimeoutMs: 5000,
         toolbarButtonGap: 6,
+        imageSaveNamePrefix: "Ysn_",
+        imageSaveNameFormat: "yyyyMMdd_HHmmss",
+        imageSaveDefaultDir: "",
+        imageSaveRememberLastDir: false,
         hotkey: "Alt+A",
         translateHotkey: "Alt+T",
         serverUrl: DEFAULT_TRANSLATION_SERVICE_URL,
@@ -66,7 +71,13 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           activateGoogleChannel={controller.activateGoogleChannel}
         />
         <ScreenshotRecognitionCard />
-        <SystemHotkeyCard form={form} onRestoreDefaultHotkeys={controller.restoreDefaultHotkeys} />
+        <ImageSaveSettingsCard form={form} />
+        <SystemHotkeyCard
+          onRestoreDefaultHotkeys={controller.restoreDefaultHotkeys}
+          onHotkeyChange={controller.updateHotkeyValue}
+          onClearScreenshotHotkey={controller.clearScreenshotHotkey}
+          onClearTranslateHotkey={controller.clearTranslateHotkey}
+        />
       </Space>
     </Form>
   );

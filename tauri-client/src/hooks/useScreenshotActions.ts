@@ -370,8 +370,10 @@ export function useScreenshotActions({
         const chooseMs = Math.round(performance.now() - chooseStartedAt);
         logSaveBaseline("dialog_open_end", performance.now() - actionStartedAt, `choose_ms=${chooseMs} cancelled=${!savePath}`);
         if (!savePath) {
-          await screenshotWindow?.setAlwaysOnTop(true).catch(() => {});
-          await screenshotWindow?.setFocus().catch(() => {});
+          message.destroy();
+          await invoke("force_close_screenshots").catch(() => {});
+          resetScreenshotState();
+          logSaveBaseline("dialog_cancel_exit", performance.now() - actionStartedAt);
           return;
         }
         const outputStartedAt = performance.now();

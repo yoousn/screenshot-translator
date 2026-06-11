@@ -419,6 +419,7 @@ pub fn run() {
             copy_image_to_clipboard,
             save_image_to_file,
             choose_image_save_path,
+            choose_image_save_directory,
             write_image_to_file,
             log_screenshot_perf,
             quick_fullscreen_capture,
@@ -519,17 +520,21 @@ pub fn run() {
                 }
             });
 
-            let screenshot_item = tauri::menu::MenuItemBuilder::new("Screenshot Now")
+            let screenshot_item = tauri::menu::MenuItemBuilder::new("立即截图")
                 .id("screenshot")
                 .build(app)?;
-            let show_item = tauri::menu::MenuItemBuilder::new("Show Main Window")
+            let delayed_screenshot_item = tauri::menu::MenuItemBuilder::new("延迟 3 秒截图")
+                .id("screenshot_delay_3s")
+                .build(app)?;
+            let show_item = tauri::menu::MenuItemBuilder::new("显示主窗口")
                 .id("show")
                 .build(app)?;
-            let exit_item = tauri::menu::MenuItemBuilder::new("Exit")
+            let exit_item = tauri::menu::MenuItemBuilder::new("退出")
                 .id("exit")
                 .build(app)?;
             let tray_menu = tauri::menu::MenuBuilder::new(app)
                 .item(&screenshot_item)
+                .item(&delayed_screenshot_item)
                 .item(&show_item)
                 .separator()
                 .item(&exit_item)
@@ -547,6 +552,15 @@ pub fn run() {
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = start_screenshot(app_h, None).await {
                                 eprintln!("Failed to start screenshot: {}", e);
+                            }
+                        });
+                    }
+                    "screenshot_delay_3s" => {
+                        let app_h = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            if let Err(e) = start_screenshot(app_h, None).await {
+                                eprintln!("Failed to start delayed screenshot: {}", e);
                             }
                         });
                     }

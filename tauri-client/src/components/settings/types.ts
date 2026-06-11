@@ -36,4 +36,7 @@ export type SettingsControllerState = {
   activateGoogleChannel: () => void;
   testChannel: (channel: TranslationChannel) => void;
   restoreDefaultHotkeys: () => void;
+  updateHotkeyValue: (field: "hotkey" | "translateHotkey", value: string) => void;
+  clearScreenshotHotkey: () => void;
+  clearTranslateHotkey: () => void;
 };

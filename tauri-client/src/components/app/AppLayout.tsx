@@ -44,7 +44,7 @@ const statusColor = {
 export default function AppLayout({
   activeKey,
   menuItems,
-  serverUrl,
+  serverUrl: _serverUrl,
   isOnline,
   isChecking,
   translationMetadata,
@@ -59,7 +59,7 @@ export default function AppLayout({
   const statusText = isOnline === "online" ? labels.online : isOnline === "offline" ? labels.offline : labels.checking;
   const hasQualityRisk = Boolean(translationMetadata?.quality_flags?.google_free_low_quality_risk);
   const serviceTooltip = [
-    `${labels.service}: ${serverUrl || "-"}`,
+    `${labels.service}: ${statusText}`,
     translationMetadata?.active_channel ? `${labels.channel}: ${translationMetadata.active_channel}` : "",
     translationMetadata?.glossary_version ? `${labels.glossary}: ${translationMetadata.glossary_version}${translationMetadata.glossary_loaded === false ? " (not loaded)" : ""}` : "",
     hasQualityRisk ? labels.qualityRisk : "",

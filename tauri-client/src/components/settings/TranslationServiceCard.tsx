@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Checkbox, Col, Form, Input, Row, Space, Typography, message } from "antd";
-import { KeyOutlined, SlidersOutlined } from "@ant-design/icons";
+import { Button, Card, Col, Row, Space, Typography, message } from "antd";
+import { DatabaseOutlined } from "@ant-design/icons";
 import { useI18n } from "../../i18n";
 import { clearTranslationMemory, getTranslationMemoryStorageStats, type TranslationMemoryStorageStats } from "../../utils/translationMemory";
 
@@ -24,55 +24,8 @@ export default function TranslationServiceCard() {
   };
 
   return (
-    <Card title={<span><SlidersOutlined style={{ marginRight: 8 }} />{labels.translationService}</span>} bordered={false}>
+    <Card title={<span><DatabaseOutlined style={{ marginRight: 8 }} />{labels.translationCache}</span>} bordered={false}>
       <Row gutter={[16, 12]}>
-        <Col xs={24} sm={12}>
-          <Form.Item
-            label={<Text strong style={{ fontSize: 12 }}>{labels.serviceUrl}</Text>}
-            name="serverUrl"
-            rules={[{ required: true, message: labels.serviceUrlRequired }]}
-            style={{ marginBottom: 6 }}
-          >
-            <Input placeholder={labels.serviceUrlPlaceholder} style={{ height: 32 }} />
-          </Form.Item>
-          <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
-            {labels.serviceUrlDesc}
-          </Text>
-        </Col>
-        <Col xs={24} sm={12}>
-          <Form.Item
-            label={<Text strong style={{ fontSize: 12 }}>{labels.serviceToken}</Text>}
-            name="clientToken"
-            rules={[{ required: true, message: labels.serviceTokenRequired }]}
-            style={{ marginBottom: 6 }}
-          >
-            <Input.Password placeholder={labels.serviceTokenPlaceholder} prefix={<KeyOutlined />} style={{ height: 32 }} />
-          </Form.Item>
-          <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
-            {labels.serviceTokenDesc}
-          </Text>
-        </Col>
-      </Row>
-      <Row gutter={[16, 12]} style={{ marginTop: 12 }}>
-        <Col xs={24} sm={12}>
-          <Form.Item
-            label={<Text strong style={{ fontSize: 12 }}>{labels.lanServiceUrl || "Home LAN service URL"}</Text>}
-            name="lanServerUrl"
-            style={{ marginBottom: 6 }}
-          >
-            <Input placeholder="http://192.168.1.10:8318" style={{ height: 32 }} />
-          </Form.Item>
-          <Text type="secondary" style={{ fontSize: 11, display: "block", lineHeight: 1.45 }}>
-            {labels.lanServiceUrlDesc || "Used first when you are on the same network as the N100 server."}
-          </Text>
-        </Col>
-        <Col xs={24} sm={12}>
-          <Form.Item name="preferLanServer" valuePropName="checked" style={{ marginTop: 27, marginBottom: 0 }}>
-            <Checkbox>{labels.preferLanServer || "Prefer home LAN service, fall back to public URL"}</Checkbox>
-          </Form.Item>
-        </Col>
-      </Row>
-      <Row gutter={[16, 12]} style={{ marginTop: 16 }}>
         <Col xs={24} md={16}>
           <Text strong style={{ fontSize: 12 }}>{labels.translationCache}</Text>
           <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 4, lineHeight: 1.45 }}>

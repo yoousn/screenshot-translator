@@ -70,6 +70,140 @@ fn ensure_png_extension(path: PathBuf) -> PathBuf {
     }
 }
 
+const DEFAULT_IMAGE_SAVE_NAME_PREFIX: &str = "Ysn_";
+const DEFAULT_IMAGE_SAVE_NAME_FORMAT: &str = "yyyyMMdd_HHmmss";
+
+fn sanitize_windows_file_name(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || ch.is_control()
+            {
+                '-'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim().trim_matches('.').trim().to_string();
+    if trimmed.is_empty() {
+        format!("{DEFAULT_IMAGE_SAVE_NAME_PREFIX}screenshot")
+    } else if is_reserved_windows_file_name(&trimmed) {
+        format!("_{trimmed}")
+    } else {
+        trimmed
+    }
+}
+
+fn is_reserved_windows_file_name(value: &str) -> bool {
+    let stem = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
+        || stem
+            .strip_prefix("LPT")
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
+}
+
+fn render_image_save_datetime_format(format: &str) -> String {
+    let now = chrono::Local::now();
+    let mut rendered = if format.trim().is_empty() {
+        DEFAULT_IMAGE_SAVE_NAME_FORMAT.to_string()
+    } else {
+        format.trim().to_string()
+    };
+    for (token, value) in [
+        ("yyyy", now.format("%Y").to_string()),
+        ("yy", now.format("%y").to_string()),
+        ("MM", now.format("%m").to_string()),
+        ("dd", now.format("%d").to_string()),
+        ("HH", now.format("%H").to_string()),
+        ("mm", now.format("%M").to_string()),
+        ("ss", now.format("%S").to_string()),
+    ] {
+        rendered = rendered.replace(token, &value);
+    }
+    rendered
+}
+
+fn default_image_save_file_name() -> String {
+    let prefix = crate::config_store::config_value_string("imageSaveNamePrefix")
+        .unwrap_or_else(|| DEFAULT_IMAGE_SAVE_NAME_PREFIX.to_string());
+    let format = crate::config_store::config_value_string("imageSaveNameFormat")
+        .unwrap_or_else(|| DEFAULT_IMAGE_SAVE_NAME_FORMAT.to_string());
+    let format = if format == "yyyyMMdd_HHmm" {
+        DEFAULT_IMAGE_SAVE_NAME_FORMAT.to_string()
+    } else {
+        format
+    };
+    let file_stem = sanitize_windows_file_name(&format!(
+        "{}{}",
+        prefix,
+        render_image_save_datetime_format(&format)
+    ));
+    format!("{file_stem}.png")
+}
+
+fn usable_directory(value: Option<String>) -> Option<PathBuf> {
+    let value = value?.trim().to_string();
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    if path.is_dir() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn default_image_save_directory() -> Option<PathBuf> {
+    let remember_last =
+        crate::config_store::config_value_bool("imageSaveRememberLastDir").unwrap_or(false);
+    if remember_last {
+        if let Some(last_dir) =
+            usable_directory(crate::config_store::config_value_string("imageSaveLastDir"))
+        {
+            return Some(last_dir);
+        }
+    }
+    usable_directory(crate::config_store::config_value_string(
+        "imageSaveDefaultDir",
+    ))
+    .or_else(dirs::desktop_dir)
+}
+
+fn remember_image_save_directory(path: &std::path::Path) {
+    if !crate::config_store::config_value_bool("imageSaveRememberLastDir").unwrap_or(false) {
+        return;
+    }
+    let Some(parent) = path.parent().filter(|parent| parent.is_dir()) else {
+        return;
+    };
+    let mut config_path = app_data_dir();
+    let _ = fs::create_dir_all(&config_path);
+    config_path.push("config.json");
+    let mut config = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    config.insert(
+        "imageSaveLastDir".to_string(),
+        serde_json::Value::String(parent.to_string_lossy().to_string()),
+    );
+    if let Ok(next) = serde_json::to_string_pretty(&serde_json::Value::Object(config)) {
+        let _ = fs::write(config_path, next);
+    }
+}
+
 fn log_screenshot_baseline(session_id: &str, phase: &str, started_at: &Instant, detail: &str) {
     println!(
         "[screenshot-baseline] session={} phase={} elapsed_ms={} {}",
@@ -3497,17 +3631,18 @@ pub async fn save_image_to_file(image_base64: String) -> Result<String, String> 
         .map_err(|e| format!("Decode base64 failed: {}", e))?;
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter("PNG Image", &["png"])
-        .set_file_name("screenshot.png");
-    if let Some(desktop_dir) = dirs::desktop_dir() {
-        dialog = dialog.set_directory(desktop_dir);
+        .set_file_name(default_image_save_file_name());
+    if let Some(default_dir) = default_image_save_directory() {
+        dialog = dialog.set_directory(default_dir);
     }
     let file_path = dialog.save_file().await;
     if let Some(file_handle) = file_path {
-        let path = file_handle.path();
-        fs::write(path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
+        let path = ensure_png_extension(file_handle.path().to_path_buf());
+        fs::write(&path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
         if !path.exists() {
             return Err("No display detected".to_string());
         }
+        remember_image_save_directory(&path);
         Ok(path.to_string_lossy().to_string())
     } else {
         Err("Save cancelled by user".to_string())
@@ -3515,14 +3650,15 @@ pub async fn save_image_to_file(image_base64: String) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub async fn choose_image_save_path() -> Result<Option<String>, String> {
+pub async fn choose_image_save_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let started_at = Instant::now();
     println!("[screenshot-baseline] session=save-as phase=dialog_open_start elapsed_ms=0");
+    unregister_capture_escape_shortcut(&app);
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter("PNG Image", &["png"])
-        .set_file_name("screenshot.png");
-    if let Some(desktop_dir) = dirs::desktop_dir() {
-        dialog = dialog.set_directory(desktop_dir);
+        .set_file_name(default_image_save_file_name());
+    if let Some(default_dir) = default_image_save_directory() {
+        dialog = dialog.set_directory(default_dir);
     }
     let file_path = dialog.save_file().await;
     let result = file_path.map(|file_handle| {
@@ -3530,12 +3666,31 @@ pub async fn choose_image_save_path() -> Result<Option<String>, String> {
             .to_string_lossy()
             .to_string()
     });
+    if result.is_some() {
+        register_capture_escape_shortcut(&app);
+    }
     println!(
         "[screenshot-baseline] session=save-as phase=dialog_open_end elapsed_ms={} cancelled={}",
         started_at.elapsed().as_millis(),
         result.is_none()
     );
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn choose_image_save_directory(
+    initial_dir: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title("选择图片默认保存位置");
+    if let Some(initial_dir) = usable_directory(initial_dir) {
+        dialog = dialog.set_directory(initial_dir);
+    } else if let Some(default_dir) = default_image_save_directory() {
+        dialog = dialog.set_directory(default_dir);
+    }
+    Ok(dialog
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -3556,6 +3711,7 @@ pub fn write_image_to_file(
     let path = PathBuf::from(path);
     let path = ensure_png_extension(PathBuf::from(path));
     fs::write(&path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
+    remember_image_save_directory(&path);
     let saved_path = path.to_string_lossy().to_string();
     let toast_app = app.clone();
     let toast_path = saved_path.clone();

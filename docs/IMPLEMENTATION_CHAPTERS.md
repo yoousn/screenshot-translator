@@ -3529,3 +3529,92 @@ Alt+A
 - Add a real low-level mouse hook fallback for the first 0-50ms so pre-HWND mouse down/up is captured as structured native input rather than only pre-capture polling.
 - Move native first-frame presentation earlier in the pipeline by starting native overlay before WebView shared-buffer posting where safe, then continue toward precreated hidden HWND and preinitialized native capture resources.
 - Keep `YSN_NATIVE_FIRST_FRAME_SESSION=1` guarded until manual release QA confirms no black/white/color flash, immediate drag, cancel, copy/save/OCR/translate, multi-monitor, and DPI behavior.
+
+## Chapter 270: Settings And Save UX Polish (2026-06-11)
+
+### Goals Completed
+- Froze the Native first-frame commercial confirmation/default-rollout plan at the user's request; no new long-term document was created.
+- Hid internal text-translation service URL, token, LAN URL, and LAN-preference controls from the system settings panel.
+- Kept local translation-cache management available without exposing internal service configuration.
+- Removed direct service URL exposure from the app header tooltip, translation-channel health summary, and user-facing internal-service failure prompts.
+- Changed Windows tray menu text to Chinese and added a tray command for a delayed 3-second screenshot.
+- Added image save settings for filename prefix, datetime format, default save directory, and optional "remember last save directory" behavior.
+- Replaced fixed `screenshot.png` / Desktop save defaults with config-driven filename and directory resolution.
+- Normalized image save filename handling across save commands, including automatic `.png` extension and Windows reserved-name protection.
+- Added a folder picker command for the image default save directory.
+- Changed `Ctrl+S` save-dialog cancellation so pressing `Esc` exits the screenshot session cleanly instead of restoring the screenshot overlay and requiring a second `Esc`.
+
+### Modified Files
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src/components/app/AppLayout.tsx`
+- `tauri-client/src/components/settings/TranslationChannelCard.tsx`
+- `tauri-client/src/components/settings/TranslationServiceCard.tsx`
+- `tauri-client/src/components/settings/ImageSaveSettingsCard.tsx`
+- `tauri-client/src/hooks/useScreenshotActions.ts`
+- `tauri-client/src/hooks/useSettingsController.ts`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/pages/Settings.tsx`
+- `tauri-client/src/types/config.ts`
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- The tray delayed screenshot currently has no countdown toast; it waits 3 seconds and starts capture.
+- Custom filename formats can include Windows-invalid characters such as `:`; the backend sanitizes them before showing the save dialog.
+- The internal translation service is hidden from the normal settings UI, but translation-channel operations still rely on the existing hidden config values.
+
+### Next Steps
+- Manually verify the tray menu labels, delayed screenshot, image-save settings persistence, and `Ctrl+S` save-dialog `Esc` exit in the built app.
+- Continue small feature add/remove work before returning to commercial-grade native first-frame rollout confirmation.
+
+## Chapter 271: Save Dialog, Hotkey, And Window Click Polish (2026-06-11)
+
+### Goals Completed
+- Changed the default image save timestamp from minute-level to second-level (`yyyyMMdd_HHmmss`) to avoid same-minute name collisions without scanning the target folder.
+- Added a compatibility migration so the previous default `yyyyMMdd_HHmm` is treated as the new second-level default.
+- Kept filenames Windows-safe; colon-separated times are not used because `:` is invalid in Windows filenames.
+- Reduced `Ctrl+S` save-dialog cancel residue by unregistering the screenshot Escape shortcut while the native save dialog is open, and force-closing screenshot windows when the dialog is cancelled.
+- Improved detected UI/window click behavior so a light left click or small pointer wobble selects the detected candidate instead of falling into a tiny manual box selection.
+- Added automatic local settings save for form changes, including switches, save-location preferences, screenshot recognition options, and hotkey fields.
+- Changed hotkey controls from typed text boxes to key-capture fields; pressing a shortcut writes it, while `Backspace`, `Delete`, or `Esc` clears it.
+- Made clear/default hotkey actions save immediately and re-register global shortcuts, so the UI success state matches the actual shortcut state.
+
+### Modified Files
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src/hooks/useScreenshotActions.ts`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `tauri-client/src/hooks/useSettingsController.ts`
+- `tauri-client/src/components/settings/ImageSaveSettingsCard.tsx`
+- `tauri-client/src/components/settings/SystemHotkeyCard.tsx`
+- `tauri-client/src/components/settings/types.ts`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/pages/Settings.tsx`
+
+### Validation
+- Passed: `cargo fmt --manifest-path tauri-client/src-tauri/Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client/src-tauri/Cargo.toml --tests`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Native Windows save dialogs cannot display or save filenames containing `:`; the fast no-scan default uses compact second-level time (`HHmmss`) instead.
+- Settings auto-save intentionally only persists local configuration and local side effects; the top Save action remains available for explicit translation-service synchronization.
+
+### Next Steps
+- Manually verify `Ctrl+S -> Esc`, detected-window single click selection, hotkey capture, restore-default shortcut registration, and switch auto-save in the built app.

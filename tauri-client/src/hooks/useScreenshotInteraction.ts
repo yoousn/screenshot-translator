@@ -331,6 +331,8 @@ export function useScreenshotInteraction({
     updateCurrentRect(next, true);
     setSelection(true);
     setHoverCandidate(null);
+    selectionDragDistanceRef.current = Math.hypot(next.w, next.h);
+    draw(next.x, next.y, next.w, next.h);
     focusScreenshotWindow();
   };
 
@@ -534,7 +536,7 @@ export function useScreenshotInteraction({
 
     if (pendingDetectionRef.current) {
       const moved = Math.hypot(cx - mouseDownRef.current.x, cy - mouseDownRef.current.y);
-      if (moved > 4) {
+      if (moved > MIN_AUTO_ACTION_DRAG_PX) {
         selectionDragDistanceRef.current = moved;
         pendingDetectionRef.current = null;
         setHoverCandidate(null);
@@ -663,6 +665,13 @@ export function useScreenshotInteraction({
 
     const valid = rectRef.current.w > 5 && rectRef.current.h > 5;
     const dragDistance = Math.max(selectionDragDistanceRef.current, Math.hypot(rectRef.current.w, rectRef.current.h));
+    if (wasSelecting && dragDistance < MIN_AUTO_ACTION_DRAG_PX && e) {
+      const detected = getDetectionRectAt(e.clientX, e.clientY);
+      if (detected) {
+        selectDetectedRect(detected);
+        return;
+      }
+    }
     const explicitSelectionRelease = wasSelecting && dragDistance >= MIN_AUTO_ACTION_DRAG_PX;
     setSelection(valid);
     if (valid) requestAnimationFrame(focusScreenshotWindow);

@@ -15,4 +15,9 @@ export interface Config {
   detectionBorderWidth?: number;
   toolbarButtonGap?: number;
   visualDetectionSensitivity?: number;
+  imageSaveNamePrefix?: string;
+  imageSaveNameFormat?: string;
+  imageSaveDefaultDir?: string;
+  imageSaveRememberLastDir?: boolean;
+  imageSaveLastDir?: string;
 }

@@ -91,11 +91,9 @@ export default function TranslationChannelCard({
   ].filter(Boolean);
 
   const serverSummary = serverChannelStatus.error
-    ? labels.channelHealthServerFailed.replace("{error}", serverChannelStatus.error)
+    ? labels.channelHealthServerFailed.replace("{error}", labels.channelHealthFailed)
     : serverChannelStatus.activeChannel
-      ? labels.channelHealthServerActive
-          .replace("{channel}", serverChannelStatus.activeChannel)
-          .replace("{url}", serverChannelStatus.serviceUrl || "-")
+      ? `${labels.channelHealthCurrent}: ${serverChannelStatus.activeChannel}`
       : labels.channelHealthServerUnknown;
 
   const renderConfiguredTag = (configured: boolean) => (
@@ -123,7 +121,7 @@ export default function TranslationChannelCard({
     }
     if (status.status === "passed") {
       return (
-        <Tooltip title={status.serviceUrl || status.message}>
+        <Tooltip title={status.message}>
           <Tag color="success" icon={<CheckCircleOutlined />}>
             {labels.channelHealthPassed}
           </Tag>
