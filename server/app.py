@@ -8,11 +8,11 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-import requests
 import time
 import hashlib
 import secrets
 from config import load_server_config, save_server_config
+from http_client import get_relay_session
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata
 from security import install_redaction_filter, normalize_relay_base_url, normalize_public_base_url, redact, request_relay_url
 import logging
@@ -30,6 +30,20 @@ def _safe_error_detail(error: Exception | str) -> str:
     return redact(str(error))
 
 
+def _prune_rate_hits(now: float) -> None:
+    for client_host, items in list(_rate_hits.items()):
+        active = [item for item in items if now - item < RATE_WINDOW_SECONDS]
+        if active:
+            _rate_hits[client_host] = active
+        else:
+            _rate_hits.pop(client_host, None)
+
+
+def _rate_limit_key(request: Request) -> str:
+    host = (request.client.host if request.client else "") or "unknown"
+    return host.strip() or "unknown"
+
+
 class GuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/") and request.url.path != "/api/health":
@@ -41,9 +55,10 @@ class GuardMiddleware(BaseHTTPMiddleware):
                 except ValueError:
                     return JSONResponse({"detail": "invalid content-length"}, status_code=400)
 
-            client_host = request.client.host if request.client else "unknown"
+            client_host = _rate_limit_key(request)
             now = time.time()
-            hits = [item for item in _rate_hits[client_host] if now - item < RATE_WINDOW_SECONDS]
+            _prune_rate_hits(now)
+            hits = _rate_hits.get(client_host, [])
             if len(hits) >= RATE_LIMIT:
                 _rate_hits[client_host] = hits
                 return JSONResponse({"detail": "rate limit"}, status_code=429)
@@ -386,7 +401,7 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
         
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
-        res = request_relay_url(requests, "GET", f"{base_url}/v1/models", headers=headers, timeout=5)
+        res = request_relay_url(get_relay_session(), "GET", f"{base_url}/v1/models", headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json().get("data", [])
             m_list = [

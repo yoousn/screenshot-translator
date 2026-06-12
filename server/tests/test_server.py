@@ -47,6 +47,38 @@ def test_api_rate_limit_rejects_excess_requests(monkeypatch):
         app_module.RATE_LIMIT = original_limit
         app_module._rate_hits.clear()
 
+
+def test_rate_limit_prunes_expired_client_keys(monkeypatch):
+    original_window = app_module.RATE_WINDOW_SECONDS
+    monkeypatch.setattr(app_module, "RATE_WINDOW_SECONDS", 10)
+    app_module._rate_hits.clear()
+    app_module._rate_hits["old-client"] = [100.0]
+    app_module._rate_hits["fresh-client"] = [195.0]
+
+    try:
+        app_module._prune_rate_hits(200.0)
+        assert "old-client" not in app_module._rate_hits
+        assert app_module._rate_hits["fresh-client"] == [195.0]
+    finally:
+        app_module.RATE_WINDOW_SECONDS = original_window
+        app_module._rate_hits.clear()
+
+
+def test_rate_limit_key_normalizes_missing_or_blank_client():
+    class Client:
+        def __init__(self, host):
+            self.host = host
+
+    class Request:
+        def __init__(self, client):
+            self.client = client
+
+    assert app_module._rate_limit_key(Request(None)) == "unknown"
+    assert app_module._rate_limit_key(Request(Client(""))) == "unknown"
+    assert app_module._rate_limit_key(Request(Client("  "))) == "unknown"
+    assert app_module._rate_limit_key(Request(Client(" 127.0.0.1 "))) == "127.0.0.1"
+
+
 def test_fetch_models_unauthorized():
     res = client.post("/api/config/fetch_models", json={"base_url": "api.yousn.me", "api_key": "sk-xxx"})
     assert res.status_code == 401

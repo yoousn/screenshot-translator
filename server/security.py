@@ -56,6 +56,38 @@ TRUSTED_PUBLIC_DNS_BYPASS_HOSTS = {
 }
 
 
+def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
+
+
+def iter_safe_addresses(host: str, port: int, *, allow_private: bool = False):
+    try:
+        addr_info = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError("请求地址无法解析") from exc
+
+    for family, socktype, proto, _canonname, sockaddr in addr_info:
+        ip_str = sockaddr[0].split("%", 1)[0]
+        ip = ipaddress.ip_address(ip_str)
+        if _is_blocked_ip(ip) and not allow_private:
+            continue
+        yield family, socktype, proto, sockaddr, ip_str
+
+
+def resolve_safe_ip(host: str, *, allow_private: bool = False) -> str:
+    """Resolve a host and return the first IP allowed by the SSRF policy."""
+    for *_prefix, ip_str in iter_safe_addresses(host, 0, allow_private=allow_private):
+        return ip_str
+    raise ValueError("请求地址不合法 (无可用公网 IP)")
+
+
 def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
     base_url = (url or "").strip().rstrip("/")
     if not base_url:
@@ -72,24 +104,10 @@ def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("请求地址不合法")
 
-    try:
-        addr_info = socket.getaddrinfo(parsed.hostname, None)
-    except OSError as exc:
-        raise ValueError("请求地址无法解析") from exc
-
-    for _, _, _, _, sockaddr in addr_info:
-        ip_str = sockaddr[0].split("%", 1)[0]
-        ip = ipaddress.ip_address(ip_str)
-        blocked_private_ip = (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_unspecified
-            or ip.is_multicast
-        )
-        if blocked_private_ip and not allow_private and not trusted_public_host:
-            raise ValueError("请求地址不合法 (IP 为私有、回环或保留地址)")
+    if trusted_public_host:
+        resolve_safe_ip(parsed.hostname, allow_private=True)
+    else:
+        resolve_safe_ip(parsed.hostname, allow_private=allow_private)
 
     return base_url
 

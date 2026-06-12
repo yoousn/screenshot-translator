@@ -1,6 +1,5 @@
 import abc
 import os
-import requests
 import json
 import urllib.parse
 import hashlib
@@ -10,6 +9,7 @@ import re
 from collections import OrderedDict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from http_client import get_public_session, get_relay_session
 from security import normalize_public_base_url, normalize_relay_base_url, request_public_url, request_relay_url
 from translation_prompt import DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT
 
@@ -181,13 +181,10 @@ def should_group_by_source_hints(texts: list[str], source_lang: str) -> bool:
     hints = {detect_source_lang_hint(text, source_lang) for text in texts}
     return len(hints) > 1 or (hints and source_lang not in hints)
 
-# 使用全局共享的 requests Session 保持 Keep-Alive 长连接，免去每次 TLS 握手的开销
-_shared_session = requests.Session()
-_shared_session.trust_env = False
-# 适当调整连接池大小
-adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
-_shared_session.mount("http://", adapter)
-_shared_session.mount("https://", adapter)
+# 使用全局共享的 requests Session 保持 Keep-Alive 长连接，免去每次 TLS 握手的开销。
+# Public session 会在连接层钉住已校验公网 IP；relay session 保留用户自配 LAN 中转能力。
+_public_session = get_public_session()
+_relay_session = get_relay_session()
 
 import time
 import threading
@@ -279,7 +276,7 @@ def lookup_short_ui_glossary(text: str, source_lang: str, target_lang: str) -> s
 
 class BaseTranslator(abc.ABC):
     def __init__(self):
-        self.session = _shared_session
+        self.session = _public_session
 
     @abc.abstractmethod
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
@@ -476,6 +473,8 @@ class LLMTranslator(BaseTranslator):
     def __init__(self, base_url: str, api_key: str, model: str, prompt_template: str = "", translation_domain: str = "", allow_private_base_url: bool = False):
         super().__init__()
         self.allow_private_base_url = allow_private_base_url
+        if allow_private_base_url:
+            self.session = _relay_session
         self.base_url = normalize_relay_base_url(base_url) if allow_private_base_url else normalize_public_base_url(base_url)
         self.api_key = api_key
         self.model = model
