@@ -53,7 +53,7 @@ $remoteBackup = @"
 cd '$RemoteDir' &&
 ts=`$(date +%Y%m%d-%H%M%S) &&
 mkdir -p deploy-backups/`$ts &&
-cp app.py config.py security.py translator.py translation_prompt.py translationGlossary.json deploy-backups/`$ts/ 2>/dev/null || true &&
+cp app.py config.py http_client.py safe_transport.py security.py translator.py translation_prompt.py requirements.txt translationGlossary.json deploy-backups/`$ts/ 2>/dev/null || true &&
 echo deploy-backups/`$ts
 "@
 
@@ -61,16 +61,20 @@ Write-Host "[1/6] Backing up remote service files..."
 $remoteBackup = $remoteBackup -replace "`r", ""
 Invoke-Remote $remoteBackup
 
-Write-Host "[2/6] Uploading server app, config, security, translator, prompt, and glossary..."
+Write-Host "[2/6] Uploading complete translation server runtime..."
 Copy-RemoteFile "server\app.py" "$RemoteDir/app.py"
 Copy-RemoteFile "server\config.py" "$RemoteDir/config.py"
+Copy-RemoteFile "server\http_client.py" "$RemoteDir/http_client.py"
+Copy-RemoteFile "server\safe_transport.py" "$RemoteDir/safe_transport.py"
 Copy-RemoteFile "server\security.py" "$RemoteDir/security.py"
 Copy-RemoteFile "server\translator.py" "$RemoteDir/translator.py"
 Copy-RemoteFile "server\translation_prompt.py" "$RemoteDir/translation_prompt.py"
+Copy-RemoteFile "server\requirements.txt" "$RemoteDir/requirements.txt"
 Copy-RemoteFile "tauri-client\src\utils\translationGlossary.json" "$RemoteDir/translationGlossary.json"
 
-Write-Host "[3/6] Running remote syntax check..."
-Invoke-Remote "cd '$RemoteDir' && .venv/bin/python -m py_compile app.py config.py security.py translator.py translation_prompt.py"
+Write-Host "[3/6] Running remote syntax and transport-policy checks..."
+Invoke-Remote "cd '$RemoteDir' && .venv/bin/python -m py_compile app.py config.py http_client.py safe_transport.py security.py translator.py translation_prompt.py"
+Invoke-Remote "cd '$RemoteDir' && .venv/bin/python -c \`"from http_client import get_official_translation_session; from safe_transport import SSRFSafeAdapter; s=get_official_translation_session(); assert s.trust_env is True; assert not isinstance(s.get_adapter('https://'), SSRFSafeAdapter); print('official translation transport: proxy-compatible, unpinned')\`""
 
 Write-Host "[4/6] Restarting uvicorn on port $Port..."
 $stopCommand = @"

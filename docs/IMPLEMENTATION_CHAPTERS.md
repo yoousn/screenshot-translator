@@ -4105,3 +4105,44 @@ Alt+A
 ### Next Steps
 - Manual desktop QA after rebuilding: open `模型管理`, confirm the old dictionary-file warning is gone, then click install and confirm the phase progress bar reaches completion.
 - If byte-level progress becomes a release requirement, move ModelScope downloads into an owned Rust installer that consumes RapidOCR's trusted model manifest and verifies its existing SHA256 values before invoking the runner.
+
+## Chapter 282: Translation Transport Deployment Closure (2026-06-13)
+
+### Goals Completed
+- Confirmed the desktop app was correctly preferring the configured LAN translation service at `192.168.1.3:8318`, but that service was still running an old `http_client.py` where Google used the pinned SSRF transport.
+- Identified the deployment root cause: `deploy_n100_translation_server.ps1` uploaded `translator.py` and security modules but omitted `http_client.py`, so the official-provider proxy compatibility fix never reached the active service.
+- Updated the deployment bundle and remote backups to include `http_client.py`, `safe_transport.py`, and `requirements.txt`.
+- Added a mandatory pre-restart deployment assertion that official translation sessions use `trust_env=True` and are not mounted with `SSRFSafeAdapter`.
+- Deployed the corrected runtime to N100, restarted the active uvicorn service, and verified both LAN and public translation endpoints.
+
+### External Findings
+- Requests session behavior uses environment proxy configuration when `trust_env=True`; the pinned SSRF session intentionally disables that behavior.
+- OWASP SSRF guidance supports strict protection at user-controlled URL boundaries and allowlists for known destinations, matching the project's split between official providers and user-configured relay/base URLs.
+- Clash/Mihomo fake-IP mode commonly uses the reserved `198.18.0.0/15` range, explaining why IP-pinning rejects an otherwise valid public provider when the proxy owns DNS routing.
+
+### Modified Files
+- `deploy_n100_translation_server.ps1`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not remove or weaken IP-pinning for user-configured LLM relay/base URLs.
+- Did not require users to disable TUN/fake-IP mode or change proxy settings.
+- Did not change translation provider selection or translation-quality behavior.
+
+### Validation
+- Passed: local transport inspection confirmed official translation session `trust_env=True` and no `SSRFSafeAdapter`.
+- Passed: local Google translator smoke returned a Chinese translation for `Open settings`.
+- Passed: `pytest -q server/tests` with `63 passed, 1 skipped`.
+- Passed: PowerShell deployment-script syntax parse.
+- Passed: remote pre-restart transport-policy assertion.
+- Passed: N100 service restart and LAN `/api/health`.
+- Passed: deployment smoke through both LAN and public endpoints.
+- Passed: exact reported text `rel lease` returned HTTP 200 and a non-original Google translation through both `http://192.168.1.3:8318` and `https://ocr.yousn.me`.
+
+### Known Risks
+- The remote Python environment emits an existing Requests dependency warning for its installed charset-detection package; this did not block translation but should be cleaned up in a separate dependency-maintenance chapter.
+- Deployment smoke output can display Chinese as mojibake in Windows PowerShell even though the JSON response contains a valid translation.
+
+### Next Steps
+- Keep the new transport-policy assertion as a deployment gate so future server deployments cannot silently restore pinned transport for official providers.
+- Separately normalize the N100 Python dependency environment and deployment console encoding.
