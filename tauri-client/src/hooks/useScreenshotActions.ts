@@ -6,14 +6,11 @@ import { message } from "antd";
 import type { Annotation, NativeWgcSelectedOutputClipboardAcceptanceRequest, NativeWgcSelectedOutputClipboardAcceptanceResponse, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
 import { cropSelectionFromLoadedImage, getDesktopPhysicalSelection, getPhysicalSelection, renderEditedSelectionBase64 } from "../utils/screenshotImage";
 import { openPinWindow } from "../utils/pinWindows";
+import { logScreenshotPerf } from "../utils/debugLog";
 
 const MIN_SELECTION_CONFIRM_AGE_MS = 120;
 const WGC_SELECTED_OUTPUT_COPY_CANDIDATE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_COPY_CANDIDATE === "1";
 const WGC_SELECTED_OUTPUT_SAVE_CANDIDATE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_SAVE_CANDIDATE === "1";
-
-const logScreenshotPerf = (messageText: string) => {
-  invoke("log_screenshot_perf", { message: messageText }).catch(() => {});
-};
 
 const logSaveBaseline = (phase: string, elapsedMs: number, detail = "") => {
   logScreenshotPerf(`[baseline] session=save-as phase=${phase} elapsed_ms=${Math.round(elapsedMs)} ${detail}`);

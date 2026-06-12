@@ -5,10 +5,7 @@ import { message } from "antd";
 import type { NativeScreenshotDiagnosticsStatus, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
-
-const logScreenshotPerf = (messageText: string) => {
-  invoke("log_screenshot_perf", { message: messageText }).catch(() => {});
-};
+import { logScreenshotPerf } from "../utils/debugLog";
 
 const logScreenshotBaseline = (sessionId: string | number, phase: string, elapsedMs: number, detail = "") => {
   invoke("log_screenshot_perf", {

@@ -63,6 +63,20 @@ pub fn save_config(config_str: String) -> Result<(), String> {
     Ok(())
 }
 
+pub fn set_config_value_if_changed(key: &str, value: serde_json::Value) -> Result<bool, String> {
+    let mut config = load_config_value()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    if config.get(key) == Some(&value) {
+        return Ok(false);
+    }
+    config.insert(key.to_string(), value);
+    let config_str = serde_json::to_string_pretty(&serde_json::Value::Object(config))
+        .map_err(|e| e.to_string())?;
+    save_config(config_str)?;
+    Ok(true)
+}
+
 pub fn config_value_string(key: &str) -> Option<String> {
     let config = load_config_value()?;
     config

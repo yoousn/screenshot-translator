@@ -7,8 +7,6 @@ pub use config_store::*;
 pub mod history_commands;
 pub use history_commands::*;
 
-pub mod file_commands;
-
 pub mod hotkeys;
 pub use hotkeys::*;
 
@@ -33,8 +31,6 @@ pub use window_targets::*;
 
 pub mod window_lifecycle;
 pub use window_lifecycle::*;
-
-pub mod ffmpeg_dependency;
 
 pub mod diagnostics;
 pub use diagnostics::*;

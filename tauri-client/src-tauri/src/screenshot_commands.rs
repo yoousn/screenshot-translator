@@ -5,6 +5,7 @@ use crate::*;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub static SCREENSHOT_IMAGE: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
@@ -17,7 +18,7 @@ static SCREENSHOT_POINTER_PRE_CAPTURE: OnceLock<Mutex<Option<ScreenshotPointerPr
     OnceLock::new();
 static LAST_SCREENSHOT_WINDOW_BOUNDS: OnceLock<Mutex<Option<(i32, i32, u32, u32)>>> =
     OnceLock::new();
-type ScreenshotRgba = crate::screenshot_native::RgbaFrame;
+type ScreenshotRgba = Arc<crate::screenshot_native::RgbaFrame>;
 
 #[derive(Debug, Clone)]
 struct SessionScreenshotRgba {
@@ -187,21 +188,16 @@ fn remember_image_save_directory(path: &std::path::Path) {
     let Some(parent) = path.parent().filter(|parent| parent.is_dir()) else {
         return;
     };
-    let mut config_path = app_data_dir();
-    let _ = fs::create_dir_all(&config_path);
-    config_path.push("config.json");
-    let mut config = fs::read_to_string(&config_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
-    config.insert(
-        "imageSaveLastDir".to_string(),
-        serde_json::Value::String(parent.to_string_lossy().to_string()),
-    );
-    if let Ok(next) = serde_json::to_string_pretty(&serde_json::Value::Object(config)) {
-        let _ = fs::write(config_path, next);
+    let next_dir = parent.to_string_lossy().to_string();
+    if crate::config_store::config_value_string("imageSaveLastDir").as_deref()
+        == Some(next_dir.as_str())
+    {
+        return;
     }
+    let _ = crate::config_store::set_config_value_if_changed(
+        "imageSaveLastDir",
+        serde_json::Value::String(next_dir),
+    );
 }
 
 fn log_screenshot_baseline(session_id: &str, phase: &str, started_at: &Instant, detail: &str) {
@@ -732,11 +728,11 @@ fn capture_current_monitor_rgba_xcap() -> Result<(ScreenshotRgba, (i32, i32, u32
         .capture_image()
         .map_err(|error| format!("xcap screenshot failed: {error}"))?;
     Ok((
-        ScreenshotRgba {
+        Arc::new(crate::screenshot_native::RgbaFrame {
             bytes: image.as_raw().to_vec(),
             width,
             height,
-        },
+        }),
         (x, y, width, height),
     ))
 }
@@ -758,11 +754,11 @@ fn capture_current_monitor_rgba_legacy() -> Result<(ScreenshotRgba, (i32, i32, u
         .capture()
         .map_err(|error| format!("Screenshot failed: {error}"))?;
     Ok((
-        ScreenshotRgba {
+        Arc::new(crate::screenshot_native::RgbaFrame {
             bytes: image.into_raw(),
             width: info.width,
             height: info.height,
-        },
+        }),
         screen_info,
     ))
 }
@@ -3487,7 +3483,7 @@ pub fn get_fullscreen_rgba_bytes(
     session_id: Option<String>,
 ) -> Result<tauri::ipc::Response, String> {
     let rgba = get_matching_screenshot_rgba(session_id.as_deref())?;
-    Ok(tauri::ipc::Response::new(rgba.bytes))
+    Ok(tauri::ipc::Response::new(rgba.bytes.clone()))
 }
 
 #[tauri::command]
@@ -5774,7 +5770,7 @@ mod native_selected_output_copy_command_tests {
         let mut guard = get_screenshot_rgba().lock().expect("rgba cache lock");
         *guard = Some(SessionScreenshotRgba {
             session_id: session_id.to_string(),
-            frame,
+            frame: Arc::new(frame),
         });
     }
 

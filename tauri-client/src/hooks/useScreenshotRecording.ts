@@ -2,9 +2,11 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "antd";
+import { useI18n } from "../i18n";
 import type { Rect } from "../types/screenshot";
 import { getPhysicalSelection } from "../utils/screenshotImage";
-import { openRecordingWindows, closeRecordingBorderWindows } from "../utils/recordingWindows";
+import { closeRecordingBorderWindows, openRecordingWindows } from "../utils/recordingWindows";
+import { traceLog } from "../utils/debugLog";
 
 export type RecordingStatus = "idle" | "ready" | "recording";
 export type RecordingMode = "region" | "window" | "display";
@@ -56,6 +58,16 @@ export function useScreenshotRecording({
   setHoverCandidate,
   resetScreenshotState,
 }: UseScreenshotRecordingProps) {
+  const { text } = useI18n();
+  const labels = text.config;
+  const t = (key: string, replacements: Record<string, string> = {}) => {
+    let value = labels[key] || key;
+    for (const [name, replacement] of Object.entries(replacements)) {
+      value = value.replace(`{${name}}`, replacement);
+    }
+    return value;
+  };
+
   const [recordingStatus, setRecordingStatusState] = useState<RecordingStatus>("idle");
   const [recordingPickerMode, setRecordingPickerModeState] = useState<"window" | "display" | null>(null);
   const [recordingFps, setRecordingFps] = useState(30);
@@ -122,7 +134,7 @@ export function useScreenshotRecording({
     const origin = await getCurrentWindow().outerPosition().catch(() => ({ x: 0, y: 0 }));
     return {
       id: "region",
-      title: "翻译结果",
+      title: t("recordingRegionTitle"),
       x: Math.round(origin.x + selection.x),
       y: Math.round(origin.y + selection.y),
       w: Math.round(selection.w),
@@ -147,12 +159,15 @@ export function useScreenshotRecording({
     } as Rect;
   };
 
-  const isLikelySystemAudioDevice = (device: string) => /wasapi:|stereo mix|立体声|混音|loopback|virtual audio|output|speaker|扬声器/i.test(device);
+  const isLikelySystemAudioDevice = (device: string) =>
+    /wasapi:|stereo mix|立体声|混音|loopback|virtual audio|output|speaker|扬声器/i.test(device);
   const isLikelyMicrophoneDevice = (device: string) => !isLikelySystemAudioDevice(device);
 
   const formatAudioDeviceLabel = (device: string) => {
-    if (device === "wasapi:default") return "系统声音（默认输出）";
-    if (device.startsWith("wasapi:")) return `系统声音：${device.slice("wasapi:".length)}`;
+    if (device === "wasapi:default") return t("recordingSystemAudioDefault");
+    if (device.startsWith("wasapi:")) {
+      return t("recordingSystemAudioPrefix", { device: device.slice("wasapi:".length) });
+    }
     if (device.startsWith("dshow:")) return device.slice("dshow:".length);
     return device;
   };
@@ -176,7 +191,7 @@ export function useScreenshotRecording({
     if (!selectedWindowTargetId && targets.windows.length > 0) setSelectedWindowTargetId(targets.windows[0].id);
     if (!selectedDisplayTargetId && targets.displays.length > 0) setSelectedDisplayTargetId(targets.displays[0].id);
     if (!info.ffmpegFound) {
-      throw new Error("未找到 ffmpeg.exe，请先在模型/视频配置里下载或选择 FFmpeg。");
+      throw new Error(t("recordingFfmpegMissing"));
     }
     return { info, targets };
   };
@@ -206,32 +221,32 @@ export function useScreenshotRecording({
             setCurrentRect({ x: 0, y: 0, w: 0, h: 0 }, true);
             setSelection(false);
           }
-          message.info("Please select a recording area first");
+          message.info(t("recordingSelectAreaFirst"));
           triggerRender();
           return;
         }
       } else if (mode === "window") {
         const target = targets.windows.find((item) => item.id === selectedWindowTargetId) || targets.windows[0];
-        if (!target) throw new Error("No recordable window detected");
+        if (!target) throw new Error(t("recordingNoWindow"));
         setSelectedWindowTargetId(target.id);
         await applyRecordingTarget(target);
         setRecordingPickerMode("window");
-        message.info("请选择要录制的窗口，蓝框确认无误后点击确认。");
+        message.info(t("recordingPickWindow"));
         return;
       } else {
         const target = targets.displays.find((item) => item.id === selectedDisplayTargetId) || targets.displays[0];
-        if (!target) throw new Error("No display detected");
+        if (!target) throw new Error(t("recordingNoDisplay"));
         setSelectedDisplayTargetId(target.id);
         await applyRecordingTarget(target);
         setRecordingPickerMode("display");
-        message.info("请选择要录制的显示器，蓝框确认无误后点击确认。");
+        message.info(t("recordingPickDisplay"));
         return;
       }
 
       await startRecording();
     } catch (error: any) {
       setRecordingStatus("idle");
-      message.error(`Failed to enter recording mode: ${error?.message || error}`);
+      message.error(t("recordingEnterFailed", { error: String(error?.message || error) }));
     }
   };
 
@@ -264,10 +279,14 @@ export function useScreenshotRecording({
 
   const buildRecordingOptions = async () => {
     const devices = getRecordingDevices();
-    if ((recordingAudioMode === "system" || recordingAudioMode === "system_mic") && !devices.system) throw new Error("当前未检测到系统声音设备");
-    if ((recordingAudioMode === "mic" || recordingAudioMode === "system_mic") && !devices.mic) throw new Error("当前未检测到麦克风设备");
+    if ((recordingAudioMode === "system" || recordingAudioMode === "system_mic") && !devices.system) {
+      throw new Error(t("recordingMissingSystemAudio"));
+    }
+    if ((recordingAudioMode === "mic" || recordingAudioMode === "system_mic") && !devices.mic) {
+      throw new Error(t("recordingMissingMicrophone"));
+    }
     const region = recordingModeRef.current === "region" ? await getCurrentAbsoluteSelection() : recordingRegionRef.current;
-    if (!region || region.w <= 0 || region.h <= 0) throw new Error("请先选择有效录制区域");
+    if (!region || region.w <= 0 || region.h <= 0) throw new Error(t("recordingSelectValidRegion"));
     return {
       fps: recordingFps,
       resolution: recordingResolution,
@@ -290,10 +309,10 @@ export function useScreenshotRecording({
   const startRecording = async () => {
     if (isRecordingBusyRef.current) return;
     try {
-      const info = await invoke('get_recording_info').catch(() => null) as { isRecording?: boolean } | null;
+      const info = await invoke("get_recording_info").catch(() => null) as { isRecording?: boolean } | null;
       const active = !!info?.isRecording;
       if (active) {
-        message.error('当前已有录像正在进行，请先停止');
+        message.error(t("recordingAlreadyActive"));
         return;
       }
       setIsRecordingBusy(true);
@@ -307,22 +326,25 @@ export function useScreenshotRecording({
       const region = { x: normalizedOptions.region_x, y: normalizedOptions.region_y, w: normalizedOptions.region_w, h: normalizedOptions.region_h };
       setRecordingPickerMode(null);
       setRecordingStatus("ready");
-      console.log("[screenshot-trace] startRecording: openRecordingWindows before, recordingStatus=", recordingStatusRef.current, "shouldCloseScreenshot=", true);
+      traceLog("[screenshot-trace] startRecording: openRecordingWindows before", {
+        recordingStatus: recordingStatusRef.current,
+        shouldCloseScreenshot: true,
+      });
       await openRecordingWindows({
         options: normalizedOptions,
         countdownSeconds: 0,
         autoStart: false,
       }, region);
-      console.log("[screenshot-trace] startRecording: openRecordingWindows after");
+      traceLog("[screenshot-trace] startRecording: openRecordingWindows after");
       const win = getCurrentWindow();
-      console.log("[screenshot-trace] startRecording: closing screenshot window before");
+      traceLog("[screenshot-trace] startRecording: closing screenshot window before");
       await win.setAlwaysOnTop(false).catch(() => {});
       await win.hide().catch(() => {});
-      console.log("[screenshot-trace] startRecording: closing screenshot window after");
-      await invoke('set_capturing_state', { state: false }).catch(() => {});
+      traceLog("[screenshot-trace] startRecording: closing screenshot window after");
+      await invoke("set_capturing_state", { state: false }).catch(() => {});
     } catch (error: any) {
       setRecordingStatus("idle");
-      message.error("Failed to open recording controls: " + (error?.message || error));
+      message.error(t("recordingOpenControlsFailed", { error: String(error?.message || error) }));
     } finally {
       setIsRecordingBusy(false);
     }
@@ -338,11 +360,11 @@ export function useScreenshotRecording({
       setIsRecordingBusy(true);
       if (recordingStatusRef.current === "recording") await invoke("stop_recording");
       const segments = [...recordingSegmentsRef.current];
-      if (segments.length === 0) throw new Error("没有可保存的录屏片段");
+      if (segments.length === 0) throw new Error(t("recordingNoSegments"));
       const win = getCurrentWindow();
       await win.setAlwaysOnTop(false).catch(() => {});
       await win.hide().catch(() => {});
-      await invoke('set_capturing_state', { state: false }).catch(() => {});
+      await invoke("set_capturing_state", { state: false }).catch(() => {});
       const savedPath = await invoke<string>("concat_recording_segments", { segmentPaths: segments });
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       recordingSegmentsRef.current = [];
@@ -351,13 +373,13 @@ export function useScreenshotRecording({
       setRecordingStatus("idle");
       resetScreenshotState();
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
-      message.success(`录屏已保存：${savedPath}`);
+      message.success(t("recordingSaved", { path: savedPath }));
       triggerRender();
       setTimeout(() => {
         closeRecordingBorderWindows([], { source: "recording-finish", hideMain: true }).catch(console.error);
       }, 100);
     } catch (error: any) {
-      message.error("完成录屏失败：" + (error?.message || error));
+      message.error(t("recordingFinishFailed", { error: String(error?.message || error) }));
       setRecordingStatus("recording");
       await getCurrentWindow().show().catch(() => {});
     } finally {
@@ -372,7 +394,7 @@ export function useScreenshotRecording({
       setIsRecordingBusy(true);
       await invoke("cancel_recording_process").catch(() => {});
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
-      message.info("已取消录屏并清理临时片段");
+      message.info(t("recordingCancelled"));
     } finally {
       recordingSegmentsRef.current = [];
       setRecordingStartedAt(null);

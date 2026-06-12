@@ -7,11 +7,49 @@ import type {
   TranslationChannel,
   TranslationChannelTestStatuses,
 } from "../components/settings/types";
+import type { Config } from "../types/config";
 import { DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT } from "../utils/defaultTranslationPrompt";
 
 type ServerChannelPayload = {
   channel: string;
   config: Record<string, string>;
+};
+
+type SettingsFormValues = Config & {
+  autostart?: boolean;
+  baiduAppId?: string;
+  baiduSecretKey?: string;
+  newApiBase?: string;
+  newApiKey?: string;
+  newApiModel?: string;
+  newApiPrompt?: string;
+  newApiDomain?: string;
+  deeplEndpoint?: string;
+  deeplApiKey?: string;
+  deeplFormality?: string;
+};
+
+type ServerCurrentConfigResponse = {
+  status?: string;
+  active_channel?: string;
+  error?: string;
+};
+
+type ModelListResponse = {
+  status?: string;
+  models?: string[];
+  error?: string;
+};
+
+type ChannelTestResponse = {
+  status?: string;
+  result?: string;
+  error?: string;
+};
+
+type ConfigSaveResponse = {
+  status?: string;
+  error?: string;
 };
 
 type SaveSettingsOptions = {
@@ -39,7 +77,9 @@ const publicTranslationServiceError = (error: unknown) => {
   return messageText;
 };
 
-const buildServerUrlCandidates = (values: any) => {
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const buildServerUrlCandidates = (values: Pick<SettingsFormValues, "serverUrl" | "lanServerUrl" | "preferLanServer">) => {
   const remoteUrl = values.serverUrl || "";
   const candidates = [
     ...(values.preferLanServer && values.lanServerUrl ? [values.lanServerUrl] : []),
@@ -65,11 +105,15 @@ const requestJsonFromCandidates = async <T>(
       const response = await fetch(`${trimTrailingSlash(serverUrl)}${path}`, init);
       const data = await response.json().catch(() => ({} as T));
       if (!response.ok) {
-        throw new Error((data as any).error || `状态码：${response.status}`);
+        const responseError =
+          typeof data === "object" && data !== null && "error" in data
+            ? String((data as { error?: unknown }).error || "")
+            : "";
+        throw new Error(responseError || `状态码：${response.status}`);
       }
       return { serverUrl, data, response };
-    } catch (error: any) {
-      errors.push(`${serverUrl}: ${error?.message || error}`);
+    } catch (error: unknown) {
+      errors.push(`${serverUrl}: ${errorMessage(error)}`);
     }
   }
   console.warn("Translation service request failed", { path, errors });
@@ -103,7 +147,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     isLoadingSettingsRef.current = true;
     try {
       const configStr = await invoke<string>("get_config");
-      const parsedConfig = JSON.parse(configStr || "{}");
+      const parsedConfig = JSON.parse(configStr || "{}") as SettingsFormValues;
       const normalizedConfig = {
         ...parsedConfig,
         imageSaveNameFormat: !parsedConfig.imageSaveNameFormat || parsedConfig.imageSaveNameFormat === "yyyyMMdd_HHmm"
@@ -141,7 +185,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
 
   const syncActiveServerChannel = async (serverUrls: string[], clientToken: string) => {
     try {
-      const { serverUrl, data: serverConfig } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/current", {
+      const { serverUrl, data: serverConfig } = await requestJsonFromCandidates<ServerCurrentConfigResponse>(serverUrls, "/api/config/current", {
         headers: { "x-api-key": clientToken },
       });
       if (serverConfig.status === "success" && serverConfig.active_channel) {
@@ -174,12 +218,12 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
     autoSaveTimerRef.current = window.setTimeout(() => {
       autoSaveTimerRef.current = null;
-      void saveSettingsValues(form.getFieldsValue(true), { showMessage: false, syncServer: false });
+      void saveSettingsValues(form.getFieldsValue(true) as SettingsFormValues, { showMessage: false, syncServer: false });
     }, 400);
   };
 
   const fetchModels = async () => {
-    const values = form.getFieldsValue(true);
+    const values = form.getFieldsValue(true) as SettingsFormValues;
     const serverUrls = buildServerUrlCandidates(values);
     const clientToken = form.getFieldValue("clientToken") || "";
     const newApiBase = form.getFieldValue("newApiBase");
@@ -196,7 +240,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
 
     setIsFetchingModels(true);
     try {
-      const { data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/fetch_models", {
+      const { data: resData } = await requestJsonFromCandidates<ModelListResponse>(serverUrls, "/api/config/fetch_models", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -219,7 +263,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       } else {
         throw new Error(resData.error || "模型列表拉取失败");
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       message.warning(`获取模型列表失败，不影响手动填写模型：${publicTranslationServiceError(error)}`);
     } finally {
       setIsFetchingModels(false);
@@ -227,7 +271,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   };
 
   const testChannel = async (channel: TranslationChannel) => {
-    const values = form.getFieldsValue(true);
+    const values = form.getFieldsValue(true) as SettingsFormValues;
     const serverUrls = buildServerUrlCandidates(values);
     const clientToken = form.getFieldValue("clientToken") || "";
 
@@ -268,7 +312,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }));
 
     try {
-      const { serverUrl, data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/test", {
+      const { serverUrl, data: resData } = await requestJsonFromCandidates<ChannelTestResponse>(serverUrls, "/api/config/test", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -300,7 +344,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       } else {
         throw new Error(resData.error || "接口验证失败");
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       const errorMessage = publicTranslationServiceError(error);
       setChannelTestStatuses((prev) => ({
         ...prev,
@@ -318,7 +362,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
   };
 
-  const buildServerChannelPayload = (values: any): ServerChannelPayload => {
+  const buildServerChannelPayload = (values: SettingsFormValues): ServerChannelPayload => {
     const channel = values.channel || "google";
     const payload: ServerChannelPayload = { channel, config: {} };
     if (channel === "baidu") {
@@ -344,14 +388,14 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     return payload;
   };
 
-  const saveServerChannelConfig = async (values: any) => {
+  const saveServerChannelConfig = async (values: SettingsFormValues) => {
     const serverUrls = buildServerUrlCandidates(values);
     const clientToken = values.clientToken || "";
     if (serverUrls.length === 0) {
       throw new Error("翻译服务未配置，请联系维护者。");
     }
 
-    const { serverUrl, data: resData } = await requestJsonFromCandidates<any>(serverUrls, "/api/config/save", {
+    const { serverUrl, data: resData } = await requestJsonFromCandidates<ConfigSaveResponse>(serverUrls, "/api/config/save", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -375,7 +419,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     });
   };
 
-  const saveSettingsValues = async (values: any, options: SaveSettingsOptions = {}) => {
+  const saveSettingsValues = async (values: SettingsFormValues, options: SaveSettingsOptions = {}) => {
     const { showMessage = true, successMessage, syncServer = false } = options;
     setIsSaving(true);
     try {
@@ -398,8 +442,8 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
           translateHotkey: configValues.translateHotkey || "",
           recordingHotkey: configValues.recordingHotkey || "",
         });
-      } catch (shortcutError: any) {
-        message.warning(`本地配置已保存，但快捷键注册失败：${shortcutError.message || shortcutError}`);
+      } catch (shortcutError: unknown) {
+        message.warning(`本地配置已保存，但快捷键注册失败：${errorMessage(shortcutError)}`);
       }
       await invoke("set_autostart_enabled", { enabled: Boolean(autostartVal) });
 
@@ -413,7 +457,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
             serviceUrl: savedServerUrl,
             checkedAt: new Date().toISOString(),
           });
-        } catch (serverError: any) {
+        } catch (serverError: unknown) {
           const errorMessage = publicTranslationServiceError(serverError);
           setServerChannelStatus({
             error: errorMessage,
@@ -427,15 +471,15 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         message.success(successMessage || (syncServer && serverSaved ? "设置保存成功。" : "本地设置已保存。"));
       }
       onConfigSaved();
-    } catch (error: any) {
-      message.error(`保存失败：${error.message || error}`);
+    } catch (error: unknown) {
+      message.error(`保存失败：${errorMessage(error)}`);
     } finally {
       setIsSaving(false);
     }
   };
 
   const activateGoogleChannel = async () => {
-    const values = { ...form.getFieldsValue(true), channel: "google" };
+    const values = { ...(form.getFieldsValue(true) as SettingsFormValues), channel: "google" };
     form.setFieldValue("channel", "google");
     setCurrentChannel("google");
     setIsActivatingGoogle(true);
@@ -449,7 +493,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       });
       message.success("Google Translate 已设为当前活动通道。");
       onConfigSaved();
-    } catch (error: any) {
+    } catch (error: unknown) {
       const errorMessage = publicTranslationServiceError(error);
       setServerChannelStatus({
         error: errorMessage,
@@ -461,7 +505,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
   };
 
-  const onFinish = async (values: any) => {
+  const onFinish = async (values: SettingsFormValues) => {
     await saveSettingsValues(values, { showMessage: true, syncServer: true });
   };
 
@@ -471,7 +515,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       autoSaveTimerRef.current = null;
     }
     form.setFieldsValue(patch);
-    void saveSettingsValues({ ...form.getFieldsValue(true), ...patch }, {
+    void saveSettingsValues({ ...(form.getFieldsValue(true) as SettingsFormValues), ...patch }, {
       showMessage: true,
       successMessage,
       syncServer: false,

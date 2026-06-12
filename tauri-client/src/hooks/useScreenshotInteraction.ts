@@ -6,6 +6,7 @@ import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation
 import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { getDetectionCandidatesAt } from "../utils/detectionCandidates";
 import { getPhysicalSelection } from "../utils/screenshotImage";
+import { logScreenshotPerf } from "../utils/debugLog";
 
 const MIN_AUTO_ACTION_DRAG_PX = 8;
 
@@ -253,9 +254,7 @@ export function useScreenshotInteraction({
 
   const logInteractionBaseline = (phase: string, detail = "") => {
     const session = activeSessionIdRef?.current || "interaction";
-    invoke("log_screenshot_perf", {
-      message: `[baseline] session=${session} phase=${phase} elapsed_ms=0 ${detail}`,
-    }).catch(() => {});
+    logScreenshotPerf(`[baseline] session=${session} phase=${phase} elapsed_ms=0 ${detail}`);
   };
 
   const waitForImageReady = async (timeoutMs = 1500) => {

@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { App as AntdApp } from "antd";
 import { closeWindowIfExists, type RecordingWindowPayload } from "../utils/recordingWindows";
+import { traceLog } from "../utils/debugLog";
 
 export type OverlayStatus = "ready" | "countdown" | "recording" | "paused" | "saving" | "saved";
 
@@ -28,9 +29,7 @@ const setWindowCaptureExcludedIfExists = async (label: string, excluded: boolean
 
 const setRecordingCaptureShield = async (excluded: boolean, controlLabel = getCurrentWindow().label) => {
   const labels = Array.from(new Set(["main", "screenshot", controlLabel, "recording_notice"]));
-  await Promise.all([
-    ...labels.map((label) => setWindowCaptureExcludedIfExists(label, excluded)),
-  ]);
+  await Promise.all(labels.map((label) => setWindowCaptureExcludedIfExists(label, excluded)));
 };
 
 export function useRecordingControl() {
@@ -56,30 +55,30 @@ export function useRecordingControl() {
   const { message } = AntdApp.useApp();
 
   const setOverlayStatus = (nextStatus: OverlayStatus) => {
-    console.log("[window-trace] setOverlayStatus", nextStatus);
+    traceLog("[window-trace] setOverlayStatus", nextStatus);
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     invoke("set_recording_overlay_status", { status: nextStatus }).catch(() => {});
   };
 
   const setOverlayBusy = (nextBusy: boolean) => {
-    console.log("[window-trace] setOverlayBusy", nextBusy);
+    traceLog("[window-trace] setOverlayBusy", nextBusy);
     busyRef.current = nextBusy;
     setBusy(nextBusy);
   };
 
   const closeCurrentRecordingWindowSafely = async () => {
-    console.log(`[window-trace] closeCurrentRecordingWindowSafely start label=${winLabel}`);
+    traceLog(`[window-trace] closeCurrentRecordingWindowSafely start label=${winLabel}`);
     allowCloseRef.current = true;
     await invoke("hide_main_window").catch(() => {});
     await winRef.current.setAlwaysOnTop(false).catch(() => {});
     await withTimeout(winRef.current.hide().catch(() => {}), 150);
-    console.log("[window-trace] closeCurrentRecordingWindowSafely calling winRef.current.close()");
+    traceLog("[window-trace] closeCurrentRecordingWindowSafely calling winRef.current.close()");
     await withTimeout(winRef.current.close().catch(() => {}), 300);
   };
 
   const dismissOverlay = async (notifyParent = true) => {
-    console.log(`[window-trace] dismissOverlay start notifyParent=${notifyParent}`);
+    traceLog(`[window-trace] dismissOverlay start notifyParent=${notifyParent}`);
     cancelledRef.current = true;
     allowCloseRef.current = true;
     await setRecordingCaptureShield(false, winLabel);
@@ -98,12 +97,12 @@ export function useRecordingControl() {
   };
 
   const startSegment = async () => {
-    console.log("[window-trace] startSegment enter");
+    traceLog("[window-trace] startSegment enter");
     const current = sessionRef.current;
-    if (!current) throw new Error("Recording session is not ready");
-    console.log("[window-trace] before invoke start_recording");
+    if (!current) throw new Error("录制会话尚未就绪");
+    traceLog("[window-trace] before invoke start_recording");
     const path = await invoke<string>("start_recording", { options: current.options });
-    console.log("[window-trace] after invoke start_recording, path=", path);
+    traceLog("[window-trace] after invoke start_recording, path=", path);
     if (cancelledRef.current) {
       await withTimeout(invoke("cancel_recording_process").catch(() => {}), 800);
       await invoke("cleanup_recording_files", { paths: [path] }).catch(() => {});
@@ -125,7 +124,14 @@ export function useRecordingControl() {
   };
 
   const startRecording = async () => {
-    console.log("[window-trace] startRecording enter, busy:", busyRef.current, "status:", statusRef.current, "sessionExists:", !!sessionRef.current);
+    traceLog(
+      "[window-trace] startRecording enter, busy:",
+      busyRef.current,
+      "status:",
+      statusRef.current,
+      "sessionExists:",
+      !!sessionRef.current,
+    );
     if (busyRef.current || statusRef.current !== "ready") return;
     setSavedPath(null);
     segmentsRef.current = [];
@@ -138,24 +144,24 @@ export function useRecordingControl() {
     try {
       const seconds = Math.max(0, Math.floor(sessionRef.current?.countdownSeconds || 0));
       if (seconds > 0) {
-        console.log("[window-trace] countdown start", seconds);
+        traceLog("[window-trace] countdown start", seconds);
         setOverlayStatus("countdown");
         for (let value = seconds; value > 0; value -= 1) {
           setCountdown(value);
           await new Promise((resolve) => window.setTimeout(resolve, 1000));
           if (cancelledRef.current) return;
         }
-        console.log("[window-trace] countdown end");
+        traceLog("[window-trace] countdown end");
       }
       setCountdown(null);
       await setRecordingCaptureShield(true, winLabel);
       await startSegment();
     } catch (error: any) {
-      console.log("[window-trace] startRecording catch error", error);
+      traceLog("[window-trace] startRecording catch error", error);
       message.error(`启动录制失败：${error?.message || error}`);
       setOverlayStatus("ready");
     } finally {
-      console.log("[window-trace] startRecording finally setOverlayBusy(false)");
+      traceLog("[window-trace] startRecording finally setOverlayBusy(false)");
       setOverlayBusy(false);
     }
   };
@@ -168,7 +174,7 @@ export function useRecordingControl() {
       if (activeStartedAtRef.current !== null) await stopActiveSegment();
       if (cancelledRef.current) return;
       const segments = [...segmentsRef.current];
-      if (segments.length === 0) throw new Error("No recording segment to save");
+      if (segments.length === 0) throw new Error("没有可保存的录制片段");
       const nextSavedPath = await invoke<string>("concat_recording_segments", { segmentPaths: segments });
       if (cancelledRef.current) return;
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
@@ -223,7 +229,7 @@ export function useRecordingControl() {
   };
 
   const cancelRecording = async () => {
-    console.log("[window-trace] ui-close-click / cancelRecording start");
+    traceLog("[window-trace] ui-close-click / cancelRecording start");
     if (closingRef.current) return;
     if (statusRef.current === "saved") {
       await closeOverlay();
@@ -232,11 +238,11 @@ export function useRecordingControl() {
     closingRef.current = true;
     cancelledRef.current = true;
     allowCloseRef.current = true;
-    
+
     await withTimeout(winRef.current.setAlwaysOnTop(false).catch(() => {}), 150);
     await withTimeout(winRef.current.hide().catch(() => {}), 150);
     await invoke("hide_main_window").catch(() => {});
-    
+
     setOverlayBusy(true);
     setOverlayStatus("saving");
     try {
@@ -252,7 +258,7 @@ export function useRecordingControl() {
       setOverlayBusy(false);
       await withTimeout(invoke("hide_main_window").catch(() => {}), 300);
       await withTimeout(invoke("cancel_screenshot").catch(() => {}), 300);
-      console.log("[window-trace] cancelRecording complete, closing window now");
+      traceLog("[window-trace] cancelRecording complete, closing window now");
       allowCloseRef.current = true;
       await withTimeout(invoke("force_close_recording_controls", { source: "ui-cancel" }).catch(() => {}), 300);
       await winRef.current.close().catch(() => {});
@@ -277,7 +283,7 @@ export function useRecordingControl() {
       await closeWindowIfExists("recording_notice");
       const notice = new WebviewWindow("recording_notice", {
         url: `index.html?text=${encodeURIComponent("录制已保存")}`,
-        title: "Recording Saved",
+        title: "录制已保存",
         decorations: false,
         transparent: true,
         alwaysOnTop: true,
@@ -301,20 +307,20 @@ export function useRecordingControl() {
   };
 
   useEffect(() => {
-    console.log(`[window-trace] Guard check. label=${winLabel}`);
+    traceLog(`[window-trace] Guard check. label=${winLabel}`);
     if (!winLabel.startsWith("recording_control_")) {
       invoke("hide_main_window").catch(() => {});
       winRef.current.close().catch(() => {});
       return;
     }
     const urlParams = new URLSearchParams(window.location.search);
-    const key = urlParams.get('recordingSessionKey');
-    console.log(`[window-trace] URL recordingSessionKey=${key}`);
+    const key = urlParams.get("recordingSessionKey");
+    traceLog(`[window-trace] URL recordingSessionKey=${key}`);
 
     const applySession = (payload: RecordingWindowPayload, source: string) => {
       if (sessionStartedRef.current) return;
       sessionStartedRef.current = true;
-      console.log(`[window-trace] applySession from ${source}`);
+      traceLog(`[window-trace] applySession from ${source}`);
       cancelledRef.current = false;
       sessionRef.current = payload;
       segmentsRef.current = [];
@@ -324,24 +330,24 @@ export function useRecordingControl() {
       setSavedPath(null);
       setSessionReady(true);
       setOverlayStatus("ready");
-      console.log("[window-trace] sessionReady -> true");
+      traceLog("[window-trace] sessionReady -> true");
       if (payload.autoStart) window.setTimeout(() => startRecording(), 0);
     };
 
     if (key) {
       try {
         const raw = window.localStorage.getItem(key);
-        console.log(`[window-trace] localStorage value exists: ${!!raw}`);
+        traceLog(`[window-trace] localStorage value exists: ${!!raw}`);
         if (raw) applySession(JSON.parse(raw) as RecordingWindowPayload, "localStorage");
       } catch (error) {
-        console.log("[window-trace] failed to parse session from localStorage", error);
+        traceLog("[window-trace] failed to parse session from localStorage", error);
       }
     }
 
     let unlistenSession: (() => void) | null = null;
     let unlistenClose: (() => void) | null = null;
     listen<RecordingWindowPayload>("recording-overlay-session", (event) => {
-      console.log("[window-trace] listen('recording-overlay-session') received payload", !!event.payload);
+      traceLog("[window-trace] listen('recording-overlay-session') received payload", !!event.payload);
       applySession(event.payload, "event");
     }).then((unsub) => {
       unlistenSession = unsub;
@@ -356,7 +362,9 @@ export function useRecordingControl() {
       if (allowCloseRef.current || closingRef.current) return;
       event.preventDefault();
       cancelRecording();
-    }).then((unsub) => { unlistenClose = unsub; });
+    }).then((unsub) => {
+      unlistenClose = unsub;
+    });
 
     return () => {
       unlistenSession?.();
@@ -380,7 +388,7 @@ export function useRecordingControl() {
         toggleRecord();
       } else if (event.key === "Escape") {
         event.preventDefault();
-        console.log("[window-trace] escape close recording_control");
+        traceLog("[window-trace] escape close recording_control");
         cancelRecording();
       } else if (event.code === "Space") {
         event.preventDefault();

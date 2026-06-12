@@ -2,6 +2,7 @@ import type { MouseEvent } from "react";
 import { AudioOutlined, CaretRightOutlined, CloseOutlined, CopyOutlined, FolderOpenOutlined, PauseOutlined } from "@ant-design/icons";
 import { Button, Tooltip } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { traceLog } from "../../utils/debugLog";
 
 export type RecordingOverlayStatus = "ready" | "countdown" | "recording" | "paused" | "saving" | "saved";
 
@@ -127,7 +128,7 @@ export default function RecordingControlHud({
           <Button className="ysn-rec-action" data-no-drag="true" type="text" icon={<FolderOpenOutlined />} onClick={onOpenFolder} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: "#2563eb", background: "#eff6ff" }} />
         </Tooltip>
         <Tooltip {...tooltipProps} title="关闭 / 取消">
-          <button className="ysn-rec-action" data-no-drag="true" type="button" onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }} onClick={(e) => { e.stopPropagation(); e.preventDefault(); console.log('[window-trace] close-button click fired'); onCancel(); }} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: "#dc2626", background: "#fef2f2", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+          <button className="ysn-rec-action" data-no-drag="true" type="button" onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }} onClick={(e) => { e.stopPropagation(); e.preventDefault(); traceLog("[window-trace] close-button click fired"); onCancel(); }} style={{ width: 36, height: 36, minWidth: 36, borderRadius: 999, color: "#dc2626", background: "#fef2f2", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
             <CloseOutlined />
           </button>
         </Tooltip>

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { Config } from "../types/config";
 import { DEFAULT_TRANSLATION_SERVICE_URL } from "../utils/translationService";
 
-const buildStatusServerUrl = (config: any) => (
+const buildStatusServerUrl = (config: Config) => (
   config.preferLanServer && config.lanServerUrl ? config.lanServerUrl : (config.serverUrl || DEFAULT_TRANSLATION_SERVICE_URL)
 );
 
@@ -55,7 +56,7 @@ export default function useServerStatus() {
   const fetchServerUrl = useCallback(async () => {
     try {
       const configStr = await invoke<string>("get_config");
-      const parsedConfig = JSON.parse(configStr);
+      const parsedConfig = JSON.parse(configStr) as Config;
       const nextUrl = buildStatusServerUrl(parsedConfig);
       setServerUrl(nextUrl);
       checkStatus(nextUrl);

@@ -11,6 +11,9 @@ mod tests {
     use crate::recording_process::device_detector::{
         ffmpeg_supports_input_format, parse_quoted_audio_devices,
     };
+    use crate::recording_process::ffmpeg_installer::{
+        ffmpeg_asset_name_from_url, ffmpeg_checksum_url_for_download, parse_ffmpeg_sha256_manifest,
+    };
     use crate::recording_process::process_manager::{
         build_recording_args, cleanup_recording_files, default_recording_output_dir,
         escape_concat_path, ffmpeg_stderr_excerpt, recording_temp_dir, resolution_scale_filter,
@@ -206,6 +209,35 @@ File formats:
         assert_eq!(sanitize_tag("release/2026:01 beta"), "release_2026_01_beta");
         assert_eq!(sanitize_tag("***"), "___");
     }
+
+    #[test]
+    fn test_ffmpeg_checksum_manifest_matches_asset_name() {
+        let manifest = "\
+b8bed3238f8bf0e3c3388fb3afafc15ef6265ea82999cbf57639a323c6ee7321  ffmpeg-master-latest-win64-gpl-shared.zip\n\
+06cd375d0c2051768a727f8d14c1015afc39d2cca7167949153547144fb3df91  ffmpeg-master-latest-win64-gpl.zip\n";
+        assert_eq!(
+            parse_ffmpeg_sha256_manifest(manifest, "ffmpeg-master-latest-win64-gpl.zip"),
+            Some("06cd375d0c2051768a727f8d14c1015afc39d2cca7167949153547144fb3df91".to_string())
+        );
+        assert_eq!(parse_ffmpeg_sha256_manifest(manifest, "missing.zip"), None);
+    }
+
+    #[test]
+    fn test_ffmpeg_release_download_url_maps_to_checksum_manifest() {
+        let url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+        assert_eq!(
+            ffmpeg_asset_name_from_url(url),
+            Some("ffmpeg-master-latest-win64-gpl.zip".to_string())
+        );
+        assert_eq!(
+            ffmpeg_checksum_url_for_download(url),
+            Some(
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256"
+                    .to_string()
+            )
+        );
+    }
+
     #[test]
     fn test_recording_overlay_status_color_mapping() {
         assert_eq!(recording_color_ref("ready"), RECORDING_BORDER_BLUE);
