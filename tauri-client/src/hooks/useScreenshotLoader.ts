@@ -41,13 +41,12 @@ interface UseScreenshotLoaderProps {
   clearScrollCaptureState: () => void;
   clearRecordingState: () => void;
   resetAnnotations: () => void;
+  resetInteractionState: () => void;
   rectRef: React.MutableRefObject<Rect>;
   hasSelectedRef: React.MutableRefObject<boolean>;
   setCurrentRect: (next: Rect, syncState?: boolean) => void;
   setSelection: (selected: boolean) => void;
-  setHasSelected: (selected: boolean) => void;
-  setTranslatedResult: (res: string | null) => void;
-  setTranslatePairs: (pairs: any[] | null) => void;
+  resetOcrState: () => void;
   setIsEditing: (editing: boolean) => void;
   setAnnotationTool: (tool: any) => void;
   setAnnotationColor: (color: string) => void;
@@ -95,13 +94,12 @@ export function useScreenshotLoader({
   clearScrollCaptureState,
   clearRecordingState,
   resetAnnotations,
+  resetInteractionState,
   rectRef,
   hasSelectedRef,
   setCurrentRect,
   setSelection,
-  setHasSelected,
-  setTranslatedResult,
-  setTranslatePairs,
+  resetOcrState,
   setIsEditing,
   setAnnotationTool,
   setAnnotationColor,
@@ -148,14 +146,26 @@ export function useScreenshotLoader({
     }
   };
 
+  const clearDisplayCanvas = () => {
+    const canvas = document.querySelector("canvas");
+    const ctx = canvas?.getContext("2d");
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  };
+
   const startNewCaptureSession = (mode = "normal", remoteSessionId?: string | number, preserveVisibleShell = false, physicalBounds?: ScreenshotPhysicalBounds | null) => {
     clearPendingConfirm();
+    message.destroy("screenshot-overlay");
     captureIdRef.current += 1;
     const currentId = captureIdRef.current;
-    const preserveShellSelection = preserveVisibleShell && (
+    const nextRemoteSessionId = remoteSessionId == null ? null : String(remoteSessionId);
+    const continuesCurrentSession = nextRemoteSessionId !== null && displayedSessionIdRef.current === nextRemoteSessionId;
+    const keepVisibleShell = preserveVisibleShell && continuesCurrentSession;
+    const preserveShellSelection = keepVisibleShell && (
       hasSelectedRef.current || rectRef.current.w > 0 || rectRef.current.h > 0
     );
-    displayedSessionIdRef.current = remoteSessionId == null ? null : String(remoteSessionId);
+    displayedSessionIdRef.current = nextRemoteSessionId;
     displayedPhysicalBoundsRef.current = physicalBounds ?? null;
     frontendSessionStartedAtRef.current = performance.now();
     logScreenshotBaseline(remoteSessionId || currentId, "frontend_session_start", 0, `mode=${mode}`);
@@ -167,10 +177,9 @@ export function useScreenshotLoader({
 
     imageRef.current = null;
     translatedImgRef.current = null;
+    maskedCanvasRef.current = null;
     analysisImageDataRef.current = null;
     textSourceSnapshotPromiseRef.current = null;
-    setTranslatedResult(null);
-    setTranslatePairs(null);
     setIsEditing(false);
     resetAnnotations();
     setAnnotationTool(null);
@@ -184,9 +193,12 @@ export function useScreenshotLoader({
 
     clearScrollCaptureState();
     clearRecordingState();
-    if (!preserveVisibleShell) {
+    if (!keepVisibleShell) {
+      resetOcrState();
+      resetInteractionState();
       clearWindowRects();
       nativeOverlayVisibleRef.current = false;
+      clearDisplayCanvas();
     }
 
     if (!preserveShellSelection) {
@@ -196,8 +208,8 @@ export function useScreenshotLoader({
     setScreenshotMode(mode);
     screenshotModeRef.current = mode;
     setScreenshotState("initializing");
-    overlayVisibleRef.current = preserveVisibleShell;
-    setOverlayVisible(preserveVisibleShell);
+    overlayVisibleRef.current = keepVisibleShell;
+    setOverlayVisible(keepVisibleShell);
     setDbgStatus({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
 
     return currentId;
@@ -415,6 +427,7 @@ export function useScreenshotLoader({
             if (sessionId === captureIdRef.current) {
               logScreenshotBaseline(remoteSessionId || sessionId, "candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
               loadWindowRects(true).then(() => {
+                if (sessionId !== captureIdRef.current) return;
                 logScreenshotBaseline(remoteSessionId || sessionId, "candidate_first_batch", performance.now() - frontendSessionStartedAtRef.current);
                 draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
               }).catch(() => {});
@@ -859,9 +872,9 @@ export function useScreenshotLoader({
       timeoutRef.current = null;
     }
     setCurrentRect(EMPTY_RECT, true);
-    setHasSelected(false);
-    setTranslatedResult(null);
-    setTranslatePairs(null);
+    setSelection(false);
+    resetOcrState();
+    resetInteractionState();
     setIsEditing(false);
     resetAnnotations();
     setAnnotationTool(null);
@@ -891,6 +904,7 @@ export function useScreenshotLoader({
     analysisImageDataRef.current = null;
     displayedSessionIdRef.current = null;
     displayedPhysicalBoundsRef.current = null;
+    clearDisplayCanvas();
     clearPendingSharedBuffers();
   }
 

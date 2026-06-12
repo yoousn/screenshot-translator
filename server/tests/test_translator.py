@@ -2,6 +2,7 @@ import pytest
 import requests
 from unittest.mock import patch
 from translator import BaseTranslator, GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, SEGMENT_SEPARATOR
+from http_client import get_official_translation_session, get_public_session
 
 
 class FakeLLMResponse:
@@ -58,7 +59,7 @@ class FakeGoogleBatchSession:
         self.translated_full = translated_full
         self.last_data = None
 
-    def post(self, _url, data, timeout):
+    def post(self, _url, data, timeout, **_kwargs):
         self.last_data = data
         return FakeGoogleBatchResponse(self.translated_full)
 
@@ -71,6 +72,16 @@ def test_google_translation():
         pytest.skip(f"Google Translate is not reachable in current env: {exc}")
     assert isinstance(res, str)
     assert res.strip()
+
+
+def test_official_providers_use_proxy_compatible_session():
+    assert GoogleTranslator().session is get_official_translation_session()
+    assert BaiduTranslator("app-id", "secret").session is get_official_translation_session()
+    assert DeepLTranslator("deepl-key").session is get_official_translation_session()
+    with patch("translator.normalize_public_base_url", lambda url: url.rstrip("/")):
+        llm = LLMTranslator("https://example.com", "sk-test", "model-a")
+    assert llm.session is get_public_session()
+    assert get_public_session() is not get_official_translation_session()
 
 
 def test_google_batch_uses_stable_segment_separator():
@@ -183,6 +194,11 @@ def test_deepl_batch_uses_official_v2_translate_protocol():
     assert ("target_lang", "ZH-HANS") in translator.session.last_data
     assert ("source_lang", "EN") in translator.session.last_data
     assert translator.session.last_data.count(("text", "Hello")) == 1
+
+
+def test_deepl_rejects_non_official_endpoint():
+    with pytest.raises(ValueError):
+        DeepLTranslator("deepl-key", "https://127.0.0.1:8318")
 
 
 class CountingTranslator(BaseTranslator):

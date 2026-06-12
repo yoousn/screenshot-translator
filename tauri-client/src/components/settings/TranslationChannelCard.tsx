@@ -8,7 +8,7 @@ import {
   WarningOutlined,
 } from "@ant-design/icons";
 import { useI18n } from "../../i18n";
-import { getChannelOptions, getTargetLangOptions } from "./settingsOptions";
+import { getChannelOptions, getDeepLEndpointOptions, getTargetLangOptions } from "./settingsOptions";
 import type {
   SettingsControllerState,
   SettingsForm,
@@ -102,12 +102,6 @@ export default function TranslationChannelCard({
     </Tag>
   );
 
-  const renderUnavailableTag = () => (
-    <Tag color="default" icon={<WarningOutlined />} style={{ marginInlineEnd: 0 }}>
-      {labels.temporarilyUnavailable || "Unavailable"}
-    </Tag>
-  );
-
   const renderTestTag = (status?: TranslationChannelTestStatus) => {
     if (!status) {
       return <Tag icon={<ClockCircleOutlined />}>{labels.channelHealthUntested}</Tag>;
@@ -144,7 +138,6 @@ export default function TranslationChannelCard({
     configured: boolean;
     testStatus?: TranslationChannelTestStatus;
     risk?: boolean;
-    unavailable?: boolean;
   }> = [
     {
       channel: "google",
@@ -173,7 +166,6 @@ export default function TranslationChannelCard({
       detail: labels.deeplUnavailableDesc || labels.channelHealthDeepLDesc,
       configured: deeplMissing.length === 0,
       testStatus: channelTestStatuses.deepl,
-      unavailable: true,
     },
   ];
 
@@ -232,7 +224,7 @@ export default function TranslationChannelCard({
                   <Tag color="warning" icon={<WarningOutlined />} style={{ marginInlineEnd: 0 }}>
                     {labels.channelHealthGoogleRisk}
                   </Tag>
-                ) : row.unavailable ? renderUnavailableTag() : renderTestTag(row.testStatus)}
+                ) : renderTestTag(row.testStatus)}
               </Space>
             </div>
           ))}
@@ -343,27 +335,26 @@ export default function TranslationChannelCard({
       {currentChannel === "deepl" && (
         <Card type="inner" title={labels.deeplConfig} style={{ marginTop: 12 }}>
           <Alert
-            type="warning"
+            type="info"
             showIcon
-            message={labels.deeplUnavailableTitle || "DeepL channel is unavailable"}
-            description={labels.deeplUnavailableDesc || "Use Google, Baidu, or the LLM translation channel in this build."}
+            message={labels.deeplUnavailableTitle || "Choose your DeepL API plan"}
+            description={labels.deeplUnavailableDesc || "Use the Free endpoint for DeepL API Free keys and the Pro endpoint for paid API keys."}
             style={{ marginBottom: 12 }}
           />
           <Row gutter={16}>
             <Col xs={24} sm={12}>
               <Form.Item label={labels.deeplEndpoint} name="deeplEndpoint" style={{ marginBottom: 12 }}>
-                <Input disabled placeholder="https://api-free.deepl.com" style={{ height: 32 }} />
+                <Select options={getDeepLEndpointOptions(labels)} style={{ height: 32 }} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
               <Form.Item label="API Key" name="deeplApiKey" style={{ marginBottom: 12 }}>
-                <Input.Password disabled placeholder="DeepL-Auth-Key" style={{ height: 32 }} />
+                <Input.Password placeholder="DeepL-Auth-Key" style={{ height: 32 }} />
               </Form.Item>
             </Col>
           </Row>
           <Form.Item label={labels.deeplFormality} name="deeplFormality" style={{ marginBottom: 12 }}>
             <Select
-              disabled
               style={{ height: 32 }}
               options={[
                 { value: "default", label: labels.deeplFormalityDefault || "Default" },
@@ -372,8 +363,8 @@ export default function TranslationChannelCard({
               ]}
             />
           </Form.Item>
-          <Button disabled block style={{ height: 32 }}>
-            {labels.temporarilyUnavailable || "Unavailable"}
+          <Button type="dashed" onClick={() => testChannel("deepl")} loading={isTestingDeepl} block style={{ height: 32 }}>
+            {labels.testAndEnable}
           </Button>
         </Card>
       )}

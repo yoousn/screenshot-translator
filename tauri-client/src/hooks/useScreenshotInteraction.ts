@@ -216,14 +216,20 @@ export function useScreenshotInteraction({
 
   const drawRafRef = useRef<number | null>(null);
   const drawRectRef = useRef<Rect | null>(null);
+  const drawSessionRef = useRef<string | null>(null);
 
   const scheduleDraw = (x: number, y: number, w: number, h: number) => {
     drawRectRef.current = { x, y, w, h };
+    drawSessionRef.current = activeSessionIdRef?.current || null;
     if (drawRafRef.current === null) {
       drawRafRef.current = requestAnimationFrame(() => {
         drawRafRef.current = null;
-        if (drawRectRef.current) {
-          draw(drawRectRef.current.x, drawRectRef.current.y, drawRectRef.current.w, drawRectRef.current.h);
+        const next = drawRectRef.current;
+        const scheduledSession = drawSessionRef.current;
+        drawRectRef.current = null;
+        drawSessionRef.current = null;
+        if (next && overlayVisibleRef.current && scheduledSession === (activeSessionIdRef?.current || null)) {
+          draw(next.x, next.y, next.w, next.h);
         }
       });
     }
@@ -234,6 +240,8 @@ export function useScreenshotInteraction({
       cancelAnimationFrame(drawRafRef.current);
       drawRafRef.current = null;
     }
+    drawRectRef.current = null;
+    drawSessionRef.current = null;
   };
 
   useEffect(() => {
@@ -733,6 +741,24 @@ export function useScreenshotInteraction({
     cancelScheduledDraw();
   };
 
+  const resetInteractionState = () => {
+    const canvas = canvasRef.current;
+    if (canvas) releaseCanvasPointer(canvas);
+    activePointerIdRef.current = null;
+    pendingDetectionRef.current = null;
+    annotationDragSnapshotRef.current = null;
+    annotationResizeHandleRef.current = null;
+    isSelectingRef.current = false;
+    isDraggingRef.current = false;
+    isResizingRef.current = null;
+    isDrawingAnnotationRef.current = false;
+    isDraggingAnnotationRef.current = false;
+    isResizingAnnotationRef.current = false;
+    setIsSelecting(false);
+    setAnnotationDraft(null);
+    cancelScheduledDraw();
+  };
+
   const handleDoubleClick = () => {
     if (!frameInteractiveRef.current) return;
     const canConfirm = getSelectionConfirmDelayMs();
@@ -916,6 +942,7 @@ export function useScreenshotInteraction({
     handlePointerCancel,
     handleDoubleClick,
     focusScreenshotWindow,
+    resetInteractionState,
     annotationStateRef: { get current() { return getAnnotationState(); } },
   };
 }

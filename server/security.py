@@ -52,12 +52,6 @@ def install_redaction_filter() -> None:
     root.addFilter(RedactFilter())
 
 
-TRUSTED_PUBLIC_DNS_BYPASS_HOSTS = {
-    "api-free.deepl.com",
-    "api.deepl.com",
-}
-
-
 def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     return (
         ip.is_private
@@ -98,18 +92,10 @@ def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
         base_url = "https://" + base_url
 
     parsed = urllib.parse.urlparse(base_url)
-    trusted_public_host = (
-        not allow_private
-        and parsed.hostname is not None
-        and parsed.hostname.lower() in TRUSTED_PUBLIC_DNS_BYPASS_HOSTS
-    )
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("请求地址不合法")
 
-    if trusted_public_host:
-        resolve_safe_ip(parsed.hostname, allow_private=True)
-    else:
-        resolve_safe_ip(parsed.hostname, allow_private=allow_private)
+    resolve_safe_ip(parsed.hostname, allow_private=allow_private)
 
     return base_url
 

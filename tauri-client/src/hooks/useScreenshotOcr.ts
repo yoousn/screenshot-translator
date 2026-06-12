@@ -57,6 +57,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
   const isOCRingRef = useRef(false);
   const isTranslatingRef = useRef(false);
   const ocrPrewarmPromiseRef = useRef<Promise<any> | null>(null);
+  const operationGenerationRef = useRef(0);
 
   // Sync refs to match useState
   const setIsOCRingSync = useCallback((val: boolean) => {
@@ -68,6 +69,13 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
     isTranslatingRef.current = val;
     setIsTranslating(val);
   }, []);
+
+  const startOperation = useCallback(() => {
+    operationGenerationRef.current += 1;
+    return operationGenerationRef.current;
+  }, []);
+
+  const isCurrentOperation = useCallback((generation: number) => operationGenerationRef.current === generation, []);
 
   const normalizeScreenshotTranslateError = useCallback((error: any) => {
     const raw = error?.message || error?.toString?.() || String(error || "");
@@ -108,6 +116,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
 
   const handleOCR = useCallback(async () => {
     if (isOCRingRef.current || isTranslatingRef.current) return;
+    const operationGeneration = startOperation();
     let base64 = "";
     try {
       setIsOCRingSync(true);
@@ -119,7 +128,9 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
         executablePath: null,
         timeoutMs: configRef.current.localOcrTimeoutMs || 15000
       });
+      if (!isCurrentOperation(operationGeneration)) return;
       const normalization = await buildOcrNormalizationReport(ocrBlocks || []);
+      if (!isCurrentOperation(operationGeneration)) return;
       const texts = normalization.text || "\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\n\n\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
 
       message.destroy();
@@ -146,9 +157,11 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
           routeMissingScripts: normalization.routePlan?.missingScripts || [],
         },
       });
+      if (!isCurrentOperation(operationGeneration)) return;
       resetScreenshotState();
       await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
     } catch (e: any) {
+      if (!isCurrentOperation(operationGeneration)) return;
       const msg = normalizeScreenshotTranslateError(e);
       message.error({ content: `\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "ocr", duration: 3 });
       setIsOCRingSync(false);
@@ -162,14 +175,16 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
           windowSize: OCR_WINDOW_SIZE,
           title: "\u8bc6\u522b\u72b6\u6001",
         });
+        if (!isCurrentOperation(operationGeneration)) return;
         resetScreenshotState();
         await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
       }
     }
-  }, [captureRegionBase64, normalizeScreenshotTranslateError, rectRef, resetScreenshotState, setIsOCRingSync]);
+  }, [captureRegionBase64, isCurrentOperation, normalizeScreenshotTranslateError, rectRef, resetScreenshotState, setIsOCRingSync, startOperation]);
 
   const handleTranslate = useCallback(async () => {
     if (isTranslatingRef.current || isOCRingRef.current) return;
+    const operationGeneration = startOperation();
     const startTime = performance.now();
     let base64 = "";
     prewarmLocalOcrWorker("translate-action");
@@ -183,6 +198,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       message.loading({ content: "\u6b63\u5728\u8bc6\u522b\u5e76\u7ffb\u8bd1...", key: "translate", duration: 0 });
       const captureStarted = performance.now();
       base64 = await captureRegionBase64("translate");
+      if (!isCurrentOperation(operationGeneration)) return;
       const captureMs = Math.round(performance.now() - captureStarted);
 
       let resultBase64 = "";
@@ -199,6 +215,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
               source: "text-source",
             })
           : await translateWithLocalOcr(base64, configRef.current);
+        if (!isCurrentOperation(operationGeneration)) return;
         const diagPayload = {
           timestamp: new Date().toLocaleString(),
           totalMs: Math.round(performance.now() - startTime),
@@ -249,6 +266,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       }
 
       const overlayImg = await loadPngImage(resultBase64);
+      if (!isCurrentOperation(operationGeneration)) return;
       translatedImgRef.current = overlayImg;
       draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h, overlayImg);
       setTranslatedResult(resultBase64);
@@ -280,8 +298,10 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       } catch (e) {
         console.warn("Failed to save translate history", e);
       }
+      if (!isCurrentOperation(operationGeneration)) return;
       setIsTranslatingSync(false);
     } catch (e: any) {
+      if (!isCurrentOperation(operationGeneration)) return;
       console.error("Local Translation Error:", e);
       const msg = normalizeScreenshotTranslateError(e);
       message.error({ content: `\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "translate", duration: 3 });
@@ -308,10 +328,11 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
         window.dispatchEvent(new Event("ysn_translate_history_updated"));
       } catch (err) {}
     }
-  }, [captureRegionBase64, draw, getTextSourceBlocksForCurrentSelection, normalizeScreenshotTranslateError, prewarmLocalOcrWorker, rectRef, setIsTranslatingSync, translatedImgRef]);
+  }, [captureRegionBase64, draw, getTextSourceBlocksForCurrentSelection, isCurrentOperation, normalizeScreenshotTranslateError, prewarmLocalOcrWorker, rectRef, setIsTranslatingSync, startOperation, translatedImgRef]);
 
   const handleShowTranslateResult = useCallback(async () => {
     if (!translatePairs || translatePairs.length === 0) return;
+    const operationGeneration = operationGenerationRef.current;
     const statusLabel = (status?: TranslatePair["status"]) => {
       if (status === "preserved") return "\u72b6\u6001\uff1a\u5df2\u6309\u6280\u672f\u6807\u8bc6\u4fdd\u7559";
       if (status === "untranslated") return "\u72b6\u6001\uff1a\u672a\u8fd4\u56de\u6709\u6548\u8bd1\u6587";
@@ -328,18 +349,23 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       title: "\u7ffb\u8bd1\u7ed3\u679c\u660e\u7ec6",
       diagnostics: lastTranslationDiagnostics,
     });
+    if (!isCurrentOperation(operationGeneration)) return;
     resetScreenshotState();
     await invoke("cancel_screenshot", { label: getCurrentWindow().label }).catch(() => {});
-  }, [rectRef, resetScreenshotState, translatePairs, translateResultPreviewBase64, lastTranslationDiagnostics]);
+  }, [isCurrentOperation, rectRef, resetScreenshotState, translatePairs, translateResultPreviewBase64, lastTranslationDiagnostics]);
 
   const resetOcrState = useCallback(() => {
+    operationGenerationRef.current += 1;
+    message.destroy("ocr");
+    message.destroy("translate");
     setIsOCRingSync(false);
     setIsTranslatingSync(false);
     setTranslatePairs(null);
     setTranslatedResult(null);
     setTranslateResultPreviewBase64(null);
     setLastTranslationDiagnostics(null);
-  }, [setIsOCRingSync, setIsTranslatingSync]);
+    translatedImgRef.current = null;
+  }, [setIsOCRingSync, setIsTranslatingSync, translatedImgRef]);
 
   return {
     isOCRing,
@@ -353,8 +379,6 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
     handleTranslate,
     handleShowTranslateResult,
     resetOcrState,
-    setTranslatedResult,
-    setTranslatePairs,
     isOCRingRef,
     isTranslatingRef,
   };

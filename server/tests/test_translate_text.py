@@ -165,7 +165,7 @@ def test_google_translator_uses_script_source_hint_for_korean():
     captured = {}
 
     class FakeSession:
-        def get(self, url, timeout):
+        def get(self, url, timeout, **_kwargs):
             captured["url"] = url
             return FakeResponse()
 

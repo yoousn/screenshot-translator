@@ -2,7 +2,12 @@ export const getChannelOptions = (labels: Record<string, string>) => [
   { value: "google", label: labels.channelGoogle },
   { value: "baidu", label: labels.channelBaidu },
   { value: "new-api", label: labels.channelNewApi },
-  { value: "deepl", label: `${labels.channelDeepL} (${labels.temporarilyUnavailable || "Unavailable"})`, disabled: true },
+  { value: "deepl", label: labels.channelDeepL },
+];
+
+export const getDeepLEndpointOptions = (labels: Record<string, string>) => [
+  { value: "https://api-free.deepl.com", label: labels.deeplFreeEndpoint || "DeepL API Free" },
+  { value: "https://api.deepl.com", label: labels.deeplProEndpoint || "DeepL API Pro" },
 ];
 
 export const getTargetLangOptions = (labels: Record<string, string>) => [

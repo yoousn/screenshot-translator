@@ -3696,3 +3696,154 @@ Alt+A
 - Run `cd tauri-client && npm install` if `node_modules` is missing.
 - Run `cd tauri-client && npm run build:rapidocr-runner` to restore OCR runner and models.
 - Run `.\build.bat --no-pause --no-launch` and confirm `.msi` plus `*-setup.exe` appear under `build\x64_v1.2.6\`.
+
+## Chapter 274: Proxy-Compatible Official Translation And Screenshot Session Reset (2026-06-12)
+
+### Goals Completed
+- Split official translation traffic from user-configured URL traffic:
+  - Google, Baidu, and official DeepL requests now use a normal pooled Requests session with `trust_env=True`, so system/environment proxies and TUN fake-IP routing work.
+  - User-configured public LLM and relay URLs keep the pinned SSRF-safe transport with `trust_env=False`.
+- Restricted configurable DeepL endpoints to the official `api-free.deepl.com` and `api.deepl.com` HTTPS hosts before allowing them onto the proxy-compatible official session.
+- Disabled redirects for official translation provider requests.
+- Removed the previous DeepL reserved-IP DNS bypass from general public URL validation; user-configured public URLs continue rejecting private/reserved DNS results.
+- Fixed screenshot session reuse so a newly identified remote capture session cannot inherit the previous visible shell, selection, masked buffer, canvas pixels, or interaction refs.
+- Added OCR/translation operation generations so an old asynchronous OCR or translation task cannot write a prompt, result overlay, or close action into a newer screenshot session.
+- Clear keyed OCR/translation notices when a screenshot session resets.
+- Kept `updateCurrentRect(next, false)` in pointer-move paths because `ScreenshotPage.setCurrentRect` already synchronously updates `rectRef.current`; changing it to `true` would add React renders during every pointer move.
+- Kept the screenshot canvas in CSS-pixel interaction coordinates because physical screenshot cropping already maps canvas coordinates to image coordinates. Multiplying the backing canvas by `devicePixelRatio` without redesigning that mapping would introduce selection/crop errors.
+
+### External Findings
+- Requests documentation confirms environment proxy behavior is controlled through the session environment trust path.
+- OWASP SSRF guidance supports applying strict validation at user-controlled URL boundaries and using allowlists for known trusted hosts.
+- React documentation confirms refs are intentionally mutable and suitable for immediate event-handler state that should not trigger renders.
+- MDN documents the CSS-pixel/device-pixel distinction; the current screenshot architecture deliberately maps CSS interaction coordinates to physical image pixels during crop/export.
+
+### Added Files
+- `server/tests/test_http_client.py`
+
+### Modified Files
+- `server/app.py`
+- `server/http_client.py`
+- `server/security.py`
+- `server/translator.py`
+- `server/tests/test_security.py`
+- `server/tests/test_server.py`
+- `server/tests/test_translate_text.py`
+- `server/tests/test_translator.py`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotOcr.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not weaken SSRF validation for user-configured LLM or relay URLs.
+- Did not change pointer-move rect updates to React state updates on every frame.
+- Did not change the screenshot canvas backing size to `devicePixelRatio` coordinates.
+- Did not regenerate removed RapidOCR assets or run a full installer build.
+
+### Validation
+- Passed: `F:\Python311\python.exe -m pytest server/tests -rs` with `63 passed, 1 skipped`; the skipped test is the expected user-configured New API public URL rejection under the current fake-IP environment.
+- Passed: `F:\Python311\python.exe -m py_compile server/http_client.py server/security.py server/translator.py server/app.py`.
+- Passed: current DNS resolves `translate.googleapis.com` to fake IP `198.18.0.188`, while direct `GoogleTranslator().translate("Open settings", "en", "zh")` returned `打开设置` with `trust_env=True`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n` with `601 zh-CN keys match 601 en-US keys`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: local browser load smoke for `http://127.0.0.1:1420`; expected Tauri-invoke warnings remain in a normal browser.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Desktop Tauri manual QA is still required for repeated screenshot sessions, mid-drag cancellation, resize/move smoothness, and multi-monitor/DPI behavior.
+- DeepL-compatible custom endpoints are no longer accepted as DeepL official providers; custom/self-hosted translation services must use the user-configured relay path.
+- Old asynchronous OCR/translation work is invalidated for UI writes but is not force-cancelled at the underlying process/network layer.
+
+### Next Steps
+- Manually verify repeated `Alt+A` runs: start a drag, cancel mid-drag, reopen immediately, move/resize an existing selection, and confirm no old frame, selection, loading notice, or translation overlay returns.
+- Manually verify Google, Baidu, and DeepL through the packaged translation service while the proxy/TUN fake-IP mode remains enabled.
+
+## Chapter 275: DeepL Translation Channel Enablement (2026-06-12)
+
+### Goals Completed
+- Removed the frontend-only hard disable that made the existing DeepL backend channel impossible to configure or test.
+- Enabled DeepL in the translation channel selector and health summary.
+- Added an official endpoint selector for DeepL API Free (`api-free.deepl.com`) and DeepL API Pro (`api.deepl.com`).
+- Enabled DeepL API Key and formality controls.
+- Connected the DeepL configuration card to the existing test-and-enable workflow.
+- Replaced the obsolete unavailable warning with setup guidance explaining how to match Free and Pro API keys to the correct endpoint.
+
+### External Findings
+- DeepL's official API documentation confirms translation requests use `POST /v2/translate` and the `Authorization: DeepL-Auth-Key ...` header already implemented by the backend.
+- DeepL documents separate API Free and API Pro hosts, matching the backend official-host allowlist added in Chapter 274.
+
+### Modified Files
+- `tauri-client/src/components/settings/TranslationChannelCard.tsx`
+- `tauri-client/src/components/settings/settingsOptions.ts`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not accept custom DeepL-compatible endpoints; DeepL remains restricted to the two official HTTPS hosts.
+- Did not perform a successful paid/free DeepL translation because no valid user DeepL API Key is available in the workspace.
+
+### Validation
+- Passed: direct proxy-compatible requests reached both official DeepL Free and Pro translation endpoints; each returned the expected HTTP `403` for an intentionally invalid test key instead of a network, DNS, or SSRF error.
+- Passed: `F:\Python311\python.exe -m pytest server/tests -rs` with `63 passed, 1 skipped`; the skip remains the expected fake-IP rejection for a user-configured New API URL.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n` with `603 zh-CN keys match 603 en-US keys`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: browser UI smoke confirmed DeepL can be selected, the API Key/formality/test controls are enabled, and both official endpoint choices are present.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- A real valid-key DeepL translation still requires the user to select the endpoint matching their DeepL API plan and provide a working API Key.
+
+### Next Steps
+- Run `测试并启用` with a valid DeepL API Free or API Pro key, then verify a screenshot translation end to end through the packaged desktop app.
+
+## Chapter 276: Chinese Build Mode Batch Launchers (2026-06-12)
+
+### Goals Completed
+- Added Chinese-named root batch launchers for the common build modes:
+  - Daily Tauri dev self-test.
+  - Release exe-only build without installer bundling.
+  - NSIS-only installer build.
+  - MSI-only installer build.
+  - Full release build wrapper for the existing dual-installer `build.bat` flow.
+- Added `--dry-run` and `--no-pause` support to each launcher so commands can be checked without running a real build and CI/terminal usage can avoid blocking pauses.
+- Kept the scripts' internal text mostly ASCII to avoid Windows `cmd` code-page issues while preserving Chinese filenames for double-click usability.
+- Build scripts close running `YsnTrans.exe` and legacy `tauri-client.exe` before release builds to reduce locked-output failures.
+
+### Added Files
+- `日常自测-开发模式.bat`
+- `构建EXE-不打安装包.bat`
+- `构建NSIS安装包.bat`
+- `构建MSI安装包.bat`
+- `完整发布-双安装包.bat`
+
+### Modified Files
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not install or configure `sccache`, `lld`, or other machine-level Rust acceleration tools.
+- Did not change the existing `build.bat` release artifact copy behavior.
+- Did not run real release builds because the requested change was launcher creation and the dry-run path validates script wiring without spending build time.
+
+### Validation
+- Passed: `日常自测-开发模式.bat --dry-run --no-pause`.
+- Passed: `构建EXE-不打安装包.bat --dry-run --no-pause`.
+- Passed: `构建NSIS安装包.bat --dry-run --no-pause`.
+- Passed: `构建MSI安装包.bat --dry-run --no-pause`.
+- Passed: `完整发布-双安装包.bat --dry-run --no-pause`.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Real installer builds still depend on the local Tauri/Rust/NSIS/MSI toolchain and bundled runtime resources being present.
+- `sccache` and faster linker setup remain a separate machine configuration task.
+
+### Next Steps
+- Use `日常自测-开发模式.bat` for quick feature checks, `构建EXE-不打安装包.bat` for release-performance checks, and one of the installer scripts only when a distributable installer is needed.

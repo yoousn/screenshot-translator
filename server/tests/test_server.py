@@ -191,6 +191,29 @@ def test_config_save_deepl_success():
         invalidate_config_cache()
 
 
+def test_deepl_config_validation_uses_official_allowlist_without_dns(monkeypatch):
+    monkeypatch.setattr(
+        "security.socket.getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("DNS must not be resolved")),
+    )
+
+    channel, config = app_module._server_config_payload({
+        "channel": "deepl",
+        "config": {"endpoint": "https://api-free.deepl.com/"},
+    })
+
+    assert channel == "deepl"
+    assert config["endpoint"] == "https://api-free.deepl.com"
+
+
+def test_deepl_config_rejects_non_official_endpoint():
+    with pytest.raises(ValueError):
+        app_module._server_config_payload({
+            "channel": "deepl",
+            "config": {"endpoint": "https://127.0.0.1:8318"},
+        })
+
+
 def test_current_config_exposes_translation_metadata():
     cfg = load_server_config()
     token = cfg["client_token"]

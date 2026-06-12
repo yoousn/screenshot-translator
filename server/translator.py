@@ -9,7 +9,7 @@ import re
 from collections import OrderedDict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from http_client import get_public_session, get_relay_session
+from http_client import get_official_translation_session, get_public_session, get_relay_session
 from security import normalize_public_base_url, normalize_relay_base_url, request_public_url, request_relay_url
 from translation_prompt import DEFAULT_LLM_TRANSLATION_DOMAIN, DEFAULT_LLM_TRANSLATION_PROMPT
 
@@ -181,8 +181,9 @@ def should_group_by_source_hints(texts: list[str], source_lang: str) -> bool:
     hints = {detect_source_lang_hint(text, source_lang) for text in texts}
     return len(hints) > 1 or (hints and source_lang not in hints)
 
-# 使用全局共享的 requests Session 保持 Keep-Alive 长连接，免去每次 TLS 握手的开销。
-# Public session 会在连接层钉住已校验公网 IP；relay session 保留用户自配 LAN 中转能力。
+# Official providers use the system proxy; user-configured public and relay URLs
+# keep pinned transports at the SSRF boundary.
+_official_translation_session = get_official_translation_session()
 _public_session = get_public_session()
 _relay_session = get_relay_session()
 
@@ -367,6 +368,10 @@ class BaseTranslator(abc.ABC):
             return [f.result() for f in futures]
 
 class GoogleTranslator(BaseTranslator):
+    def __init__(self):
+        super().__init__()
+        self.session = _official_translation_session
+
     def _do_translate_script_groups(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
         groups = {}
         for index, text in enumerate(texts):
@@ -390,7 +395,7 @@ class GoogleTranslator(BaseTranslator):
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         source_lang = detect_source_lang_hint(text, source_lang)
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source_lang}&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
-        response = self.session.get(url, timeout=GOOGLE_SINGLE_TIMEOUT_SECONDS)
+        response = self.session.get(url, timeout=GOOGLE_SINGLE_TIMEOUT_SECONDS, allow_redirects=False)
         if response.status_code == 200:
             try:
                 res_json = response.json()
@@ -434,7 +439,7 @@ class GoogleTranslator(BaseTranslator):
         try:
             # 使用 Post 请求，避免 Get 请求由于文本过长导致超长报错
             batch_started = time.perf_counter()
-            response = self.session.post(url, data=data, timeout=GOOGLE_BATCH_TIMEOUT_SECONDS)
+            response = self.session.post(url, data=data, timeout=GOOGLE_BATCH_TIMEOUT_SECONDS, allow_redirects=False)
             _increment_stat(stats_ref, "provider_batch_ms", int((time.perf_counter() - batch_started) * 1000))
             if response.status_code == 200:
                 res_json = response.json()
@@ -651,6 +656,7 @@ class LLMTranslator(BaseTranslator):
 class BaiduTranslator(BaseTranslator):
     def __init__(self, app_id: str, secret_key: str):
         super().__init__()
+        self.session = _official_translation_session
         self.app_id = app_id
         self.secret_key = secret_key
 
@@ -663,7 +669,7 @@ class BaiduTranslator(BaseTranslator):
         to_lang = "zh" if target_lang == "zh" else target_lang
 
         url = f"https://fanyi-api.baidu.com/api/trans/vip/translate?q={urllib.parse.quote(text)}&from={from_lang}&to={to_lang}&appid={self.app_id}&salt={salt}&sign={sign}"
-        res = self.session.get(url, timeout=BAIDU_SINGLE_TIMEOUT_SECONDS)
+        res = self.session.get(url, timeout=BAIDU_SINGLE_TIMEOUT_SECONDS, allow_redirects=False)
         if res.status_code == 200:
             res_json = res.json()
             if "error_code" in res_json:
@@ -697,7 +703,7 @@ class BaiduTranslator(BaseTranslator):
         }
         try:
             batch_started = time.perf_counter()
-            res = self.session.post(url, data=data, timeout=BAIDU_BATCH_TIMEOUT_SECONDS)
+            res = self.session.post(url, data=data, timeout=BAIDU_BATCH_TIMEOUT_SECONDS, allow_redirects=False)
             _increment_stat(stats_ref, "provider_batch_ms", int((time.perf_counter() - batch_started) * 1000))
             if res.status_code == 200:
                 res_json = res.json()
@@ -715,11 +721,30 @@ class BaiduTranslator(BaseTranslator):
         return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
 
+def normalize_official_deepl_endpoint(endpoint: str) -> str:
+    value = (endpoint or "https://api-free.deepl.com").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in {"api-free.deepl.com", "api.deepl.com"}
+        or parsed.port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("DeepL endpoint must use an official DeepL API host")
+    return f"https://{parsed.hostname.lower()}"
+
+
 class DeepLTranslator(BaseTranslator):
     def __init__(self, api_key: str, endpoint: str = "https://api-free.deepl.com", formality: str = "default"):
         super().__init__()
+        self.session = _official_translation_session
         self.api_key = api_key
-        self.endpoint = normalize_public_base_url(endpoint or "https://api-free.deepl.com")
+        self.endpoint = normalize_official_deepl_endpoint(endpoint)
         self.formality = (formality or "default").strip().lower()
 
     def cache_namespace(self) -> str:
@@ -787,13 +812,13 @@ class DeepLTranslator(BaseTranslator):
         if not texts:
             return []
         headers = {"Authorization": f"DeepL-Auth-Key {self.api_key}"}
-        res = request_public_url(
-            self.session,
+        res = self.session.request(
             "POST",
             f"{self.endpoint}/v2/translate",
             headers=headers,
             data=self._payload_pairs(texts, source_lang, target_lang),
             timeout=DEEPL_BATCH_TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
         if res.status_code != 200:
             raise Exception(f"DeepL translation failed: status {res.status_code} {res.text}")

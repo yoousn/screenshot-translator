@@ -13,8 +13,8 @@ import hashlib
 import secrets
 from config import load_server_config, save_server_config
 from http_client import get_relay_session
-from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata
-from security import install_redaction_filter, normalize_relay_base_url, normalize_public_base_url, redact, request_relay_url
+from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata, normalize_official_deepl_endpoint
+from security import install_redaction_filter, normalize_relay_base_url, redact, request_relay_url
 import logging
 
 install_redaction_filter()
@@ -177,7 +177,7 @@ def _server_config_payload(payload: dict) -> tuple[str, dict]:
     if channel == "deepl":
         c = dict(c)
         endpoint = c.get("endpoint") or "https://api-free.deepl.com"
-        c["endpoint"] = normalize_public_base_url(endpoint)
+        c["endpoint"] = normalize_official_deepl_endpoint(endpoint)
     return channel, c
 
 

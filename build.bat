@@ -8,6 +8,7 @@ set "PORTABLE_DIR=%ROOT%release\YSN-Screenshot-Translator"
 set "ARTIFACT_ROOT=%ROOT%build"
 set "APP_EXE_NAME=YsnTrans"
 set "TARGET_EXE=%TAURI_DIR%\target\release\%APP_EXE_NAME%.exe"
+set "SHORTCUT_PATH=%ROOT%%APP_EXE_NAME%.lnk"
 set "LEGACY_ROOT_EXE=%ROOT%tauri-client.exe"
 set "LEGACY_PORTABLE_EXE=%PORTABLE_DIR%\tauri-client.exe"
 set "NO_PAUSE="
@@ -30,6 +31,7 @@ call :build_tauri || goto :fail
 call :copy_installers || goto :fail
 call :copy_portable || goto :fail
 call :build_launcher || goto :fail
+call :create_root_shortcut || goto :fail
 call :launch_portable || goto :fail
 
 echo(
@@ -37,6 +39,7 @@ echo(=== Build succeeded ===
 echo(Portable directory: %PORTABLE_DIR%
 echo(Executable: %PORTABLE_DIR%\%APP_EXE_NAME%.exe
 echo(Root launcher: %ROOT%%APP_EXE_NAME%.exe
+echo(Root shortcut: %SHORTCUT_PATH%
 if defined INSTALLERS echo(Installers: %INSTALLER_OUTPUT_DIR%
 echo(Copy the whole portable directory to another computer, not only the exe.
 echo(
@@ -151,6 +154,14 @@ if exist "%ROOT_LAUNCHER_EXE%" (
     echo([hint] Root launcher %APP_EXE_NAME%.exe is locked; skipping cleanup.
   ) else (
     echo([prepare] Removed root launcher %APP_EXE_NAME%.exe
+  )
+)
+if exist "%SHORTCUT_PATH%" (
+  del /F /Q "%SHORTCUT_PATH%" >nul 2>nul
+  if exist "%SHORTCUT_PATH%" (
+    echo([hint] Root shortcut is locked; it will be overwritten if possible: %SHORTCUT_PATH%
+  ) else (
+    echo([prepare] Removed old root shortcut
   )
 )
 echo(
@@ -269,6 +280,22 @@ if exist "%LAUNCHER_OUT%" (
   echo([error] Failed to build root launcher
   exit /b 1
 )
+
+:create_root_shortcut
+set "PORTABLE_EXE=%PORTABLE_DIR%\%APP_EXE_NAME%.exe"
+if not exist "%PORTABLE_EXE%" (
+  echo([error] Cannot create shortcut for missing executable: %PORTABLE_EXE%
+  exit /b 1
+)
+echo([shortcut] Creating root shortcut ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\create-root-shortcut.ps1" -TargetPath "%PORTABLE_EXE%" -WorkingDirectory "%PORTABLE_DIR%" -ShortcutPath "%SHORTCUT_PATH%" >nul
+if errorlevel 1 (
+  echo([error] Failed to create root shortcut: %SHORTCUT_PATH%
+  exit /b 1
+)
+echo([shortcut] Root shortcut: %SHORTCUT_PATH%
+echo(
+exit /b 0
 
 :launch_portable
 if not defined AUTO_LAUNCH (

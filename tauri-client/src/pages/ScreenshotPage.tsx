@@ -343,13 +343,12 @@ export default function ScreenshotPage() {
     clearScrollCaptureState,
     clearRecordingState,
     resetAnnotations,
+    resetInteractionState: () => resetInteractionState(),
     rectRef,
     hasSelectedRef,
     setCurrentRect,
     setSelection,
-    setHasSelected,
-    setTranslatedResult: (res) => setTranslatedResult(res),
-    setTranslatePairs: (pairs) => setTranslatePairs(pairs),
+    resetOcrState: () => resetOcrState(),
     setIsEditing,
     setAnnotationTool,
     setAnnotationColor,
@@ -382,8 +381,7 @@ export default function ScreenshotPage() {
     handleShowTranslateResult,
     isOCRingRef: ocrIsOCRingRef,
     isTranslatingRef: ocrIsTranslatingRef,
-    setTranslatedResult,
-    setTranslatePairs,
+    resetOcrState,
   } = useScreenshotOcr({
     config,
     rectRef,
@@ -540,6 +538,7 @@ export default function ScreenshotPage() {
     handlePointerCancel,
     handleDoubleClick,
     focusScreenshotWindow,
+    resetInteractionState,
     annotationStateRef,
   } = useScreenshotInteraction({
     canvasRef,
@@ -890,9 +889,10 @@ export default function ScreenshotPage() {
       } : null;
       setScreenshotMode(nextMode);
       autoAcceptanceSmokeStartedRef.current = false;
+      resetOcrState();
+      resetInteractionState();
       setCurrentRect(EMPTY_RECT, true);
       setSelection(false);
-      setHasSelected(false);
       hoverRectRef.current = null;
       hoverCandidatesRef.current = [];
       hoverCandidateIndexRef.current = 0;
@@ -901,7 +901,7 @@ export default function ScreenshotPage() {
       analysisImageDataRef.current = null;
       const shellCanvas = canvasRef.current;
       const shellCtx = shellCanvas?.getContext("2d");
-      if (shouldPresentShell && shellCanvas && shellCtx) {
+      if (shellCanvas && shellCtx) {
         const width = Math.max(1, window.innerWidth);
         const height = Math.max(1, window.innerHeight);
         shellCanvas.width = width;
