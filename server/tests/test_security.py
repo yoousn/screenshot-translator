@@ -7,14 +7,15 @@ from security import normalize_public_base_url, normalize_relay_base_url, redact
 
 class FakeSocket:
     connected = []
+    options = []
 
     def __init__(self, *args):
         self.args = args
         self.timeout = None
         self.closed = False
 
-    def setsockopt(self, *_args):
-        pass
+    def setsockopt(self, *args):
+        self.options.append(args)
 
     def settimeout(self, timeout):
         self.timeout = timeout
@@ -100,6 +101,7 @@ def test_resolve_safe_ip_skips_private_and_returns_public(monkeypatch):
 def test_pinned_https_connection_keeps_host_and_connects_safe_ip(monkeypatch):
     calls = []
     FakeSocket.connected = []
+    FakeSocket.options = []
 
     def fake_getaddrinfo(host, port, *args, **kwargs):
         calls.append((host, port))
@@ -119,6 +121,46 @@ def test_pinned_https_connection_keeps_host_and_connects_safe_ip(monkeypatch):
     assert conn._dns_host == "example.com"
     assert calls == [("example.com", 443)]
     assert FakeSocket.connected == [("93.184.216.34", 443)]
+
+
+def test_pinned_connection_falls_back_to_host_without_dns_host(monkeypatch):
+    calls = []
+    FakeSocket.connected = []
+
+    class MinimalConnection:
+        host = "fallback.example"
+        port = 443
+        timeout = 1
+        source_address = None
+        socket_options = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        calls.append((host, port))
+        return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr("security.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("safe_transport.socket.socket", FakeSocket)
+
+    _connect_pinned_address(MinimalConnection(), allow_private=False)
+
+    assert calls == [("fallback.example", 443)]
+    assert FakeSocket.connected == [("93.184.216.34", 443)]
+
+
+def test_pinned_connection_applies_socket_options(monkeypatch):
+    FakeSocket.connected = []
+    FakeSocket.options = []
+    monkeypatch.setattr(
+        "security.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", args[1]))],
+    )
+    monkeypatch.setattr("safe_transport.socket.socket", FakeSocket)
+
+    conn = HTTPSConnection("example.com", port=443, timeout=1)
+    conn.socket_options = [(1, 2, 3)]
+    _connect_pinned_address(conn, allow_private=False)
+
+    assert FakeSocket.options == [(1, 2, 3)]
 
 
 def test_pinned_public_connection_rejects_private_address(monkeypatch):

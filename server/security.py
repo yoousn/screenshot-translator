@@ -36,6 +36,7 @@ _REDACTION_FACTORY_INSTALLED = False
 def install_redaction_filter() -> None:
     global _REDACTION_FACTORY_INSTALLED
     if not _REDACTION_FACTORY_INSTALLED:
+
         def redacting_factory(*args, **kwargs):
             record = _ORIGINAL_LOG_RECORD_FACTORY(*args, **kwargs)
             record.msg = redact(record.getMessage())
@@ -49,6 +50,7 @@ def install_redaction_filter() -> None:
     if any(isinstance(item, RedactFilter) for item in root.filters):
         return
     root.addFilter(RedactFilter())
+
 
 TRUSTED_PUBLIC_DNS_BYPASS_HOSTS = {
     "api-free.deepl.com",
@@ -85,7 +87,7 @@ def resolve_safe_ip(host: str, *, allow_private: bool = False) -> str:
     """Resolve a host and return the first IP allowed by the SSRF policy."""
     for *_prefix, ip_str in iter_safe_addresses(host, 0, allow_private=allow_private):
         return ip_str
-    raise ValueError("请求地址不合法 (无可用公网 IP)")
+    raise ValueError("请求地址不合法（无可用公网 IP）")
 
 
 def normalize_base_url(url: str, *, allow_private: bool = False) -> str:
@@ -120,7 +122,15 @@ def normalize_relay_base_url(url: str) -> str:
     return normalize_base_url(url, allow_private=True)
 
 
-def request_validated_url(session, method: str, url: str, *, allow_private: bool = False, max_redirects: int = 3, **kwargs):
+def request_validated_url(
+    session,
+    method: str,
+    url: str,
+    *,
+    allow_private: bool = False,
+    max_redirects: int = 3,
+    **kwargs,
+):
     """Request a URL while validating every redirect target."""
     current_url = normalize_base_url(url, allow_private=allow_private)
     redirects = 0

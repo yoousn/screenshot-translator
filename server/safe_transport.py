@@ -6,16 +6,30 @@ from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, NameResolutionError, NewConnectionError
 from urllib3.poolmanager import PoolManager
-from urllib3.util.connection import _DEFAULT_TIMEOUT, _set_socket_options
 
 from security import iter_safe_addresses
 
 
+def _dns_host_for_connection(connection: HTTPConnection) -> str:
+    return getattr(connection, "_dns_host", None) or connection.host
+
+
+def _set_socket_options(sock: socket.socket, options) -> None:
+    for option in options or []:
+        sock.setsockopt(*option)
+
+
+def _set_socket_timeout(sock: socket.socket, timeout) -> None:
+    if timeout is None or isinstance(timeout, (int, float)):
+        sock.settimeout(timeout)
+
+
 def _connect_pinned_address(connection: HTTPConnection, allow_private: bool) -> socket.socket:
     err = None
+    dns_host = _dns_host_for_connection(connection)
     try:
         safe_addresses = list(
-            iter_safe_addresses(connection._dns_host, connection.port, allow_private=allow_private)
+            iter_safe_addresses(dns_host, connection.port, allow_private=allow_private)
         )
     except ValueError as exc:
         raise NameResolutionError(connection.host, connection, exc) from exc
@@ -24,7 +38,7 @@ def _connect_pinned_address(connection: HTTPConnection, allow_private: bool) -> 
         raise NameResolutionError(
             connection.host,
             connection,
-            ValueError("请求地址不合法 (无可用公网 IP)"),
+            ValueError("No safe public IP address is available"),
         )
 
     for family, socktype, proto, sockaddr, _ip_str in safe_addresses:
@@ -32,8 +46,7 @@ def _connect_pinned_address(connection: HTTPConnection, allow_private: bool) -> 
         try:
             sock = socket.socket(family, socktype, proto)
             _set_socket_options(sock, connection.socket_options)
-            if connection.timeout is not _DEFAULT_TIMEOUT:
-                sock.settimeout(connection.timeout)
+            _set_socket_timeout(sock, connection.timeout)
             if connection.source_address:
                 sock.bind(connection.source_address)
             sock.connect(sockaddr)
