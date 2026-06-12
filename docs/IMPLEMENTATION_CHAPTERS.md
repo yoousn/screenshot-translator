@@ -3907,3 +3907,153 @@ Alt+A
 - Manual desktop QA: repeatedly press `Alt+A` during startup and while an overlay is visible, verify no crash and no session rebuild.
 - Manual desktop QA: hold left mouse during overlay startup and drag as the frame appears, verify the rectangle starts from the original down point.
 - Manual desktop QA: press ESC before and after first frame readiness, including after a cancelled Save dialog, and confirm the overlay closes reliably.
+
+## Chapter 278: Screenshot Shell Pointer Ownership Race Fix (2026-06-13)
+
+### Goals Completed
+- Fixed the rare "mouse starts at point 1 but selection begins at point 2" feel by letting the screenshot canvas accept pointer events as soon as the visible shell is present, rather than coupling pointer ownership to screenshot image readiness.
+- Kept image-dependent actions behind the existing image-ready gates; early shell interaction now only owns geometry.
+- Prevented shell/native pre-capture recovery from overwriting a real WebView selection that has already started locally.
+- Prevented the later image-ready pre-show recovery path from overwriting an already-started local selection.
+- Added baseline logs when pre-capture recovery is skipped because local selection already owns the drag.
+
+### External Findings
+- MDN documents `pointerdown` as the transition from no mouse buttons pressed to at least one pressed, so recovering from a later `pointermove.buttons` event cannot fully reconstruct the original down point.
+- MDN documents `setPointerCapture` as routing subsequent pointer events to the capture element, which supports keeping the canvas as the early owner once the visible shell exists.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not change screenshot crop coordinate mapping or device-pixel-ratio handling.
+- Did not enable the guarded native first-frame session by default.
+- Did not run a packaged Tauri release build or installer build for this frontend-only fix.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted the existing dynamic-import and chunk-size warnings only.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Real desktop manual QA is still required because browser/TypeScript checks cannot exercise the exact Windows foreground focus and pointer timing race.
+- If a user presses and drags before the overlay shell is visible at all, the remaining recovery still depends on the native pre-capture sampler; the long-term commercial route remains the native first-frame input path.
+
+### Next Steps
+- Manual desktop QA: repeatedly press `Alt+A` and immediately drag short and long rectangles, especially fast drags from the left/top side of the screen, and confirm no jump from the original down point.
+- If any residual point-1-to-point-2 offset remains, promote the native first-frame input overlay or a low-level mouse hook from diagnostic/guarded mode into the default first-input owner.
+
+## Chapter 279: Simplified Dependency Status UX (2026-06-13)
+
+### Goals Completed
+- Simplified the dashboard by removing the visible commercial-baseline and startup-diagnostics/recovery cards.
+- Added a compact top-right dependency status bar that shows translation, OCR, and FFmpeg status directly in the header.
+- Added a startup dependency hook that loads the latest readiness snapshot and runs one dependency probe when the app opens.
+- Simplified the `识字模型 / 视频录制` page into beginner-friendly RapidOCR and FFmpeg cards, with Rapid OCR V5/V4 status, model directory access, self-test action, FFmpeg download, and FFmpeg executable selection.
+- Removed user-facing diagnostic-report copy UI and old recovery/checklist panels.
+- Preserved the existing refresh button as the single "recheck everything" control for translation plus dependency status.
+
+### Added Files
+- `tauri-client/src/components/app/DependencyStatusBar.tsx`
+- `tauri-client/src/hooks/useStartupDependencyStatus.ts`
+
+### Modified Files
+- `tauri-client/src/App.tsx`
+- `tauri-client/src/components/app/AppLayout.tsx`
+- `tauri-client/src/components/config/RapidOcrPanel.tsx`
+- `tauri-client/src/components/config/RecordingDependencyPanel.tsx`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src/i18n/types.ts`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/ocr-models/types.ts`
+- `tauri-client/src/pages/Dashboard.tsx`
+- `tauri-client/src/pages/OcrConfig.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- `tauri-client/src/components/config/ConfigPageHeader.tsx`
+- `tauri-client/src/components/config/ConfigReadinessOverview.tsx`
+- `tauri-client/src/components/config/ConfigRecoveryChecklist.tsx`
+- `tauri-client/src/components/dashboard/DashboardDiagnosticsCard.tsx`
+- `tauri-client/src/components/dashboard/DashboardReadiness.tsx`
+- `tauri-client/src/hooks/useDiagnosticsReport.ts`
+
+### Explicit Non-Goals
+- Did not implement a new RapidOCR model downloader because the current codebase does not expose a reliable model-download command or model-source manifest yet; the page now exposes model directory, self-test, and missing-file status instead.
+- Did not change the backend readiness commands or FFmpeg downloader behavior.
+- Did not run a packaged desktop exe build for this UI-only chapter.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n` with `583 zh-CN keys match 583 en-US keys`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: in-app browser smoke confirmed the dashboard no longer shows the old commercial-baseline or startup-diagnostics cards.
+- Passed: in-app browser smoke confirmed the header shows compact `翻译`, `识字`, and `FFmpeg` status pills and clicking a pill opens `识字模型 / 视频录制`.
+- Passed: in-app browser smoke confirmed the dependency page shows Rapid OCR V5/V4, model directory/self-test controls, FFmpeg download, and FFmpeg selection.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Real exe startup should still be manually checked because browser smoke cannot exercise Tauri `invoke`, global shortcut registration, or real packaged model/FFmpeg paths.
+- RapidOCR model downloading remains a product decision: it needs an owned model manifest and download command before a commercial-grade one-click model installer should be added.
+
+### Next Steps
+- Manual desktop QA: open the packaged exe fresh and confirm the header performs one startup check, then shows translation, OCR, and FFmpeg statuses without needing to open the configuration page.
+- Add an owned RapidOCR model-pack downloader only after model source URLs, checksums, target directory layout, and recovery behavior are defined in the master plan.
+
+## Chapter 280: Dedicated Model Management And RapidOCR Installer (2026-06-13)
+
+### Goals Completed
+- Split OCR model ownership out of the combined `识字模型 / 视频录制` page into a dedicated left-nav `模型管理` page.
+- Added a beginner-facing model management surface with current RapidOCR status, Rapid OCR V5/V4 wording, default install directory, manual download guidance, and official RapidOCR/ModelScope links.
+- Added a one-click backend installer command that prepares the default `models/rapidocr` install root, delegates model warming to the bundled RapidOCR runner, and probes both V5 and V4 after installation.
+- Changed the RapidOCR fallback model root so development builds and root-directory installs prefer the repo/app `models/rapidocr` directory instead of hiding assets deep in internal runtime folders.
+- Simplified the old dependency page into `视频录制 / 翻译目标`, leaving FFmpeg and target-language controls there while moving model install/repair actions to `模型管理`.
+- Routed the top dependency status bar so translation opens settings, OCR opens model management, and FFmpeg opens the video/recording page.
+
+### External Findings
+- RapidOCR's official model list documents PP-OCRv4/PP-OCRv5 model families and points model assets at the RapidAI/RapidOCR ModelScope repository.
+- RapidOCR v3 documentation describes automatic model downloading through hosted model definitions, matching the bundled runner's local `default_models.yaml` ModelScope URLs.
+- This chapter intentionally reuses the bundled RapidOCR runner's upstream model manifest instead of hand-writing stale model URLs in the frontend.
+
+### Added Files
+- `tauri-client/src/pages/ModelManagement.tsx`
+
+### Modified Files
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/rapid_ocr/mod.rs`
+- `tauri-client/src-tauri/src/rapid_ocr/runner.rs`
+- `tauri-client/src/App.tsx`
+- `tauri-client/src/components/app/AppLayout.tsx`
+- `tauri-client/src/components/app/DependencyStatusBar.tsx`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src/i18n/types.ts`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/ocr-models/types.ts`
+- `tauri-client/src/pages/OcrConfig.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not add checksum verification or an owned signed model-pack manifest yet; the first commercial-safe step is to use RapidOCR's official runner/model metadata path.
+- Did not package model files into the installer; this chapter provides guided and one-click acquisition into `models/rapidocr`.
+- Did not run the actual one-click download from normal browser smoke because browser mode has no Tauri `invoke` bridge or native RapidOCR runner process.
+
+### Validation
+- Passed: `cd tauri-client/src-tauri; cargo fmt`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n` with `584 zh-CN keys match 584 en-US keys`.
+- Passed: `cd tauri-client/src-tauri; cargo check`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: in-app browser smoke confirmed the left navigation now contains `模型管理` and `视频录制`, and no longer shows the old combined `识字模型 / 视频录制` label.
+- Passed: in-app browser smoke confirmed the `模型管理` page shows `一键下载/安装模型`, `models\\rapidocr`, official RapidOCR/ModelScope link actions, and manual download guidance.
+- Passed: in-app browser smoke confirmed the `视频录制 / 翻译目标` page keeps FFmpeg controls and no longer shows model installer actions.
+
+### Known Risks
+- Real one-click model download still needs desktop exe QA with network access to ModelScope because browser smoke cannot execute Tauri commands.
+- Model integrity is still delegated to RapidOCR's official model metadata; a future commercial hardening chapter should add pinned checksums or an owned signed manifest.
+- Packaged-path behavior should be checked in both `--no-bundle` release exe and installer layouts to confirm `models/rapidocr` is visible beside the app as intended.
+
+### Next Steps
+- Manual desktop QA: open the real exe, click `模型管理` -> `一键下载/安装模型`, verify V5/V4 probes pass and files land under `models/rapidocr`.
+- Manual desktop QA: delete or rename one model file, restart the app, and confirm the startup status plus model page explain the missing asset and recovery action clearly.
+- Add a signed model-pack manifest with checksums before treating model installation as fully release-hardened.

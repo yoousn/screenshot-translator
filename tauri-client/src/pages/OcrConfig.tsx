@@ -1,118 +1,65 @@
-﻿import React from "react";
-import { Card, Col, Collapse, Row, Space, Typography } from "antd";
-import ConfigPageHeader from "../components/config/ConfigPageHeader";
-import ConfigReadinessOverview from "../components/config/ConfigReadinessOverview";
-import RapidOcrPanel from "../components/config/RapidOcrPanel";
+import React from "react";
+import { Card, Col, Row, Space, Tag, Typography } from "antd";
 import RecordingDependencyPanel from "../components/config/RecordingDependencyPanel";
 import TranslationLanguagePanel from "../components/config/TranslationLanguagePanel";
 import useOcrConfigController from "../hooks/useOcrConfigController";
-import useRapidOcrController from "../hooks/useRapidOcrController";
 import useRecordingDependencyController from "../hooks/useRecordingDependencyController";
-import { useI18n } from "../i18n";
-import type { RapidOcrModelVersion } from "../ocr-models";
 
 const { Text } = Typography;
 
 export default function OcrConfig() {
   const { config, setConfig, saveConfig } = useOcrConfigController();
-  const recording = useRecordingDependencyController();
-  const rapidOcr = useRapidOcrController();
-  const { text } = useI18n();
-  const labels = text.config;
+  const recording = useRecordingDependencyController({ autoCheck: true });
 
   const saveTargetLanguage = async (targetLang: string) => {
     setConfig({ ...config, targetLang });
     await saveConfig({ targetLang });
   };
 
-  const saveRapidOcrModelVersion = async (rapidOcrModelVersion: RapidOcrModelVersion) => {
-    setConfig({ ...config, rapidOcrModelVersion });
-    await saveConfig({ rapidOcrModelVersion }, false);
-    await rapidOcr.refreshStatus();
-  };
-
-  const saveRapidOcrWorkerEnabled = async (rapidOcrWorkerEnabled: boolean) => {
-    setConfig({ ...config, rapidOcrWorkerEnabled });
-    await saveConfig({ rapidOcrWorkerEnabled }, false);
-    if (rapidOcrWorkerEnabled) {
-      await rapidOcr.startWorker();
-    } else {
-      await rapidOcr.stopWorker();
-    }
-    await rapidOcr.refreshStatus();
-  };
-
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <ConfigPageHeader />
-      <ConfigReadinessOverview
-        runtimeStatus={rapidOcr.status}
-        recordingInfo={recording.recordingInfo}
-        targetLang={config.targetLang || "zh"}
-      />
-
-      <Row gutter={[16, 16]}>
-        <Col xs={24}>
-          <RapidOcrPanel
-            status={rapidOcr.status}
-            loadingStatus={rapidOcr.loadingStatus}
-            selfTesting={rapidOcr.selfTesting}
-            workerBusy={rapidOcr.workerBusy}
-            modelVersion={(config.rapidOcrModelVersion || "v5") as RapidOcrModelVersion}
-            workerEnabled={config.rapidOcrWorkerEnabled !== false}
-            lastSelfTest={rapidOcr.lastSelfTest}
-            onModelVersionChange={saveRapidOcrModelVersion}
-            onWorkerEnabledChange={saveRapidOcrWorkerEnabled}
-            onRefreshStatus={rapidOcr.refreshStatus}
-            onRunSelfTest={rapidOcr.runSelfTest}
-            onStartWorker={rapidOcr.startWorker}
-            onStopWorker={rapidOcr.stopWorker}
-            onRestartWorker={rapidOcr.restartWorker}
-          />
-        </Col>
-      </Row>
-
-      <TranslationLanguagePanel targetLang={config.targetLang || "zh"} onTargetLangChange={saveTargetLanguage} />
-
-      <Card bordered={false} style={{ borderRadius: 18, boxShadow: "0 18px 48px rgba(15,23,42,0.06)" }}>
-        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+      <Card bordered={false} style={{ borderRadius: 20, background: "linear-gradient(135deg, #eef6ff 0%, #f8fbff 56%, #fff7ed 100%)" }}>
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          <Space wrap>
+            <Tag color="orange">FFmpeg</Tag>
+            <Tag color="blue">目标语言</Tag>
+          </Space>
           <div>
-            <Text strong style={{ display: "block", color: "#0f172a", fontSize: 16 }}>{labels.advancedDependencies}</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>{labels.advancedDependenciesDesc}</Text>
+            <Text strong style={{ display: "block", fontSize: 22, color: "#0f172a" }}>视频录制 / 翻译目标</Text>
+            <Text type="secondary" style={{ display: "block", marginTop: 6 }}>管理 FFmpeg 录制依赖、录屏保存目录和默认翻译目标语言。</Text>
+            <Text type="secondary" style={{ display: "block", marginTop: 8, fontSize: 12 }}>
+              识字模型下载和安装已移到左侧“模型管理”，这里专注录制和语言设置。
+            </Text>
           </div>
-          <Collapse
-            ghost
-            defaultActiveKey={[]}
-            items={[
-              {
-                key: "recording",
-                label: labels.videoRecordingDependencyPanel,
-                children: (
-                  <RecordingDependencyPanel
-                    ffmpegPath={recording.ffmpegPath}
-                    defaultVideoDir={recording.defaultVideoDir}
-                    ffmpegRelease={recording.ffmpegRelease}
-                    ffmpegProgress={recording.ffmpegProgress}
-                    recordingInfo={recording.recordingInfo}
-                    checkingFfmpeg={recording.checkingFfmpeg}
-                    checkingRecordingInfo={recording.checkingRecordingInfo}
-                    downloadingFfmpeg={recording.downloadingFfmpeg}
-                    onSetFfmpegPath={recording.setFfmpegPath}
-                    onSaveFfmpegPath={() => recording.saveFfmpegPath()}
-                    onChooseFfmpegPath={recording.chooseFfmpegPath}
-                    onCheckFfmpegRelease={recording.checkFfmpegRelease}
-                    onCheckRecordingInfo={recording.checkRecordingInfo}
-                    onDownloadFfmpeg={recording.downloadFfmpegRelease}
-                    onOpenFfmpegRepo={recording.openFfmpegRepo}
-                    onOpenFfmpegDir={recording.openFfmpegDir}
-                    onOpenVideoDir={recording.openVideoDir}
-                  />
-                ),
-              },
-            ]}
-          />
         </Space>
       </Card>
+
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={24} xl={12}>
+          <RecordingDependencyPanel
+            ffmpegPath={recording.ffmpegPath}
+            defaultVideoDir={recording.defaultVideoDir}
+            ffmpegRelease={recording.ffmpegRelease}
+            ffmpegProgress={recording.ffmpegProgress}
+            recordingInfo={recording.recordingInfo}
+            checkingFfmpeg={recording.checkingFfmpeg}
+            checkingRecordingInfo={recording.checkingRecordingInfo}
+            downloadingFfmpeg={recording.downloadingFfmpeg}
+            onSetFfmpegPath={recording.setFfmpegPath}
+            onSaveFfmpegPath={() => recording.saveFfmpegPath()}
+            onChooseFfmpegPath={recording.chooseFfmpegPath}
+            onCheckFfmpegRelease={recording.checkFfmpegRelease}
+            onCheckRecordingInfo={recording.checkRecordingInfo}
+            onDownloadFfmpeg={recording.downloadFfmpegRelease}
+            onOpenFfmpegRepo={recording.openFfmpegRepo}
+            onOpenFfmpegDir={recording.openFfmpegDir}
+            onOpenVideoDir={recording.openVideoDir}
+          />
+        </Col>
+        <Col xs={24} xl={12}>
+          <TranslationLanguagePanel targetLang={config.targetLang || "zh"} onTargetLangChange={saveTargetLanguage} />
+        </Col>
+      </Row>
     </Space>
   );
 }

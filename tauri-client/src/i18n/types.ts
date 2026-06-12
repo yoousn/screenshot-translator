@@ -52,6 +52,7 @@ export type AppDictionary = {
   nav: {
     dashboard: string;
     settings: string;
+    modelManagement: string;
     ocrConfig: string;
     history: string;
     about: string;
@@ -98,23 +99,6 @@ export type AppDictionary = {
     service: string;
     sourceLanguage: string;
     sourceLanguageAuto: string;
-    commercialReady: string;
-    commercialReadyDesc: string;
-    installModels: string;
-    configureService: string;
-    fixHotkey: string;
-    allCoreReady: string;
-    actionNeeded: string;
-    diagnosticsTitle: string;
-    diagnosticsDesc: string;
-    diagnosticsRefresh: string;
-    diagnosticsReady: string;
-    diagnosticsNotReady: string;
-    diagnosticsOpenRecovery: string;
-    diagnosticsNoIssues: string;
-    diagnosticsIssuesCount: string;
-    diagnosticsModuleOcrRuntime: string;
-    diagnosticsModuleRecording: string;
   };
 };
 

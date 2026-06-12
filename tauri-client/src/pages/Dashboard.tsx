@@ -9,12 +9,9 @@ import {
   TranslationOutlined,
 } from "@ant-design/icons";
 import DashboardActionList, { type DashboardActionItem } from "../components/dashboard/DashboardActionList";
-import DashboardDiagnosticsCard from "../components/dashboard/DashboardDiagnosticsCard";
 import DashboardHero from "../components/dashboard/DashboardHero";
-import DashboardReadiness from "../components/dashboard/DashboardReadiness";
 import DashboardStats from "../components/dashboard/DashboardStats";
 import DelayedCountdownOverlay from "../components/screenshot/DelayedCountdownOverlay";
-import useDiagnosticsReport from "../hooks/useDiagnosticsReport";
 import { useI18n } from "../i18n";
 
 interface Config {
@@ -27,7 +24,6 @@ interface Config {
 
 interface DashboardProps {
   onStartScreenshot: () => void;
-  onNavigate: (key: string) => void;
   shortcutError?: string | null;
   serverStatus: "checking" | "online" | "offline";
   responseTime: number | null;
@@ -38,11 +34,10 @@ const targetLanguageLabel = (targetLang: string | undefined, fallback: string) =
   return targetLang.toUpperCase();
 };
 
-export default function Dashboard({ onStartScreenshot, onNavigate, shortcutError, serverStatus, responseTime }: DashboardProps) {
+export default function Dashboard({ onStartScreenshot, shortcutError, serverStatus, responseTime }: DashboardProps) {
   const [config, setConfig] = useState<Config>({});
   const [delayedCountdown, setDelayedCountdown] = useState<number | null>(null);
   const [delayedActive, setDelayedActive] = useState(false);
-  const diagnostics = useDiagnosticsReport();
   const { text } = useI18n();
   const T = text.dashboard;
 
@@ -161,22 +156,6 @@ export default function Dashboard({ onStartScreenshot, onNavigate, shortcutError
         serverStatusText={statusText}
         serverStatusColor={statusColor}
         labels={{ hotkey: T.hotkey, ocrMode: T.ocrMode, targetLang: T.targetLang }}
-      />
-      <DashboardReadiness
-        labels={T}
-        serverStatus={serverStatus}
-        shortcutError={shortcutError}
-        onOpenModels={() => onNavigate("ocr-config")}
-        onOpenSettings={() => onNavigate("settings")}
-      />
-      <DashboardDiagnosticsCard
-        labels={{ ...T, ...text.config }}
-        report={diagnostics.report}
-        loading={diagnostics.loading}
-        error={diagnostics.error}
-        onRefresh={diagnostics.refresh}
-        onOpenModels={() => onNavigate("ocr-config")}
-        onOpenSettings={() => onNavigate("settings")}
       />
       <DashboardActionList
         title={T.commandCenter}

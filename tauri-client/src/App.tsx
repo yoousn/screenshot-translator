@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ConfigProvider, App as AntdApp } from "antd";
 import {
+  CloudDownloadOutlined,
   DashboardOutlined,
   FileTextOutlined,
   HistoryOutlined,
@@ -13,8 +14,10 @@ import Settings from "./pages/Settings";
 import History from "./pages/History";
 import About from "./pages/About";
 import OcrConfig from "./pages/OcrConfig";
+import ModelManagement from "./pages/ModelManagement";
 import AppLayout from "./components/app/AppLayout";
 import useServerStatus from "./hooks/useServerStatus";
+import useStartupDependencyStatus from "./hooks/useStartupDependencyStatus";
 import { I18nProvider, useI18n } from "./i18n";
 
 function AppContent() {
@@ -23,6 +26,7 @@ function AppContent() {
   const { message, notification } = AntdApp.useApp();
   const { language, setLanguage, text } = useI18n();
   const { serverUrl, isOnline, isChecking, responseTime, translationMetadata, checkStatus, fetchServerUrl } = useServerStatus();
+  const dependencyStatus = useStartupDependencyStatus();
 
   useEffect(() => {
     checkShortcutStatus();
@@ -63,6 +67,7 @@ function AppContent() {
   const menuItems = [
     { key: "dashboard", icon: <DashboardOutlined />, label: text.nav.dashboard },
     { key: "settings", icon: <SettingOutlined />, label: text.nav.settings },
+    { key: "model-management", icon: <CloudDownloadOutlined />, label: text.nav.modelManagement },
     { key: "ocr-config", icon: <FileTextOutlined />, label: text.nav.ocrConfig },
     { key: "history", icon: <HistoryOutlined />, label: text.nav.history },
     { key: "about", icon: <InfoCircleOutlined />, label: text.nav.about },
@@ -71,9 +76,11 @@ function AppContent() {
   const renderContent = () => {
     switch (activeKey) {
       case "dashboard":
-        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onNavigate={setActiveKey} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} />;
       case "settings":
         return <Settings onConfigSaved={fetchServerUrl} />;
+      case "model-management":
+        return <ModelManagement />;
       case "ocr-config":
         return <OcrConfig />;
       case "history":
@@ -81,7 +88,7 @@ function AppContent() {
       case "about":
         return <About />;
       default:
-        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} onNavigate={setActiveKey} />;
+        return <Dashboard onStartScreenshot={handleStartScreenshot} shortcutError={shortcutError} serverStatus={isOnline} responseTime={responseTime} />;
     }
   };
 
@@ -93,6 +100,9 @@ function AppContent() {
       isOnline={isOnline}
       isChecking={isChecking}
       translationMetadata={translationMetadata}
+      dependencySnapshot={dependencyStatus.snapshot}
+      dependencyChecking={dependencyStatus.checking}
+      dependencyError={dependencyStatus.error}
       language={language}
       labels={{
         screenshotNow: text.app.screenshotNow,
@@ -110,6 +120,10 @@ function AppContent() {
       onMenuSelect={setActiveKey}
       onStartScreenshot={handleStartScreenshot}
       onRefreshStatus={() => checkStatus(serverUrl)}
+      onRefreshDependencies={dependencyStatus.refresh}
+      onOpenTranslationSettings={() => setActiveKey("settings")}
+      onOpenModelManagement={() => setActiveKey("model-management")}
+      onOpenDependencies={() => setActiveKey("ocr-config")}
     >
       {renderContent()}
     </AppLayout>

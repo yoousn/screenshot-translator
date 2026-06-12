@@ -4,7 +4,12 @@ pub mod worker;
 pub use runner::*;
 pub use worker::*;
 
-use std::time::Duration;
+use std::fs;
+use std::time::{Duration, Instant};
+
+const RAPIDOCR_DOCS_MODEL_LIST_URL: &str =
+    "https://rapidai.github.io/RapidOCRDocs/main/model_list/";
+const RAPIDOCR_MODELSCOPE_URL: &str = "https://www.modelscope.cn/models/RapidAI/RapidOCR";
 
 #[tauri::command]
 pub async fn prewarm_local_ocr_models(app: tauri::AppHandle) -> Result<Vec<String>, String> {
@@ -195,6 +200,91 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
                 "nextAction": if models_ready { "ready" } else { "restore-root-models" }
             }
         ]
+    }))
+}
+
+#[tauri::command]
+pub async fn install_rapid_ocr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || install_rapid_ocr_models_sync(&app))
+        .await
+        .map_err(|error| format!("RapidOCR model install task failed: {error}"))?
+}
+
+fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let started = Instant::now();
+    let model_root = rapid_ocr_model_install_root(app);
+    fs::create_dir_all(&model_root).map_err(|error| {
+        format!(
+            "failed to create RapidOCR model directory {}: {error}",
+            model_root.display()
+        )
+    })?;
+
+    let _ = stop_rapid_ocr_worker_internal(1500);
+    let model_root_arg = model_root.to_string_lossy().to_string();
+    let warm_result = run_rapidocr_command_value(
+        app,
+        vec![
+            "--warm-models".to_string(),
+            "--model-root".to_string(),
+            model_root_arg.clone(),
+        ],
+    )?;
+    let probe_v5 = run_rapidocr_command_value(
+        app,
+        vec![
+            "--probe".to_string(),
+            "--model-version".to_string(),
+            "v5".to_string(),
+            "--model-root".to_string(),
+            model_root_arg.clone(),
+        ],
+    )?;
+    let probe_v4 = run_rapidocr_command_value(
+        app,
+        vec![
+            "--probe".to_string(),
+            "--model-version".to_string(),
+            "v4".to_string(),
+            "--model-root".to_string(),
+            model_root_arg,
+        ],
+    )?;
+
+    let missing_v5 = rapid_ocr_missing_model_files(&model_root, "v5");
+    let missing_v4 = rapid_ocr_missing_model_files(&model_root, "v4");
+    let ok = missing_v5.is_empty()
+        && missing_v4.is_empty()
+        && probe_v5
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            == "success"
+        && probe_v4
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            == "success";
+
+    Ok(serde_json::json!({
+        "ok": ok,
+        "modelRoot": model_root.to_string_lossy().to_string(),
+        "source": {
+            "name": "RapidOCR official ModelScope model repository",
+            "docsUrl": RAPIDOCR_DOCS_MODEL_LIST_URL,
+            "modelRepositoryUrl": RAPIDOCR_MODELSCOPE_URL,
+            "package": "rapidocr==3.8.1"
+        },
+        "warmResult": warm_result,
+        "probeResults": {
+            "v5": probe_v5,
+            "v4": probe_v4
+        },
+        "missingModelFiles": {
+            "v5": missing_v5,
+            "v4": missing_v4
+        },
+        "elapsedMs": started.elapsed().as_millis()
     }))
 }
 

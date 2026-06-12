@@ -38,6 +38,8 @@ export type RapidOcrStatus = {
   modelSetVersion?: string;
   rapidOcrModelVersion: RapidOcrModelVersion;
   modelDir: string;
+  modelRoot?: string;
+  missingModelFiles?: string[];
   defaultSourceLanguage: "auto";
   defaultProfile?: OcrModelProfile;
   lastError?: string | null;
@@ -54,4 +56,22 @@ export type RapidOcrSelfTestResult = {
   message: string;
   timings?: Record<string, unknown> | null;
   samples: Array<{ id: string; ok: boolean; confidence?: number; modelId?: string }>;
+};
+
+export type RapidOcrModelInstallResult = {
+  ok: boolean;
+  modelRoot: string;
+  source?: {
+    name?: string;
+    docsUrl?: string;
+    modelRepositoryUrl?: string;
+    package?: string;
+  };
+  warmResult?: Record<string, unknown>;
+  probeResults?: Record<string, unknown>;
+  missingModelFiles?: {
+    v5?: string[];
+    v4?: string[];
+  };
+  elapsedMs?: number;
 };

@@ -459,6 +459,7 @@ pub fn run() {
             get_startup_readiness_snapshot,
             run_startup_readiness_probe,
             get_rapid_ocr_status,
+            install_rapid_ocr_models,
             run_rapid_ocr_self_test,
             start_rapid_ocr_worker,
             stop_rapid_ocr_worker,

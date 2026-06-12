@@ -1,8 +1,10 @@
 ﻿import React from "react";
-import { Button, Layout, Menu, Select, Space, Tag, Tooltip } from "antd";
-import { CameraOutlined, GlobalOutlined, SyncOutlined, WifiOutlined } from "@ant-design/icons";
+import { Button, Layout, Menu, Select, Space, Tooltip } from "antd";
+import { CameraOutlined, GlobalOutlined, SyncOutlined } from "@ant-design/icons";
 import { LANGUAGE_OPTIONS, type AppLanguage } from "../../i18n";
 import type { TranslationServiceMetadata } from "../../hooks/useServerStatus";
+import type { StartupDependencySnapshot } from "../../hooks/useStartupDependencyStatus";
+import DependencyStatusBar from "./DependencyStatusBar";
 
 const { Header, Sider, Content } = Layout;
 
@@ -26,6 +28,9 @@ interface AppLayoutProps {
   isOnline: "checking" | "online" | "offline";
   isChecking: boolean;
   translationMetadata: TranslationServiceMetadata | null;
+  dependencySnapshot: StartupDependencySnapshot | null;
+  dependencyChecking: boolean;
+  dependencyError?: string | null;
   language: AppLanguage;
   labels: AppLayoutLabels;
   children: React.ReactNode;
@@ -33,13 +38,11 @@ interface AppLayoutProps {
   onMenuSelect: (key: string) => void;
   onStartScreenshot: () => void;
   onRefreshStatus: () => void;
+  onRefreshDependencies: () => void;
+  onOpenTranslationSettings: () => void;
+  onOpenModelManagement: () => void;
+  onOpenDependencies: () => void;
 }
-
-const statusColor = {
-  online: "success",
-  offline: "error",
-  checking: "warning",
-} as const;
 
 export default function AppLayout({
   activeKey,
@@ -48,6 +51,9 @@ export default function AppLayout({
   isOnline,
   isChecking,
   translationMetadata,
+  dependencySnapshot,
+  dependencyChecking,
+  dependencyError,
   language,
   labels,
   children,
@@ -55,15 +61,15 @@ export default function AppLayout({
   onMenuSelect,
   onStartScreenshot,
   onRefreshStatus,
+  onRefreshDependencies,
+  onOpenTranslationSettings,
+  onOpenModelManagement,
+  onOpenDependencies,
 }: AppLayoutProps) {
-  const statusText = isOnline === "online" ? labels.online : isOnline === "offline" ? labels.offline : labels.checking;
-  const hasQualityRisk = Boolean(translationMetadata?.quality_flags?.google_free_low_quality_risk);
-  const serviceTooltip = [
-    `${labels.service}: ${statusText}`,
-    translationMetadata?.active_channel ? `${labels.channel}: ${translationMetadata.active_channel}` : "",
-    translationMetadata?.glossary_version ? `${labels.glossary}: ${translationMetadata.glossary_version}${translationMetadata.glossary_loaded === false ? " (not loaded)" : ""}` : "",
-    hasQualityRisk ? labels.qualityRisk : "",
-  ].filter(Boolean).join("\n");
+  const refreshAll = () => {
+    onRefreshStatus();
+    onRefreshDependencies();
+  };
 
   return (
     <Layout style={{ height: "100vh", width: "100vw", overflow: "hidden", background: "#f5f7fb" }}>
@@ -96,14 +102,20 @@ export default function AppLayout({
       <Layout>
         <Header style={{ height: 64, background: "rgba(255,255,255,0.92)", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #e5e7eb", lineHeight: "normal", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
           <Space size="middle" style={{ marginLeft: "auto" }}>
-            <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{serviceTooltip}</span>}>
-              <Tag color={statusColor[isOnline]} icon={isOnline === "checking" ? <SyncOutlined spin /> : <WifiOutlined />} style={{ margin: 0, borderRadius: 999, padding: "2px 10px" }}>
-                {statusText}
-              </Tag>
-            </Tooltip>
+            <DependencyStatusBar
+              translationStatus={isOnline}
+              translationChecking={isChecking}
+              translationMetadata={translationMetadata}
+              dependencySnapshot={dependencySnapshot}
+              dependencyChecking={dependencyChecking}
+              dependencyError={dependencyError}
+              onOpenTranslationSettings={onOpenTranslationSettings}
+              onOpenModelManagement={onOpenModelManagement}
+              onOpenDependencies={onOpenDependencies}
+            />
 
             <Tooltip title={labels.refresh}>
-              <Button type="text" icon={<SyncOutlined spin={isChecking} />} onClick={onRefreshStatus} disabled={isChecking} style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 32, width: 32, borderRadius: 999 }} />
+              <Button type="text" icon={<SyncOutlined spin={isChecking || dependencyChecking} />} onClick={refreshAll} disabled={isChecking || dependencyChecking} style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 32, width: 32, borderRadius: 999 }} />
             </Tooltip>
 
             <Select

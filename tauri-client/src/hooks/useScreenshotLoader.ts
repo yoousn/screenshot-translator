@@ -260,6 +260,11 @@ export function useScreenshotLoader({
     let loggedStart = false;
     const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
     const clampToViewport = (value: number, max: number) => Math.max(0, Math.min(max, value));
+    const localSelectionStarted = () => (
+      hasSelectedRef.current
+      || rectRef.current.w > 0
+      || rectRef.current.h > 0
+    );
     const applyPreShowRect = (preCapture: any, finalize: boolean) => {
       const maxW = Math.max(1, window.innerWidth);
       const maxH = Math.max(1, window.innerHeight);
@@ -283,7 +288,15 @@ export function useScreenshotLoader({
     for (let index = 0; index < 48; index += 1) {
       if (sessionId !== captureIdRef.current) return;
       if (!overlayVisibleRef.current) return;
-      if (!loggedStart && (hasSelectedRef.current || rectRef.current.w > 5 || rectRef.current.h > 5)) return;
+      if (!loggedStart && localSelectionStarted()) {
+        logScreenshotBaseline(
+          sessionKey,
+          "pre_show_drag_skipped_local_selection",
+          performance.now() - frontendSessionStartedAtRef.current,
+          `rect=${Math.round(rectRef.current.w)}x${Math.round(rectRef.current.h)} selected=${hasSelectedRef.current}`
+        );
+        return;
+      }
       const pointerState = await invoke<any>("get_screenshot_pointer_state", { label: getCurrentWindow().label, sessionId: String(sessionKey) }).catch(() => null);
       const nativeOverlay = pointerState?.nativeOverlay;
       if (nativeOverlay?.cancelled === true && String(nativeOverlay.sessionId) === String(sessionKey)) {

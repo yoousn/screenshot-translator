@@ -365,7 +365,7 @@ export default function ScreenshotPage() {
     pendingConfirmTimerRef,
   });
 
-  const canInteractWithOverlay = overlayVisible && (screenshotState === "ready" || nativeOverlayVisibleRef.current);
+  const canInteractWithOverlay = overlayVisible;
   frameInteractiveRef.current = canInteractWithOverlay;
   imageReadyRef.current = Boolean(imageRef.current);
 
@@ -727,6 +727,12 @@ export default function ScreenshotPage() {
       let loggedStart = false;
       const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
       const clampToViewport = (value: number, max: number) => Math.max(0, Math.min(max, value));
+      const localSelectionStarted = () => (
+        isSelectingRef.current
+        || hasSelectedRef.current
+        || rectRef.current.w > 0
+        || rectRef.current.h > 0
+      );
       const applyPreCapture = (preCapture: any, finalize: boolean) => {
         const maxW = Math.max(1, window.innerWidth);
         const maxH = Math.max(1, window.innerHeight);
@@ -753,7 +759,12 @@ export default function ScreenshotPage() {
 
       for (let index = 0; index < 48; index += 1) {
         if (displayedSessionIdRef.current !== sessionId || !overlayVisibleRef.current) return;
-        if (hasSelectedRef.current && rectRef.current.w > 5 && rectRef.current.h > 5) return;
+        if (!loggedStart && localSelectionStarted()) {
+          invoke("log_screenshot_perf", {
+            message: `[baseline] session=${sessionId} phase=shell_pre_capture_skipped_local_selection elapsed_ms=${Math.round(performance.now() - shellReceivedAt)} selecting=${isSelectingRef.current} rect=${Math.round(rectRef.current.w)}x${Math.round(rectRef.current.h)} selected=${hasSelectedRef.current}`,
+          }).catch(() => {});
+          return;
+        }
         const pointerState = await invoke<any>("get_screenshot_pointer_state", {
           label: getCurrentWindow().label,
           sessionId,
@@ -1076,7 +1087,7 @@ export default function ScreenshotPage() {
         onPointerUp={handleMouseUp}
         onPointerCancel={handlePointerCancel}
         onDoubleClick={handleDoubleClick}
-        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: canInteractWithOverlay ? "auto" : "none" }}
+        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible ? "auto" : "none" }}
       />
 
       {overlayVisible && screenshotState === "ready" && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (

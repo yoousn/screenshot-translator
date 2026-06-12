@@ -236,7 +236,32 @@ pub fn rapid_ocr_model_root(app: &tauri::AppHandle) -> PathBuf {
     rapid_ocr_model_root_candidates(app)
         .into_iter()
         .find(|path| path.is_dir())
-        .unwrap_or_else(|| repo_root_from_manifest().join("models").join("rapidocr"))
+        .unwrap_or_else(|| rapid_ocr_model_install_root(app))
+}
+
+pub fn rapid_ocr_model_install_root(app: &tauri::AppHandle) -> PathBuf {
+    if let Some(path) = config_value_string("rapidOcrModelRoot")
+        .or_else(|| std::env::var("YSN_RAPIDOCR_MODEL_ROOT").ok())
+        .map(PathBuf::from)
+    {
+        return path;
+    }
+
+    let repo_root = repo_root_from_manifest().join("models").join("rapidocr");
+    if cfg!(debug_assertions) || repo_root.exists() {
+        return repo_root;
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            return exe_dir.join("models").join("rapidocr");
+        }
+    }
+
+    app.path()
+        .resource_dir()
+        .map(|path| path.join("models").join("rapidocr"))
+        .unwrap_or(repo_root)
 }
 
 pub fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> {
@@ -406,6 +431,26 @@ pub fn run_rapidocr_json(
     app: &tauri::AppHandle,
     args: Vec<String>,
 ) -> Result<RapidOcrRunnerOutput, String> {
+    let (value, runner_kind) = run_rapidocr_value_with_runner_kind(app, args)?;
+    let mut parsed: RapidOcrRunnerOutput = serde_json::from_value(value)
+        .map_err(|error| format!("failed to parse RapidOCR JSON: {error}"))?;
+    if parsed.engine.is_none() {
+        parsed.engine = Some(runner_kind);
+    }
+    Ok(parsed)
+}
+
+pub fn run_rapidocr_command_value(
+    app: &tauri::AppHandle,
+    args: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    run_rapidocr_value_with_runner_kind(app, args).map(|(value, _)| value)
+}
+
+fn run_rapidocr_value_with_runner_kind(
+    app: &tauri::AppHandle,
+    args: Vec<String>,
+) -> Result<(serde_json::Value, String), String> {
     let spec = resolve_rapidocr_command(app)?;
     let mut command = Command::new(&spec.program);
     command.args(&spec.args_prefix);
@@ -441,12 +486,9 @@ pub fn run_rapidocr_json(
                 stderr.trim()
             )
         })?;
-    let mut parsed: RapidOcrRunnerOutput = serde_json::from_str(json_line.trim())
+    let parsed: serde_json::Value = serde_json::from_str(json_line.trim())
         .map_err(|error| format!("failed to parse RapidOCR JSON: {error}; output: {json_line}"))?;
-    if parsed.engine.is_none() {
-        parsed.engine = Some(spec.kind);
-    }
-    Ok(parsed)
+    Ok((parsed, spec.kind))
 }
 
 pub fn run_rapidocr_probe(
