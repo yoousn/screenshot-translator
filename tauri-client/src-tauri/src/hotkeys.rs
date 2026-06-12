@@ -39,6 +39,39 @@ pub fn accept_capture_shortcut_press(action: &str) -> bool {
     true
 }
 
+fn try_reserve_screenshot_start(action: &str) -> bool {
+    if CAPTURING.load(Ordering::SeqCst) {
+        println!("[shortcut] ignored {action} screenshot start because capture is already active");
+        return false;
+    }
+    if SCREENSHOT_STARTING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        println!("[shortcut] ignored {action} screenshot start because another start is pending");
+        return false;
+    }
+    true
+}
+
+fn spawn_screenshot_start(
+    app: tauri::AppHandle,
+    mode: Option<String>,
+    action: &'static str,
+    error_label: &'static str,
+) {
+    if !try_reserve_screenshot_start(action) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let result = start_screenshot(app, mode).await;
+        SCREENSHOT_STARTING.store(false, Ordering::SeqCst);
+        if let Err(error) = result {
+            eprintln!("{error_label}: {error}");
+        }
+    });
+}
+
 pub fn normalize_key_code(key: &str) -> Option<String> {
     let trimmed = key.trim();
     if trimmed.len() == 1 {
@@ -177,12 +210,12 @@ pub fn register_global_shortcuts(
                             if event.state() == ShortcutState::Pressed
                                 && accept_capture_shortcut_press("screenshot")
                             {
-                                let app_h = app.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    if let Err(e) = start_screenshot(app_h, None).await {
-                                        eprintln!("Failed to start screenshot: {}", e);
-                                    }
-                                });
+                                spawn_screenshot_start(
+                                    app.clone(),
+                                    None,
+                                    "screenshot",
+                                    "Failed to start screenshot",
+                                );
                             }
                         })
                 {
@@ -202,14 +235,12 @@ pub fn register_global_shortcuts(
                             if event.state() == ShortcutState::Pressed
                                 && accept_capture_shortcut_press("translate")
                             {
-                                let app_h = app.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    if let Err(e) =
-                                        start_screenshot(app_h, Some("translate".to_string())).await
-                                    {
-                                        eprintln!("Failed to start translate screenshot: {}", e);
-                                    }
-                                });
+                                spawn_screenshot_start(
+                                    app.clone(),
+                                    Some("translate".to_string()),
+                                    "translate",
+                                    "Failed to start translate screenshot",
+                                );
                             }
                         })
                 {
@@ -229,14 +260,12 @@ pub fn register_global_shortcuts(
                             if event.state() == ShortcutState::Pressed
                                 && accept_capture_shortcut_press("recording")
                             {
-                                let app_h = app.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    if let Err(e) =
-                                        start_screenshot(app_h, Some("record".to_string())).await
-                                    {
-                                        eprintln!("Failed to start recording selection: {}", e);
-                                    }
-                                });
+                                spawn_screenshot_start(
+                                    app.clone(),
+                                    Some("record".to_string()),
+                                    "recording",
+                                    "Failed to start recording selection",
+                                );
                             }
                         })
                 {
@@ -260,7 +289,7 @@ fn capture_escape_shortcut() -> Shortcut {
 
 pub fn register_capture_escape_shortcut(app: &tauri::AppHandle) {
     if CAPTURE_ESCAPE_SHORTCUT_REGISTERED.swap(true, AtomicOrdering::SeqCst) {
-        return;
+        let _ = app.global_shortcut().unregister(capture_escape_shortcut());
     }
     if let Err(error) = app.global_shortcut().on_shortcut(
         capture_escape_shortcut(),
@@ -286,12 +315,13 @@ pub fn register_capture_escape_shortcut(app: &tauri::AppHandle) {
 }
 
 pub fn unregister_capture_escape_shortcut(app: &tauri::AppHandle) {
-    if !CAPTURE_ESCAPE_SHORTCUT_REGISTERED.swap(false, AtomicOrdering::SeqCst) {
-        return;
-    }
+    let was_registered = CAPTURE_ESCAPE_SHORTCUT_REGISTERED.swap(false, AtomicOrdering::SeqCst);
     if let Err(error) = app.global_shortcut().unregister(capture_escape_shortcut()) {
+        if !was_registered {
+            return;
+        }
         eprintln!("[shortcut] Failed to unregister capture Escape shortcut: {error}");
-    } else {
+    } else if was_registered {
         println!("[shortcut] unregistered capture Escape shortcut");
     }
 }

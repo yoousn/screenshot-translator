@@ -4,14 +4,18 @@ setlocal EnableExtensions DisableDelayedExpansion
 set "ROOT=%~dp0"
 set "NO_PAUSE="
 set "DRY_RUN="
-set "FORWARD_ARGS=--no-launch"
+set "FORWARD_ARGS="
 
-call :parse_args %*
-if defined NO_PAUSE set "FORWARD_ARGS=--no-launch --no-pause"
+goto :parse_args
+
+:after_parse
+if defined NO_PAUSE set "FORWARD_ARGS=--no-pause"
 
 echo(=== YSN Trans - full release build ===
 echo(
 echo([cmd] call "%ROOT%build.bat" %FORWARD_ARGS%
+echo([launch] build.bat opens release\YSN-Screenshot-Translator\YsnTrans.exe
+echo([shortcut] %ROOT%YsnTrans.lnk
 echo(
 
 if defined DRY_RUN goto :done
@@ -28,7 +32,7 @@ if not "%BUILD_CODE%"=="0" (
 goto :done
 
 :parse_args
-if "%~1"=="" exit /b 0
+if "%~1"=="" goto :after_parse
 if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
 if /I "%~1"=="/no-pause" set "NO_PAUSE=1"
 if /I "%~1"=="--dry-run" set "DRY_RUN=1"

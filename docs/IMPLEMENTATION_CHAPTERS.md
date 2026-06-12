@@ -3816,7 +3816,11 @@ Alt+A
   - Full release build wrapper for the existing dual-installer `build.bat` flow.
 - Added `--dry-run` and `--no-pause` support to each launcher so commands can be checked without running a real build and CI/terminal usage can avoid blocking pauses.
 - Kept the scripts' internal text mostly ASCII to avoid Windows `cmd` code-page issues while preserving Chinese filenames for double-click usability.
-- Build scripts close running `YsnTrans.exe` and legacy `tauri-client.exe` before release builds to reduce locked-output failures.
+- Normal launcher runs now close running `YsnTrans.exe` and legacy `tauri-client.exe` before starting dev or release builds to reduce locked-output and stale-process failures.
+- Exe, NSIS, MSI, and full-release build flows now create a root `YsnTrans.lnk` shortcut pointing at the build output they launch.
+- Exe, NSIS, and MSI build flows now auto-launch `tauri-client\src-tauri\target\release\YsnTrans.exe` after a successful build.
+- Full release builds now keep `build.bat` auto-launch enabled, which opens `release\YSN-Screenshot-Translator\YsnTrans.exe` after copying the portable runtime.
+- `--dry-run` now remains non-mutating for the Chinese launchers: it prints command, output, shortcut, and launch targets without killing processes, building, creating shortcuts, or launching the app.
 
 ### Added Files
 - `日常自测-开发模式.bat`
@@ -3826,24 +3830,80 @@ Alt+A
 - `完整发布-双安装包.bat`
 
 ### Modified Files
+- `日常自测-开发模式.bat`
+- `构建EXE-不打安装包.bat`
+- `构建NSIS安装包.bat`
+- `构建MSI安装包.bat`
+- `完整发布-双安装包.bat`
 - `docs/IMPLEMENTATION_CHAPTERS.md`
 
 ### Explicit Non-Goals
 - Did not install or configure `sccache`, `lld`, or other machine-level Rust acceleration tools.
-- Did not change the existing `build.bat` release artifact copy behavior.
-- Did not run real release builds because the requested change was launcher creation and the dry-run path validates script wiring without spending build time.
+- Did not change the existing `build.bat` installer artifact copy behavior.
+- Did not intentionally run full real release builds because the requested change was launcher behavior and the dry-run path validates script wiring without spending build time.
 
 ### Validation
-- Passed: `日常自测-开发模式.bat --dry-run --no-pause`.
-- Passed: `构建EXE-不打安装包.bat --dry-run --no-pause`.
-- Passed: `构建NSIS安装包.bat --dry-run --no-pause`.
-- Passed: `构建MSI安装包.bat --dry-run --no-pause`.
-- Passed: `完整发布-双安装包.bat --dry-run --no-pause`.
+- Passed: `cmd /c "日常自测-开发模式.bat --dry-run --no-pause"`.
+- Passed: `cmd /c "构建EXE-不打安装包.bat --dry-run --no-pause"`.
+- Passed: `cmd /c "构建NSIS安装包.bat --dry-run --no-pause"`.
+- Passed: `cmd /c "构建MSI安装包.bat --dry-run --no-pause"`.
+- Passed: `cmd /c "完整发布-双安装包.bat --dry-run --no-pause"`.
+- Passed: `scripts/create-root-shortcut.ps1` created a temporary shortcut to `notepad.exe`, then the temporary `_shortcut_helper_test.lnk` was removed.
 - Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
 
 ### Known Risks
 - Real installer builds still depend on the local Tauri/Rust/NSIS/MSI toolchain and bundled runtime resources being present.
 - `sccache` and faster linker setup remain a separate machine configuration task.
+- The raw Tauri release exe remains under `tauri-client\src-tauri\target\release\`; the root shortcut is the intended easy access point so the exe can keep using its expected runtime layout.
 
 ### Next Steps
-- Use `日常自测-开发模式.bat` for quick feature checks, `构建EXE-不打安装包.bat` for release-performance checks, and one of the installer scripts only when a distributable installer is needed.
+- Use `日常自测-开发模式.bat` for quick feature checks, `构建EXE-不打安装包.bat` for release-performance checks, and one of the installer scripts only when a distributable installer is needed. After a successful build, launch from root `YsnTrans.lnk` when you do not want to browse into the Tauri output directory.
+
+## Chapter 277: Screenshot Overlay Reentry, First-Down, And Escape Hardening (2026-06-13)
+
+### Goals Completed
+- Fixed frequent `Alt+A` reentry risk by adding a `SCREENSHOT_STARTING` native start gate before hotkey-spawned screenshot tasks.
+- Changed duplicate `start_screenshot` calls while a capture is active from "cancel and rebuild the active session" to "ignore the duplicate start", avoiding concurrent GPU/window lifecycle work.
+- Kept `CAPTURING` as the authoritative active-session flag and reset the starting gate on error, force close, and cancel paths.
+- Made capture Escape registration more robust by unregistering any stale Escape shortcut before re-registering when the registered flag is already set.
+- Re-register capture Escape after the Save dialog whenever the screenshot session is still active, even if the dialog is cancelled.
+- Fixed first pointer down loss during the async shell/first-frame gap by caching the pending down point while `frameInteractive` is false.
+- Resumed pending selection from the original down coordinate once the frame becomes interactive, instead of starting from the later pointer-move coordinate.
+- Added pending-down pointer capture, session scoping, timeout cleanup, and reset/cancel cleanup so a stale pending event cannot leak into a later screenshot session.
+- Strengthened screenshot overlay interaction activation on Windows by using `AttachThreadInput` before `SetForegroundWindow` / `SetFocus`, matching the stronger existing main-window activation path.
+
+### External Findings
+- Tauri global shortcuts call application handlers for registered shortcut press events, so application-level reentry gates are required around long-running native work.
+- MDN Pointer Events documents `buttons` as the current pressed-button bitmask and `setPointerCapture` as the way to keep subsequent pointer events routed to the same element during a drag.
+- Microsoft Win32 documentation describes using `AttachThreadInput` to share input state across threads so focus can be set to a window attached to another thread's input queue.
+
+### Modified Files
+- `tauri-client/src-tauri/src/hotkeys.rs`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/window_lifecycle.rs`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not redesign the native first-frame architecture or make native overlay the default path.
+- Did not remove the existing pre-capture/native-overlay recovery path; pending pointer down complements it for the short async readiness gap.
+- Did not run full installer packaging for this bugfix.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client/src-tauri; cargo check`.
+- Passed: `cd tauri-client/src-tauri; cargo test`.
+- Passed: `cd tauri-client; npm run check:i18n` with `603 zh-CN keys match 603 en-US keys`.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: in-app browser smoke loaded `http://127.0.0.1:1420` and rendered the dashboard; normal-browser Tauri invoke warnings remain expected.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Real `Alt+A` timing, ESC behavior, and crash resistance still need desktop manual QA because browser smoke cannot exercise global shortcuts, native foreground focus, WebView focus, or DXGI/window-resource contention.
+- Duplicate screenshot starts are now ignored instead of toggling/cancelling the active screenshot; cancellation should use ESC, right-click, or explicit close actions.
+
+### Next Steps
+- Manual desktop QA: repeatedly press `Alt+A` during startup and while an overlay is visible, verify no crash and no session rebuild.
+- Manual desktop QA: hold left mouse during overlay startup and drag as the frame appears, verify the rectangle starts from the original down point.
+- Manual desktop QA: press ESC before and after first frame readiness, including after a cancelled Save dialog, and confirm the overlay closes reliably.

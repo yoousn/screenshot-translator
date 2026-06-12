@@ -3370,16 +3370,11 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
         return Err("Recording is already running".to_string());
     }
 
-    if CAPTURING.swap(true, Ordering::SeqCst) {
-        println!("[screenshot-trace] start_screenshot: CAPTURING was already true, canceling active screenshot");
-        notify_screenshot_session_cancelled(&app, "repeat-hotkey-cancel");
-        crate::screenshot_native::advance_run_generation();
-        let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("repeat-hotkey-cancel");
-        unregister_capture_escape_shortcut(&app);
-        close_screenshot_windows(&app, true);
-        CAPTURING.store(false, Ordering::SeqCst);
-        clear_latest_screenshot_payload();
-        crate::window_lifecycle::restore_main_window_after_screenshot(&app, "repeat-hotkey-cancel");
+    if CAPTURING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        println!("[screenshot-trace] start_screenshot: ignored because capture is already active");
         return Ok(());
     }
     let run_generation = crate::screenshot_native::begin_run_generation();
@@ -3390,6 +3385,7 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
         Ok(()) => Ok(()),
         Err(e) => {
             CAPTURING.store(false, Ordering::SeqCst);
+            SCREENSHOT_STARTING.store(false, Ordering::SeqCst);
             unregister_capture_escape_shortcut(&app);
             Err(e)
         }
@@ -3400,6 +3396,7 @@ pub async fn start_screenshot(app: tauri::AppHandle, mode: Option<String>) -> Re
 pub async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String> {
     println!("[screenshot-trace] enter force_close_screenshots");
     crate::screenshot_native::advance_run_generation();
+    SCREENSHOT_STARTING.store(false, Ordering::SeqCst);
     let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("force-close-screenshots");
     notify_screenshot_session_cancelled(&app, "force-close-screenshots");
     unregister_capture_escape_shortcut(&app);
@@ -3438,6 +3435,7 @@ pub async fn cancel_screenshot(
     restore_main: Option<bool>,
 ) -> Result<(), String> {
     let should_restore_main = restore_main.unwrap_or(true);
+    SCREENSHOT_STARTING.store(false, Ordering::SeqCst);
     if !should_restore_main {
         crate::window_lifecycle::suppress_next_screenshot_restore();
     }
@@ -3662,7 +3660,7 @@ pub async fn choose_image_save_path(app: tauri::AppHandle) -> Result<Option<Stri
             .to_string_lossy()
             .to_string()
     });
-    if result.is_some() {
+    if CAPTURING.load(Ordering::SeqCst) {
         register_capture_escape_shortcut(&app);
     }
     println!(
@@ -3732,7 +3730,7 @@ pub async fn run_screenshot_lifecycle_smoke(app: tauri::AppHandle) {
     });
     tokio::time::sleep(std::time::Duration::from_millis(90)).await;
     if let Err(error) = start_screenshot(app.clone(), None).await {
-        eprintln!("[screenshot-smoke] repeat cancel failed: {error}");
+        eprintln!("[screenshot-smoke] repeat start ignored failed: {error}");
     }
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
     let visible_after_cancel = app
@@ -3740,7 +3738,7 @@ pub async fn run_screenshot_lifecycle_smoke(app: tauri::AppHandle) {
         .and_then(|window| window.is_visible().ok())
         .unwrap_or(false);
     println!(
-        "[screenshot-smoke] after repeat cancel visible={} capturing={}",
+        "[screenshot-smoke] after repeat start visible={} capturing={}",
         visible_after_cancel,
         CAPTURING.load(Ordering::SeqCst)
     );

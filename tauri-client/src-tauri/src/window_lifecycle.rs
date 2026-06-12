@@ -316,6 +316,16 @@ pub fn activate_screenshot_overlay_window_for_interaction<W: tauri::Runtime>(
     if let Ok(hwnd) = window.hwnd() {
         let hwnd = hwnd.0 as isize;
         unsafe {
+            let foreground = win32::GetForegroundWindow();
+            let current_thread = win32::GetCurrentThreadId();
+            let foreground_thread = if foreground != 0 {
+                win32::GetWindowThreadProcessId(foreground, std::ptr::null_mut())
+            } else {
+                0
+            };
+            let attached = foreground_thread != 0
+                && foreground_thread != current_thread
+                && win32::AttachThreadInput(current_thread, foreground_thread, 1) != 0;
             let _ = win32::SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -329,6 +339,9 @@ pub fn activate_screenshot_overlay_window_for_interaction<W: tauri::Runtime>(
             let _ = win32::SetForegroundWindow(hwnd);
             let _ = win32::SetActiveWindow(hwnd);
             let _ = win32::SetFocus(hwnd);
+            if attached {
+                let _ = win32::AttachThreadInput(current_thread, foreground_thread, 0);
+            }
         }
         println!(
             "[window-trace] source=screenshot-overlay-interaction action=activate hwnd={}",

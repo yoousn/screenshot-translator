@@ -10,6 +10,14 @@ import { logScreenshotPerf } from "../utils/debugLog";
 
 const MIN_AUTO_ACTION_DRAG_PX = 8;
 
+type PendingPointerDown = {
+  x: number;
+  y: number;
+  pointerId: number;
+  sessionId: string | null;
+  createdAt: number;
+};
+
 interface UseScreenshotInteractionProps {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   mouseTrackerRef: React.RefObject<HTMLDivElement | null>;
@@ -203,6 +211,8 @@ export function useScreenshotInteraction({
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef<string | null>(null);
   const pendingDetectionRef = useRef<Rect | null>(null);
+  const pendingDownRef = useRef<PendingPointerDown | null>(null);
+  const pendingDownRafRef = useRef<number | null>(null);
   const annotationDragSnapshotRef = useRef<Annotation[] | null>(null);
   const isDrawingAnnotationRef = useRef(false);
   const isDraggingAnnotationRef = useRef(false);
@@ -244,9 +254,17 @@ export function useScreenshotInteraction({
     drawSessionRef.current = null;
   };
 
+  const cancelPendingDownResume = () => {
+    if (pendingDownRafRef.current !== null) {
+      cancelAnimationFrame(pendingDownRafRef.current);
+      pendingDownRafRef.current = null;
+    }
+  };
+
   useEffect(() => {
     return () => {
       cancelScheduledDraw();
+      cancelPendingDownResume();
     };
   }, []);
 
@@ -311,6 +329,15 @@ export function useScreenshotInteraction({
     syncToolbarPosition?.(next);
   };
 
+  const captureCanvasPointer = (canvas: HTMLCanvasElement, pointerId: number) => {
+    try {
+      canvas.setPointerCapture(pointerId);
+      activePointerIdRef.current = pointerId;
+    } catch {
+      activePointerIdRef.current = null;
+    }
+  };
+
   const releaseCanvasPointer = (canvas: HTMLCanvasElement, pointerId = activePointerIdRef.current) => {
     if (pointerId === null) return;
     try {
@@ -338,6 +365,57 @@ export function useScreenshotInteraction({
     updateCurrentRect({ x: cx, y: cy, w: 0, h: 0 }, true);
     setSelection(false);
     return true;
+  };
+
+  const resumePendingDownIfReady = (event?: React.PointerEvent<HTMLCanvasElement>) => {
+    const pending = pendingDownRef.current;
+    if (!pending || !frameInteractiveRef.current || !overlayVisibleRef.current) return false;
+    const currentSessionId = activeSessionIdRef?.current || null;
+    if (pending.sessionId && currentSessionId && pending.sessionId !== currentSessionId) {
+      pendingDownRef.current = null;
+      cancelPendingDownResume();
+      return false;
+    }
+    if (event && pending.pointerId !== event.pointerId) return false;
+    if (event && (event.buttons & 1) !== 1) {
+      pendingDownRef.current = null;
+      cancelPendingDownResume();
+      releaseCanvasPointer(event.currentTarget, event.pointerId);
+      return false;
+    }
+    pendingDownRef.current = null;
+    cancelPendingDownResume();
+    if (event) {
+      captureCanvasPointer(event.currentTarget, event.pointerId);
+    }
+    const started = startPlainSelectionAt(pending.x, pending.y);
+    if (started) {
+      logInteractionBaseline(
+        "pending_pointer_down_resumed",
+        `x=${Math.round(pending.x)} y=${Math.round(pending.y)} pointer=${pending.pointerId} session=${pending.sessionId || "none"}`
+      );
+    }
+    return started;
+  };
+
+  const schedulePendingDownResume = () => {
+    if (pendingDownRafRef.current !== null) return;
+    pendingDownRafRef.current = requestAnimationFrame(() => {
+      pendingDownRafRef.current = null;
+      const pending = pendingDownRef.current;
+      if (!pending) return;
+      if (!overlayVisibleRef.current) {
+        pendingDownRef.current = null;
+        return;
+      }
+      if (performance.now() - pending.createdAt > 2500) {
+        pendingDownRef.current = null;
+        return;
+      }
+      if (!resumePendingDownIfReady()) {
+        schedulePendingDownResume();
+      }
+    });
   };
 
   const getDetectionRectAt = (mx: number, my: number) => {
@@ -381,19 +459,41 @@ export function useScreenshotInteraction({
   };
 
   const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!frameInteractiveRef.current) return;
+    if (!frameInteractiveRef.current) {
+      const cx = e.clientX;
+      const cy = e.clientY;
+      lastMouseRef.current = { x: cx, y: cy };
+      focusScreenshotWindow();
+      if (e.button === 2) {
+        e.preventDefault();
+        cancelScreenshot();
+        return;
+      }
+      if (e.button === 0 && overlayVisibleRef.current) {
+        e.preventDefault();
+        pendingDownRef.current = {
+          x: cx,
+          y: cy,
+          pointerId: e.pointerId,
+          sessionId: activeSessionIdRef?.current || null,
+          createdAt: performance.now(),
+        };
+        captureCanvasPointer(e.currentTarget, e.pointerId);
+        schedulePendingDownResume();
+        logInteractionBaseline(
+          "pending_pointer_down",
+          `x=${Math.round(cx)} y=${Math.round(cy)} pointer=${e.pointerId} image_ready=${imageReadyRef.current}`
+        );
+      }
+      return;
+    }
     const activeSession = activeSessionIdRef?.current || "interaction";
     if (firstPointerDownSessionRef.current !== activeSession) {
       firstPointerDownSessionRef.current = activeSession;
       logInteractionBaseline("first_pointer_down", `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} image_ready=${imageReadyRef.current}`);
     }
     focusScreenshotWindow();
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      activePointerIdRef.current = e.pointerId;
-    } catch {
-      activePointerIdRef.current = null;
-    }
+    captureCanvasPointer(e.currentTarget, e.pointerId);
     if (e.button === 2) {
       e.preventDefault();
       if (hasSelectedRef.current) {
@@ -488,10 +588,12 @@ export function useScreenshotInteraction({
   };
 
   const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!frameInteractiveRef.current) return;
     const cx = e.clientX;
     const cy = e.clientY;
+    lastMouseRef.current = { x: cx, y: cy };
+    if (!frameInteractiveRef.current) return;
     const primaryButtonDown = (e.buttons & 1) === 1;
+    resumePendingDownIfReady(e);
     if (
       primaryButtonDown
       && !hasSelectedRef.current
@@ -500,12 +602,7 @@ export function useScreenshotInteraction({
       && !isResizingRef.current
     ) {
       if (activePointerIdRef.current === null) {
-        try {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          activePointerIdRef.current = e.pointerId;
-        } catch {
-          activePointerIdRef.current = null;
-        }
+        captureCanvasPointer(e.currentTarget, e.pointerId);
         const activeSession = activeSessionIdRef?.current || "interaction";
         if (firstPointerDownSessionRef.current !== activeSession) {
           firstPointerDownSessionRef.current = activeSession;
@@ -517,7 +614,6 @@ export function useScreenshotInteraction({
       }
       startPlainSelectionAt(cx, cy);
     }
-    lastMouseRef.current = { x: cx, y: cy };
     if (mouseTrackerRef.current) {
       mouseTrackerRef.current.style.left = `${cx + 16}px`;
       mouseTrackerRef.current.style.top = `${cy + 20}px`;
@@ -674,6 +770,11 @@ export function useScreenshotInteraction({
   };
 
   const handleMouseUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e && pendingDownRef.current?.pointerId === e.pointerId) {
+      pendingDownRef.current = null;
+      cancelPendingDownResume();
+      releaseCanvasPointer(e.currentTarget, e.pointerId);
+    }
     if (!frameInteractiveRef.current) return;
     if (e) releaseCanvasPointer(e.currentTarget, e.pointerId);
     const wasSelecting = isSelectingRef.current;
@@ -730,6 +831,10 @@ export function useScreenshotInteraction({
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (pendingDownRef.current?.pointerId === e.pointerId) {
+      pendingDownRef.current = null;
+      cancelPendingDownResume();
+    }
     releaseCanvasPointer(e.currentTarget, e.pointerId);
     isSelectingRef.current = false;
     setIsSelecting(false);
@@ -745,6 +850,8 @@ export function useScreenshotInteraction({
     const canvas = canvasRef.current;
     if (canvas) releaseCanvasPointer(canvas);
     activePointerIdRef.current = null;
+    pendingDownRef.current = null;
+    cancelPendingDownResume();
     pendingDetectionRef.current = null;
     annotationDragSnapshotRef.current = null;
     annotationResizeHandleRef.current = null;

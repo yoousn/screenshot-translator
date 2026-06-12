@@ -61,6 +61,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+pub(crate) static SCREENSHOT_STARTING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
