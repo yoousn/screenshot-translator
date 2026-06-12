@@ -166,10 +166,16 @@ export const mergeRetryTranslations = (
   translations: string[],
   retryBlocks: RetryTranslationBlock[],
   retryTranslations: string[],
-) => translations.map((item, index) => {
-  const retryIndex = retryBlocks.findIndex((entry) => entry.index === index);
-  return retryIndex >= 0 ? (retryTranslations[retryIndex] || item) : item;
-});
+) => {
+  const retryByOriginalIndex = new Map<number, string>();
+  retryBlocks.forEach((entry, retryIndex) => {
+    const translated = retryTranslations[retryIndex]?.trim();
+    if (translated) {
+      retryByOriginalIndex.set(entry.index, translated);
+    }
+  });
+  return translations.map((item, index) => retryByOriginalIndex.get(index) || item);
+};
 
 export const repairKnownBadTranslationTerms = (sourceText: string, translatedText: string) => {
   const source = sourceText.replace(/\s+/g, " ").trim();
@@ -283,7 +289,7 @@ export const validateAndNormalizeTranslationResults = (
 ) => {
   const normalizedTranslations = normalizeTranslationResults(blocks, translations);
   const quality = evaluateTranslationQuality(blocks, translations, normalizedTranslations, targetLang);
-  if (quality.translatableCount > 0 && quality.missingCount === quality.translatableCount) {
+  if (quality.translatableCount > 0 && quality.untranslatedCount === quality.translatableCount) {
     const errorSuffix = providerError ? `（服务端原因：${providerError}）` : "";
     throw new Error(`翻译服务没有返回可用译文：${quality.translatableCount} 行可翻译文本仍是原文或为空。请检查翻译服务地址、令牌和当前翻译通道后重试。${errorSuffix}`);
   }

@@ -34,6 +34,7 @@ LLM_SINGLE_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_LLM_SINGLE_TIMEOUT", 5.0)
 LLM_BATCH_TIMEOUT_SECONDS = _env_float("SS_TRANSLATOR_LLM_BATCH_TIMEOUT", 7.5)
 LLM_BATCH_BUDGET_SECONDS = _env_float("SS_TRANSLATOR_LLM_BATCH_BUDGET", 8.5)
 LLM_FALLBACK_MAX_WORKERS = max(1, int(_env_float("SS_TRANSLATOR_LLM_FALLBACK_WORKERS", 4)))
+SEGMENT_SEPARATOR = "\n<<<__YSN_SEGMENT_SEPARATOR__>>>\n"
 
 
 def _seconds_left(deadline: float, cap: float) -> float:
@@ -43,6 +44,17 @@ def _seconds_left(deadline: float, cap: float) -> float:
 def _increment_stat(stats_ref: dict | None, key: str, value: int = 1) -> None:
     if stats_ref is not None:
         stats_ref[key] = stats_ref.get(key, 0) + value
+
+
+def _pack_batch_segments(texts: list[str]) -> str:
+    return SEGMENT_SEPARATOR.join(texts)
+
+
+def _split_batch_segments(translated: str, expected_count: int) -> list[str] | None:
+    parts = translated.split(SEGMENT_SEPARATOR)
+    if len(parts) != expected_count:
+        return None
+    return [part.strip("\n") for part in parts]
 
 _HAS_CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 _HAS_LATIN_RE = re.compile(r"[A-Za-z]{2,}")
@@ -408,7 +420,9 @@ class GoogleTranslator(BaseTranslator):
             return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
 
         cleaned_texts = [t.replace('\n', ' ').strip() for t in texts]
-        query = "\n".join(cleaned_texts)
+        if any(SEGMENT_SEPARATOR.strip() in text for text in cleaned_texts):
+            return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+        query = _pack_batch_segments(cleaned_texts)
 
         url = "https://translate.googleapis.com/translate_a/single"
         data = {
@@ -431,15 +445,15 @@ class GoogleTranslator(BaseTranslator):
                     # 组合成完整的翻译文本
                     translated_full = "".join([part[0] for part in res_json[0] if part[0]])
                     # 按行切割
-                    translated_lines = translated_full.splitlines()
+                    translated_segments = _split_batch_segments(translated_full, len(texts))
 
                     # 校验行数是否完全对应
-                    if len(translated_lines) == len(texts):
-                        return translated_lines
+                    if translated_segments is not None:
+                        return translated_segments
                     else:
                         logger.warning(
                             "[Google Batch] 翻译行数不匹配: 期望 %d 行，实际返回 %d 行。正在降级为线程池并发翻译...",
-                            len(texts), len(translated_lines)
+                            len(texts), 0
                         )
         except Exception as e:
             _increment_stat(stats_ref, "provider_failures")
@@ -662,7 +676,9 @@ class BaiduTranslator(BaseTranslator):
         if not texts:
             return []
         cleaned_texts = [t.replace('\n', ' ').strip() for t in texts]
-        query = "\n".join(cleaned_texts)
+        if any(SEGMENT_SEPARATOR.strip() in text for text in cleaned_texts):
+            return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)
+        query = _pack_batch_segments(cleaned_texts)
 
         salt = str(random.randint(32768, 65536))
         sign_str = self.app_id + query + salt + self.secret_key
@@ -691,6 +707,10 @@ class BaiduTranslator(BaseTranslator):
                 trans_result = res_json.get("trans_result", [])
                 if len(trans_result) == len(texts):
                     return [item["dst"] for item in trans_result]
+                if len(trans_result) == 1:
+                    translated_segments = _split_batch_segments(str(trans_result[0].get("dst", "")), len(texts))
+                    if translated_segments is not None:
+                        return translated_segments
         except Exception as e:
             logger.warning("Baidu batch translation failed: %s", e)
         return super()._do_translate_batch(texts, source_lang, target_lang, stats_ref)

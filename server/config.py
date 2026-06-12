@@ -27,7 +27,7 @@ def _default_config():
             "new-api": {
                 "base_url": "api.yousn.me",
                 "api_key": os.environ.get("SS_TRANSLATOR_API_KEY", ""),
-                "model": "gemini-3.5-flash",
+                "model": "gemini-2.0-flash",
                 "prompt": DEFAULT_LLM_TRANSLATION_PROMPT,
                 "domain": DEFAULT_LLM_TRANSLATION_DOMAIN,
             },

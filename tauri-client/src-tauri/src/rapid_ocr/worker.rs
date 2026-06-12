@@ -2,6 +2,7 @@ use crate::*;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,7 @@ pub struct RapidOcrWorkerEnvelope {
 pub struct RapidOcrWorkerProcess {
     pub child: Child,
     pub stdin: ChildStdin,
-    pub stdout: BufReader<ChildStdout>,
+    pub stdout_rx: Receiver<String>,
     pub request_id: u64,
     pub spec: RapidOcrCommandSpec,
     pub last_error: Option<String>,
@@ -35,6 +36,43 @@ pub fn rapid_ocr_worker_state() -> &'static Mutex<Option<RapidOcrWorkerProcess>>
 
 pub fn rapid_ocr_worker_enabled() -> bool {
     config_value_bool("rapidOcrWorkerEnabled").unwrap_or(true)
+}
+
+fn rapid_ocr_worker_timeout(method: &str) -> Duration {
+    match method {
+        "ping" => Duration::from_millis(5_000),
+        "status" => Duration::from_millis(3_000),
+        "shutdown" => Duration::from_millis(750),
+        "warm" => Duration::from_millis(60_000),
+        "ocr" => Duration::from_millis(60_000),
+        _ => Duration::from_millis(15_000),
+    }
+}
+
+fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if tx.send(line.clone()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    rx
+}
+
+fn kill_rapid_ocr_worker(worker: &mut RapidOcrWorkerProcess) {
+    let _ = worker.child.kill();
+    let _ = worker.child.wait();
 }
 
 pub fn spawn_rapid_ocr_worker_process(
@@ -67,16 +105,22 @@ pub fn spawn_rapid_ocr_worker_process(
         .stdout
         .take()
         .ok_or_else(|| "RapidOCR worker stdout was not available.".to_string())?;
+    let stdout_rx = spawn_stdout_reader(stdout);
 
     let mut worker = RapidOcrWorkerProcess {
         child,
         stdin,
-        stdout: BufReader::new(stdout),
+        stdout_rx,
         request_id: 0,
         spec,
         last_error: None,
     };
-    let _ = rapid_ocr_worker_request_value(&mut worker, "ping", serde_json::json!({}))?;
+    let _ = rapid_ocr_worker_request_value(
+        &mut worker,
+        "ping",
+        serde_json::json!({}),
+        rapid_ocr_worker_timeout("ping"),
+    )?;
     Ok(worker)
 }
 
@@ -84,6 +128,7 @@ pub fn rapid_ocr_worker_request_value(
     worker: &mut RapidOcrWorkerProcess,
     method: &str,
     params: serde_json::Value,
+    timeout: Duration,
 ) -> Result<serde_json::Value, String> {
     if let Some(status) = worker
         .child
@@ -106,16 +151,31 @@ pub fn rapid_ocr_worker_request_value(
         .and_then(|_| worker.stdin.flush())
         .map_err(|error| format!("failed to send RapidOCR worker request: {error}"))?;
 
-    let mut line = String::new();
+    let started = Instant::now();
     loop {
-        line.clear();
-        let read = worker
-            .stdout
-            .read_line(&mut line)
-            .map_err(|error| format!("failed to read RapidOCR worker response: {error}"))?;
-        if read == 0 {
-            return Err("RapidOCR worker closed stdout before responding.".to_string());
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .unwrap_or_else(|| Duration::from_millis(0));
+        if remaining.is_zero() {
+            kill_rapid_ocr_worker(worker);
+            return Err(format!(
+                "RapidOCR worker request '{method}' timed out after {} ms; worker will be restarted on next use.",
+                timeout.as_millis()
+            ));
         }
+        let line = match worker.stdout_rx.recv_timeout(remaining) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => {
+                kill_rapid_ocr_worker(worker);
+                return Err(format!(
+                    "RapidOCR worker request '{method}' timed out after {} ms; worker will be restarted on next use.",
+                    timeout.as_millis()
+                ));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("RapidOCR worker closed stdout before responding.".to_string());
+            }
+        };
         let trimmed = line.trim();
         if !trimmed.starts_with('{') {
             continue;
@@ -171,6 +231,9 @@ pub fn with_rapid_ocr_worker<T>(
         }
         Err(error) => {
             worker.last_error = Some(error.clone());
+            if worker.child.try_wait().ok().flatten().is_some() {
+                *guard = None;
+            }
             Err(error)
         }
     }
@@ -183,6 +246,7 @@ pub fn run_rapidocr_worker_ocr(
     mode: &str,
     model_root: &Path,
     small_text_retry: bool,
+    timeout: Duration,
 ) -> Result<RapidOcrRunnerOutput, String> {
     let result = with_rapid_ocr_worker(app, |worker| {
         rapid_ocr_worker_request_value(
@@ -195,6 +259,7 @@ pub fn run_rapidocr_worker_ocr(
                 "modelRoot": model_root.to_string_lossy().to_string(),
                 "smallTextRetry": small_text_retry
             }),
+            timeout,
         )
     })?;
     let mut parsed: RapidOcrRunnerOutput = serde_json::from_value(result)
@@ -231,9 +296,15 @@ pub fn start_rapid_ocr_worker_sync(
                     "modelVersion": model_version,
                     "langs": ["ch", "latin"]
                 }),
+                rapid_ocr_worker_timeout("warm"),
             )?;
         }
-        let status = rapid_ocr_worker_request_value(worker, "status", serde_json::json!({}))?;
+        let status = rapid_ocr_worker_request_value(
+            worker,
+            "status",
+            serde_json::json!({}),
+            rapid_ocr_worker_timeout("status"),
+        )?;
         Ok(serde_json::json!({
             "running": true,
             "pid": worker.child.id(),
@@ -260,7 +331,12 @@ pub fn stop_rapid_ocr_worker_internal(grace_ms: u64) -> Result<serde_json::Value
         }));
     };
 
-    let _ = rapid_ocr_worker_request_value(&mut worker, "shutdown", serde_json::json!({}));
+    let _ = rapid_ocr_worker_request_value(
+        &mut worker,
+        "shutdown",
+        serde_json::json!({}),
+        Duration::from_millis(grace_ms.min(750)),
+    );
     let started = Instant::now();
     loop {
         if let Some(status) = worker
@@ -315,7 +391,12 @@ pub fn rapid_ocr_worker_status_value() -> serde_json::Value {
         }
         Ok(None) => {
             let pid = worker.child.id();
-            match rapid_ocr_worker_request_value(worker, "status", serde_json::json!({})) {
+            match rapid_ocr_worker_request_value(
+                worker,
+                "status",
+                serde_json::json!({}),
+                rapid_ocr_worker_timeout("status"),
+            ) {
                 Ok(status) => serde_json::json!({
                     "enabled": rapid_ocr_worker_enabled(),
                     "running": true,
@@ -327,15 +408,30 @@ pub fn rapid_ocr_worker_status_value() -> serde_json::Value {
                     "cachedEngines": status.get("cachedEngines").cloned().unwrap_or_else(|| serde_json::json!([]))
                 }),
                 Err(error) => {
+                    let runner_kind = worker.spec.kind.clone();
+                    let runner_path = worker.spec.program.to_string_lossy().to_string();
                     worker.last_error = Some(error.clone());
-                    serde_json::json!({
-                        "enabled": rapid_ocr_worker_enabled(),
-                        "running": true,
-                        "pid": pid,
-                        "runnerKind": worker.spec.kind.clone(),
-                        "runnerPath": worker.spec.program.to_string_lossy().to_string(),
-                        "lastError": error
-                    })
+                    let exited = worker.child.try_wait().ok().flatten().is_some();
+                    if exited {
+                        *guard = None;
+                        serde_json::json!({
+                            "enabled": rapid_ocr_worker_enabled(),
+                            "running": false,
+                            "lastError": error,
+                            "previousPid": pid,
+                            "runnerKind": runner_kind,
+                            "runnerPath": runner_path
+                        })
+                    } else {
+                        serde_json::json!({
+                            "enabled": rapid_ocr_worker_enabled(),
+                            "running": true,
+                            "pid": pid,
+                            "runnerKind": runner_kind,
+                            "runnerPath": runner_path,
+                            "lastError": error
+                        })
+                    }
                 }
             }
         }
@@ -344,5 +440,62 @@ pub fn rapid_ocr_worker_status_value() -> serde_json::Value {
             "running": false,
             "lastError": format!("RapidOCR worker status check failed: {error}")
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Child, Command, Stdio};
+
+    #[cfg(windows)]
+    fn spawn_silent_child() -> Child {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "ping -n 60 127.0.0.1 > nul"]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command.spawn().expect("spawn silent child")
+    }
+
+    #[cfg(not(windows))]
+    fn spawn_silent_child() -> Child {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command.spawn().expect("spawn silent child")
+    }
+
+    #[test]
+    fn worker_request_timeout_kills_unresponsive_child() {
+        let mut child = spawn_silent_child();
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut worker = RapidOcrWorkerProcess {
+            child,
+            stdin,
+            stdout_rx: spawn_stdout_reader(stdout),
+            request_id: 0,
+            spec: RapidOcrCommandSpec {
+                program: std::path::PathBuf::from("silent-child"),
+                args_prefix: Vec::new(),
+                kind: "test".to_string(),
+            },
+            last_error: None,
+        };
+
+        let error = rapid_ocr_worker_request_value(
+            &mut worker,
+            "status",
+            serde_json::json!({}),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"));
+        assert!(worker.child.try_wait().unwrap().is_some());
     }
 }

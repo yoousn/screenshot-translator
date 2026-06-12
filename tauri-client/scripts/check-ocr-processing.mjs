@@ -40,7 +40,7 @@ import { buildRenderBlocks } from "../src/translation-render/renderBlockLayout.t
 import { estimateOriginalFontSize } from "../src/translation-render/renderTranslatedBlocks.ts";
 import { distributeTranslationsForRender } from "../src/translation-render/renderTranslationDistribution.ts";
 import { buildTextSourceBlocksForPhysicalSelection } from "../src/utils/textSourceSelection.ts";
-import { createTranslationMemoryStats, lookupLocalTranslation, storeTranslationMemory } from "../src/utils/translationMemory.ts";
+import { clearTranslationMemory, createTranslationMemoryStats, lookupLocalTranslation, lookupLocalTranslations, storeTranslationMemory } from "../src/utils/translationMemory.ts";
 import translationGlossary from "../src/utils/translationGlossary.json";
 import type { OcrBlock } from "../src/types/screenshot.ts";
 
@@ -216,6 +216,10 @@ assert(collectUntranslatedLatinRetryBlocks(sourceBlocks, ["添加缺失的 PATH"
 assert(collectUntranslatedLatinRetryBlocks(sourceBlocks, ["Add the missing PATH", "保存"], "zh-CN", "en").length === 0, "English source requests should not retry again");
 const mergedRetry = mergeRetryTranslations(["Add the missing PATH", "保存"], retryBlocks, ["添加缺失的 PATH"]);
 assert(mergedRetry[0] === "添加缺失的 PATH" && mergedRetry[1] === "保存", "retry merge must preserve order and replace only retried entries");
+const denseRetryBlocks = Array.from({ length: 1000 }, (_, index) => ({ block: sourceBlocks[0], index }));
+const denseRetryTranslations = denseRetryBlocks.map((_, index) => index % 2 === 0 ? "retry-" + index : "");
+const denseMerged = mergeRetryTranslations(Array.from({ length: 1000 }, (_, index) => "original-" + index), denseRetryBlocks, denseRetryTranslations);
+assert(denseMerged[0] === "retry-0" && denseMerged[1] === "original-1" && denseMerged[998] === "retry-998", "retry merge should use indexed replacement without empty retry overwrites");
 
 const alignedTranslations = normalizeTranslationResults(sourceBlocks, ["添加缺失的 PATH", "", "extra translation"]);
 assert(alignedTranslations.length === sourceBlocks.length, "normalized translations must match OCR block count");
@@ -276,6 +280,50 @@ assert(
 );
 const memoryHit = lookupLocalTranslation(block("Open settings panel before saving", 0.99, 0, 0, 240, 14), "en", "zh-CN", "google");
 assert(memoryHit?.source === "memory" && memoryHit.translation === "保存前打开设置面板", "stored translation memory should satisfy repeated text locally");
+let storageGetCount = 0;
+let storageSetCount = 0;
+const batchMemoryBacking = new Map<string, string>();
+(globalThis as any).window = {
+  localStorage: {
+    getItem: (key: string) => {
+      storageGetCount += 1;
+      return batchMemoryBacking.get(key) ?? null;
+    },
+    setItem: (key: string, value: string) => {
+      storageSetCount += 1;
+      batchMemoryBacking.set(key, value);
+    },
+    removeItem: (key: string) => batchMemoryBacking.delete(key),
+  },
+};
+clearTranslationMemory();
+storeTranslationMemory(
+  [
+    block("Open settings panel before saving", 0.99, 0, 0, 240, 14),
+    block("Open preview before saving", 0.99, 0, 20, 220, 14),
+  ],
+  ["保存前打开设置面板", "保存前打开预览"],
+  "en",
+  "zh-CN",
+  "google",
+);
+storageGetCount = 0;
+storageSetCount = 0;
+const batchHits = lookupLocalTranslations(
+  [
+    block("Open settings panel before saving", 0.99, 0, 0, 240, 14),
+    block("Open preview before saving", 0.99, 0, 20, 220, 14),
+    block("Save", 0.99, 0, 40, 60, 14),
+    block("COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md", 0.99, 0, 60, 280, 14),
+  ],
+  "en",
+  "zh-CN",
+  "google",
+);
+assert(batchHits[0]?.source === "memory" && batchHits[1]?.source === "memory", "batch lookup should return stored memory hits");
+assert(batchHits[2]?.source === "glossary" && batchHits[3]?.source === "preserved", "batch lookup should keep glossary and preserved hits");
+assert(storageGetCount === 1, "batch lookup should read localStorage once, got " + storageGetCount);
+assert(storageSetCount === 1, "batch lookup should update memory hit metadata in one write, got " + storageSetCount);
 
 const preservedRenderBlock = { text: "COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md", translated: "COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md", minX: 40, minY: 20, maxX: 360, maxY: 44, direction: "ltr" };
 assert(!shouldRenderTranslationBlock(preservedRenderBlock), "preserved technical text should not be erased and redrawn");

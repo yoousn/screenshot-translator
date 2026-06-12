@@ -1,14 +1,54 @@
 use crate::*;
 use std::fs;
+use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
+
+static CONFIG_CACHE: OnceLock<RwLock<Option<serde_json::Value>>> = OnceLock::new();
+
+fn config_cache() -> &'static RwLock<Option<serde_json::Value>> {
+    CONFIG_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+fn config_path() -> PathBuf {
+    let mut path = app_data_dir();
+    path.push("config.json");
+    path
+}
+
+fn load_config_value() -> Option<serde_json::Value> {
+    if let Ok(guard) = config_cache().read() {
+        if let Some(value) = guard.as_ref() {
+            return Some(value.clone());
+        }
+    }
+
+    let content = fs::read_to_string(config_path()).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    if let Ok(mut guard) = config_cache().write() {
+        *guard = Some(value.clone());
+    }
+    Some(value)
+}
+
+fn update_config_cache_from_str(config_str: &str) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(config_str) {
+        if let Ok(mut guard) = config_cache().write() {
+            *guard = Some(value);
+        }
+    } else if let Ok(mut guard) = config_cache().write() {
+        *guard = None;
+    }
+}
 
 #[tauri::command]
 pub fn get_config() -> Result<String, String> {
-    let mut path = app_data_dir();
-    path.push("config.json");
+    let path = config_path();
     if !path.exists() {
         return Ok("{}".to_string());
     }
-    fs::read_to_string(path).map_err(|e| e.to_string())
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    update_config_cache_from_str(&content);
+    Ok(content)
 }
 
 #[tauri::command]
@@ -18,14 +58,13 @@ pub fn save_config(config_str: String) -> Result<(), String> {
         fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     }
     path.push("config.json");
-    fs::write(path, config_str).map_err(|e| e.to_string())
+    fs::write(path, &config_str).map_err(|e| e.to_string())?;
+    update_config_cache_from_str(&config_str);
+    Ok(())
 }
 
 pub fn config_value_string(key: &str) -> Option<String> {
-    let mut path = app_data_dir();
-    path.push("config.json");
-    let content = fs::read_to_string(path).ok()?;
-    let config = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let config = load_config_value()?;
     config
         .get(key)
         .and_then(|value| value.as_str())
@@ -34,10 +73,7 @@ pub fn config_value_string(key: &str) -> Option<String> {
 }
 
 pub fn config_value_bool(key: &str) -> Option<bool> {
-    let mut path = app_data_dir();
-    path.push("config.json");
-    let content = fs::read_to_string(path).ok()?;
-    let config = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let config = load_config_value()?;
     match config.get(key)? {
         serde_json::Value::Bool(value) => Some(*value),
         serde_json::Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {

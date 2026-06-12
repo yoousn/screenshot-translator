@@ -57,16 +57,14 @@ use std::borrow::Cow;
 use std::fs;
 use std::process::Command;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 static CAPTURING: AtomicBool = AtomicBool::new(false);
-static LAST_CAPTURE_SHORTCUT_MS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
@@ -476,11 +474,13 @@ pub fn run() {
                 disable_windows_transition(&screenshot_win);
             }
 
-            let (configured_hotkey, configured_translate_hotkey) = read_configured_hotkeys();
+            let (configured_hotkey, configured_translate_hotkey, configured_recording_hotkey) =
+                read_configured_hotkeys();
             let shortcut_status = register_global_shortcuts(
                 app.handle(),
                 &configured_hotkey,
                 &configured_translate_hotkey,
+                &configured_recording_hotkey,
             );
             app.manage(AppShortcutStatus(std::sync::Mutex::new(shortcut_status)));
             if let Err(error) = write_startup_diagnostics_probe(app.handle()) {

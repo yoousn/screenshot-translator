@@ -13,7 +13,7 @@ import {
 import { DEFAULT_TRANSLATION_SERVICE_URL } from "./translationService";
 import {
   createTranslationMemoryStats,
-  lookupLocalTranslation,
+  lookupLocalTranslations,
   storeTranslationMemory,
 } from "./translationMemory";
 import { renderTranslatedBlocks } from "./translatedBlocks";
@@ -313,8 +313,9 @@ export const translateOcrBlocks = async (
   const translations = new Array<string>(ocrBlocks.length).fill("");
   const requestItems: { block: OcrBlock; index: number }[] = [];
 
+  const localHits = lookupLocalTranslations(ocrBlocks, preferredSourceLang, targetLang, memoryChannel);
   ocrBlocks.forEach((block, index) => {
-    const localHit = lookupLocalTranslation(block, preferredSourceLang, targetLang, memoryChannel);
+    const localHit = localHits[index];
     if (localHit) {
       translations[index] = localHit.translation;
       if (localHit.source === "preserved") translationMemoryStats.preservedHits += 1;

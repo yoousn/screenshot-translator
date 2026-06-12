@@ -282,6 +282,11 @@ export function useScreenshotRecording({
     };
   };
 
+  const clampRecordingFps = (value: number | null | undefined) => {
+    if (!Number.isFinite(value)) return 30;
+    return Math.min(60, Math.max(10, Math.round(Number(value))));
+  };
+
   const startRecording = async () => {
     if (isRecordingBusyRef.current) return;
     try {
@@ -293,7 +298,12 @@ export function useScreenshotRecording({
       }
       setIsRecordingBusy(true);
       const options = await buildRecordingOptions();
-      const normalizedOptions = { ...options, fps: 30, resolution: "1080p", output_dir: null };
+      const normalizedOptions = {
+        ...options,
+        fps: clampRecordingFps(options.fps),
+        resolution: options.resolution || "1080p",
+        output_dir: options.output_dir ?? null,
+      };
       const region = { x: normalizedOptions.region_x, y: normalizedOptions.region_y, w: normalizedOptions.region_w, h: normalizedOptions.region_h };
       setRecordingPickerMode(null);
       setRecordingStatus("ready");

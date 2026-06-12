@@ -46,6 +46,9 @@ export type TranslationMemoryStorageStats = {
 };
 
 const zhGlossary = new Map(Object.entries(translationGlossary.zh.ui));
+let cachedStoreRaw: string | null = null;
+let cachedStore: TranslationMemoryStore | null = null;
+let cachedEntryMap: Map<string, TranslationMemoryEntry> | null = null;
 
 const canUseBrowserStorage = () => typeof window !== "undefined" && Boolean(window.localStorage);
 
@@ -61,16 +64,26 @@ const readStore = (): TranslationMemoryStore => {
   if (!canUseBrowserStorage()) return { version: MEMORY_VERSION, entries: [] };
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { version: MEMORY_VERSION, entries: [] };
+    if (!raw) {
+      cachedStoreRaw = null;
+      cachedStore = null;
+      cachedEntryMap = null;
+      return { version: MEMORY_VERSION, entries: [] };
+    }
+    if (cachedStore && cachedStoreRaw === raw) return cachedStore;
     const parsed = JSON.parse(raw) as TranslationMemoryStore;
     if (parsed.version !== MEMORY_VERSION || !Array.isArray(parsed.entries)) {
       return { version: MEMORY_VERSION, entries: [] };
     }
     const cutoff = Date.now() - TTL_MS;
-    return {
+    const store = {
       version: MEMORY_VERSION,
       entries: parsed.entries.filter((entry) => entry.updatedAt >= cutoff && entry.key && entry.translatedText),
     };
+    cachedStoreRaw = raw;
+    cachedStore = store;
+    cachedEntryMap = null;
+    return store;
   } catch {
     return { version: MEMORY_VERSION, entries: [] };
   }
@@ -81,11 +94,26 @@ const writeStore = (store: TranslationMemoryStore) => {
   const entries = [...store.entries]
     .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
     .slice(0, MAX_ENTRIES);
+  const nextStore = { version: MEMORY_VERSION, entries };
+  const serialized = JSON.stringify(nextStore);
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: MEMORY_VERSION, entries }));
+    window.localStorage.setItem(STORAGE_KEY, serialized);
+    cachedStoreRaw = serialized;
+    cachedStore = nextStore;
+    cachedEntryMap = null;
   } catch {
     window.localStorage.removeItem(STORAGE_KEY);
+    cachedStoreRaw = null;
+    cachedStore = null;
+    cachedEntryMap = null;
   }
+};
+
+const getEntryMap = (store: TranslationMemoryStore) => {
+  if (!cachedEntryMap || cachedStore !== store) {
+    cachedEntryMap = new Map(store.entries.map((entry) => [entry.key, entry]));
+  }
+  return cachedEntryMap;
 };
 
 export const createTranslationMemoryStats = (): TranslationMemoryStats => ({
@@ -102,28 +130,59 @@ export const lookupLocalTranslation = (
   sourceLang: string,
   targetLang: string,
   channel?: string,
-): LocalTranslationHit | null => {
-  const text = block.text || "";
-  if (!shouldRequireTranslation(text, targetLang)) {
-    return { translation: text, source: "preserved" };
-  }
+): LocalTranslationHit | null => (
+  lookupLocalTranslations([block], sourceLang, targetLang, channel)[0] || null
+);
 
-  if (isChineseTargetLanguage(targetLang)) {
-    const glossaryHit = zhGlossary.get(normalizeMemoryText(text));
-    if (glossaryHit) {
-      return { translation: glossaryHit, source: "glossary" };
+export const lookupLocalTranslations = (
+  blocks: OcrBlock[],
+  sourceLang: string,
+  targetLang: string,
+  channel?: string,
+): Array<LocalTranslationHit | null> => {
+  const hits: Array<LocalTranslationHit | null> = [];
+  let store: TranslationMemoryStore | null = null;
+  let entryMap: Map<string, TranslationMemoryEntry> | null = null;
+  let touchedMemory = false;
+  const now = Date.now();
+
+  for (const block of blocks) {
+    const text = block.text || "";
+    if (!shouldRequireTranslation(text, targetLang)) {
+      hits.push({ translation: text, source: "preserved" });
+      continue;
     }
+
+    if (isChineseTargetLanguage(targetLang)) {
+      const glossaryHit = zhGlossary.get(normalizeMemoryText(text));
+      if (glossaryHit) {
+        hits.push({ translation: glossaryHit, source: "glossary" });
+        continue;
+      }
+    }
+
+    if (!store) {
+      store = readStore();
+      entryMap = getEntryMap(store);
+    }
+
+    const key = makeMemoryKey(text, sourceLang, targetLang, channel);
+    const entry = entryMap?.get(key);
+    if (!entry) {
+      hits.push(null);
+      continue;
+    }
+
+    entry.lastUsedAt = now;
+    entry.hits += 1;
+    touchedMemory = true;
+    hits.push({ translation: entry.translatedText, source: "memory" });
   }
 
-  const key = makeMemoryKey(text, sourceLang, targetLang, channel);
-  const store = readStore();
-  const entry = store.entries.find((item) => item.key === key);
-  if (!entry) return null;
-
-  entry.lastUsedAt = Date.now();
-  entry.hits += 1;
-  writeStore(store);
-  return { translation: entry.translatedText, source: "memory" };
+  if (store && touchedMemory) {
+    writeStore(store);
+  }
+  return hits;
 };
 
 export const storeTranslationMemory = (
@@ -174,4 +233,7 @@ export const getTranslationMemoryStorageStats = (): TranslationMemoryStorageStat
 export const clearTranslationMemory = () => {
   if (!canUseBrowserStorage()) return;
   window.localStorage.removeItem(STORAGE_KEY);
+  cachedStoreRaw = null;
+  cachedStore = null;
+  cachedEntryMap = null;
 };

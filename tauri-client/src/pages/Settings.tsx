@@ -36,12 +36,13 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         imageSaveRememberLastDir: false,
         hotkey: "Alt+A",
         translateHotkey: "Alt+T",
+        recordingHotkey: "Alt+R",
         serverUrl: DEFAULT_TRANSLATION_SERVICE_URL,
         lanServerUrl: "",
         preferLanServer: false,
         channel: "google",
         targetLang: "zh",
-        newApiModel: "gemini-3.5-flash",
+        newApiModel: "gemini-2.0-flash",
         newApiPrompt: DEFAULT_LLM_TRANSLATION_PROMPT,
         newApiDomain: DEFAULT_LLM_TRANSLATION_DOMAIN,
         deeplEndpoint: "https://api-free.deepl.com",
@@ -79,6 +80,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
           onHotkeyChange={controller.updateHotkeyValue}
           onClearScreenshotHotkey={controller.clearScreenshotHotkey}
           onClearTranslateHotkey={controller.clearTranslateHotkey}
+          onClearRecordingHotkey={controller.clearRecordingHotkey}
         />
       </Space>
     </Form>

@@ -1,22 +1,60 @@
 import sys
 import os
+from collections import defaultdict
 # Ensure server directory is in sys.path so imports work regardless of CWD
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 import requests
 import time
 import hashlib
 import secrets
 from config import load_server_config, save_server_config
 from translator import GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, get_translation_runtime_metadata
-from security import normalize_relay_base_url, normalize_public_base_url, request_relay_url
+from security import install_redaction_filter, normalize_relay_base_url, normalize_public_base_url, redact, request_relay_url
 import logging
 
+install_redaction_filter()
 logger = logging.getLogger(__name__)
 
+MAX_BODY_BYTES = int(os.environ.get("SS_TRANSLATOR_MAX_BODY_BYTES", str(8 * 1024 * 1024)))
+RATE_LIMIT = int(os.environ.get("SS_TRANSLATOR_RATE_LIMIT", "30"))
+RATE_WINDOW_SECONDS = int(os.environ.get("SS_TRANSLATOR_RATE_WINDOW_SECONDS", "60"))
+_rate_hits: dict[str, list[float]] = defaultdict(list)
+
+
+def _safe_error_detail(error: Exception | str) -> str:
+    return redact(str(error))
+
+
+class GuardMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_BODY_BYTES:
+                        return JSONResponse({"detail": "payload too large"}, status_code=413)
+                except ValueError:
+                    return JSONResponse({"detail": "invalid content-length"}, status_code=400)
+
+            client_host = request.client.host if request.client else "unknown"
+            now = time.time()
+            hits = [item for item in _rate_hits[client_host] if now - item < RATE_WINDOW_SECONDS]
+            if len(hits) >= RATE_LIMIT:
+                _rate_hits[client_host] = hits
+                return JSONResponse({"detail": "rate limit"}, status_code=429)
+            hits.append(now)
+            _rate_hits[client_host] = hits
+
+        return await call_next(request)
+
+
 app = FastAPI(title="Screenshot Translator API")
+app.add_middleware(GuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -33,7 +71,7 @@ app.add_middleware(
 
 # 🔑 启动时打印当前 client_token，供运维人员在客户端配置
 _startup_cfg = load_server_config()
-logger.warning("[Security] client_token is configured: %s", _startup_cfg.get("client_token"))
+logger.warning("[Security] client_token configured: %s", bool(_startup_cfg.get("client_token")))
 logger.warning("[Security] 请将此 token 填入客户端「系统设置 → 令牌」中，或通过环境变量 SS_TRANSLATOR_TOKEN 覆盖。")
 del _startup_cfg
 
@@ -226,7 +264,7 @@ async def translate_text_endpoint(
         stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
     except Exception as e:
         logger.warning("translate_text batch failed; returning aligned blank translations without slow per-item retry: %s", e)
-        stats_ref["provider_failures"] += 1
+        stats_ref["provider_failures"] += max(1, len(texts))
         stats_ref["provider_misses"] = max(0, len(texts) - stats_ref["cache_hits"])
         total_ms = int((time.perf_counter() - request_started_at) * 1000)
         cache_hits = stats_ref["cache_hits"]
@@ -235,7 +273,7 @@ async def translate_text_endpoint(
             "translations": [""] * len(texts),
             "cache_hits": cache_hits,
             "channel": get_config().get("active_channel", "google"),
-            "provider_error": str(e),
+            "provider_error": _safe_error_detail(e),
             "timings": {
                 "total_ms": total_ms,
                 "provider_ms": stats_ref["provider_ms"],
@@ -251,9 +289,16 @@ async def translate_text_endpoint(
             },
         }
                 
+    provider_error = None
+    if len(translations) != len(texts):
+        provider_error = f"translator returned {len(translations)} translations for {len(texts)} blocks"
+        logger.warning("translate_text alignment failed: %s", provider_error)
+        stats_ref["provider_failures"] += max(1, len(texts))
+        translations = [""] * len(texts)
+
     total_ms = int((time.perf_counter() - request_started_at) * 1000)
     cache_hits = stats_ref["cache_hits"]
-    return {
+    response = {
         "status": "success",
         "translations": translations,
         "cache_hits": cache_hits,
@@ -272,6 +317,9 @@ async def translate_text_endpoint(
             "blocks": len(texts),
         },
     }
+    if provider_error:
+        response["provider_error"] = provider_error
+    return response
 
 
 @app.post("/api/config/test")
@@ -297,7 +345,7 @@ def test_and_save_config(payload: dict, x_api_key: str = Header(None)):
         
         return {"status": "success", "result": test_res}
     except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": _safe_error_detail(e)}
 
 @app.post("/api/config/save")
 def save_channel_config(payload: dict, x_api_key: str = Header(None)):
@@ -307,7 +355,7 @@ def save_channel_config(payload: dict, x_api_key: str = Header(None)):
         _save_channel_config(channel, c)
         return {"status": "success", "active_channel": channel}
     except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": _safe_error_detail(e)}
 
 @app.get("/api/config/current")
 def current_config(x_api_key: str = Header(None)):
@@ -349,10 +397,11 @@ def fetch_models(payload: dict, x_api_key: str = Header(None)):
             return {"status": "success", "models": m_list}
         return {"status": "failed", "error": f"中转服务返回状态码 {res.status_code}"}
     except Exception as e:
-        return {"status": "failed", "error": f"连接失败: {str(e)}"}
+        return {"status": "failed", "error": f"连接失败: {_safe_error_detail(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
-    host = os.environ.get("SS_TRANSLATOR_HOST", "0.0.0.0")
+    host = os.environ.get("SS_TRANSLATOR_HOST", "127.0.0.1")
     port = int(os.environ.get("SS_TRANSLATOR_PORT", "8318"))
-    uvicorn.run("app:app", host=host, port=port, reload=True)
+    reload_enabled = os.environ.get("SS_TRANSLATOR_RELOAD", "").lower() in {"1", "true", "yes", "dev"} or os.environ.get("ENV") == "dev"
+    uvicorn.run("app:app", host=host, port=port, reload=reload_enabled)

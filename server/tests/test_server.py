@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 # 确保 PYTHONPATH 能找到 app.py
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import app as app_module
 from app import app, invalidate_config_cache
 from config import load_server_config, save_server_config
 
@@ -20,6 +21,31 @@ def test_health_exposes_translation_metadata():
     assert data["translation"]["glossary_loaded"] is True
     assert data["translation"]["glossary_version"] != "fallback"
     assert data["translation"]["quality_flags"]["latin_non_english_auto_source"] is True
+
+
+def test_api_body_limit_rejects_large_payload(monkeypatch):
+    original_limit = app_module.MAX_BODY_BYTES
+    app_module._rate_hits.clear()
+    monkeypatch.setattr(app_module, "MAX_BODY_BYTES", 16)
+    try:
+        res = client.post("/api/translate_text", content="x" * 32, headers={"content-type": "application/json"})
+        assert res.status_code == 413
+    finally:
+        app_module.MAX_BODY_BYTES = original_limit
+        app_module._rate_hits.clear()
+
+
+def test_api_rate_limit_rejects_excess_requests(monkeypatch):
+    original_limit = app_module.RATE_LIMIT
+    app_module._rate_hits.clear()
+    monkeypatch.setattr(app_module, "RATE_LIMIT", 2)
+    try:
+        assert client.post("/api/config/test", json={"channel": "google"}).status_code == 401
+        assert client.post("/api/config/test", json={"channel": "google"}).status_code == 401
+        assert client.post("/api/config/test", json={"channel": "google"}).status_code == 429
+    finally:
+        app_module.RATE_LIMIT = original_limit
+        app_module._rate_hits.clear()
 
 def test_fetch_models_unauthorized():
     res = client.post("/api/config/fetch_models", json={"base_url": "api.yousn.me", "api_key": "sk-xxx"})

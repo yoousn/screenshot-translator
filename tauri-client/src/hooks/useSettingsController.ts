@@ -21,6 +21,13 @@ type SaveSettingsOptions = {
 };
 
 const trimTrailingSlash = (value: string) => value.replace(/\/$/, "");
+const DEFAULT_MODEL = "gemini-2.0-flash";
+const LEGACY_DEFAULT_MODEL = "gemini-3.5-flash";
+const DEFAULT_HOTKEYS = {
+  hotkey: "Alt+A",
+  translateHotkey: "Alt+T",
+  recordingHotkey: "Alt+R",
+};
 const PRIVATE_TRANSLATION_ERROR_PATTERN =
   /https?:\/\/|x-api-key|client[_\s-]*token|ocr\.yousn\.me|serverUrl|lanServerUrl|\b(?:\d{1,3}\.){3}\d{1,3}\b/i;
 
@@ -117,7 +124,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       form.setFieldValue("autostart", autostartEnabled);
 
       if (parsedConfig.newApiBase && parsedConfig.newApiKey) {
-        setAvailableModels([parsedConfig.newApiModel || "gemini-3.5-flash"]);
+        setAvailableModels([parsedConfig.newApiModel || DEFAULT_MODEL]);
       }
 
       const serverUrls = buildServerUrlCandidates(parsedConfig);
@@ -205,7 +212,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         setAvailableModels(resData.models);
         message.success(`模型列表拉取成功，共 ${resData.models.length} 个模型。`);
         const currentModel = String(form.getFieldValue("newApiModel") || "").trim();
-        const shouldAdoptFirstModel = !currentModel || (currentModel === "gemini-3.5-flash" && !resData.models.includes(currentModel));
+        const shouldAdoptFirstModel = !currentModel || (currentModel === LEGACY_DEFAULT_MODEL && !resData.models.includes(currentModel));
         if (resData.models.length > 0 && shouldAdoptFirstModel) {
           form.setFieldValue("newApiModel", resData.models[0]);
         }
@@ -389,6 +396,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
         await invoke("re_register_shortcut", {
           hotkey: configValues.hotkey || "",
           translateHotkey: configValues.translateHotkey || "",
+          recordingHotkey: configValues.recordingHotkey || "",
         });
       } catch (shortcutError: any) {
         message.warning(`本地配置已保存，但快捷键注册失败：${shortcutError.message || shortcutError}`);
@@ -470,7 +478,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     });
   };
 
-  const updateHotkeyValue = (field: "hotkey" | "translateHotkey", value: string) => {
+  const updateHotkeyValue = (field: "hotkey" | "translateHotkey" | "recordingHotkey", value: string) => {
     applyHotkeyPatch({ [field]: value }, "快捷键已保存并生效。");
   };
 
@@ -482,8 +490,12 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     applyHotkeyPatch({ translateHotkey: "" }, "翻译快捷键已清空并生效。");
   };
 
+  const clearRecordingHotkey = () => {
+    applyHotkeyPatch({ recordingHotkey: "" }, "录制快捷键已清空并生效。");
+  };
+
   const restoreDefaultHotkeys = () => {
-    applyHotkeyPatch({ hotkey: "Alt+A", translateHotkey: "Alt+T" }, "已还原默认快捷键并生效。");
+    applyHotkeyPatch(DEFAULT_HOTKEYS, "已还原默认快捷键并生效。");
   };
 
   return {
@@ -506,5 +518,6 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     updateHotkeyValue,
     clearScreenshotHotkey,
     clearTranslateHotkey,
+    clearRecordingHotkey,
   };
 }

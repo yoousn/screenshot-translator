@@ -31,8 +31,18 @@ pub async fn run_local_ocr(
     small_text_retry: Option<bool>,
 ) -> Result<Vec<OcrBlock>, String> {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(15000).clamp(500, 60000));
+    let worker_timeout = timeout
+        .checked_sub(Duration::from_millis(250))
+        .filter(|value| *value >= Duration::from_millis(500))
+        .unwrap_or(timeout);
     let task = tokio::task::spawn_blocking(move || {
-        run_local_ocr_sync(app, image_base64, executable_path, small_text_retry)
+        run_local_ocr_sync(
+            app,
+            image_base64,
+            executable_path,
+            small_text_retry,
+            Some(worker_timeout),
+        )
     });
     match tokio::time::timeout(timeout, task).await {
         Ok(joined) => joined.map_err(|e| format!("Local OCR task failed: {}", e))?,

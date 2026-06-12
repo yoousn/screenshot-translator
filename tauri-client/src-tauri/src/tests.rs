@@ -4,6 +4,7 @@ mod tests {
     use crate::diagnostics::{
         build_diagnostic_readiness_by_module, startup_diagnostics_probe_path,
     };
+    use crate::hotkeys::parse_hotkey;
     use crate::recording_overlay::{
         recording_color_ref, RECORDING_BORDER_BLUE, RECORDING_BORDER_RED, RECORDING_BORDER_YELLOW,
     };
@@ -43,6 +44,14 @@ mod tests {
         };
         assert_eq!(mapped.confidence, 0.975);
         assert_eq!(mapped.text, "Test OCR");
+    }
+
+    #[test]
+    fn test_parse_hotkey_keeps_minus_as_main_key() {
+        assert!(parse_hotkey("Alt+-").is_ok());
+        assert!(parse_hotkey("Ctrl+Shift+-").is_ok());
+        assert!(parse_hotkey("Alt+Shift+Plus").is_ok());
+        assert!(parse_hotkey("Alt++").is_ok());
     }
 
     #[test]

@@ -297,7 +297,7 @@ export default function TranslationChannelCard({
                   onSelect={(value) => form.setFieldValue("newApiModel", value)}
                   filterOption={(inputValue, option) => String(option?.value || "").toLowerCase().includes(inputValue.toLowerCase())}
                 >
-                  <Input placeholder="gemini-3.5-flash" style={{ height: 32 }} />
+                  <Input placeholder="gemini-2.0-flash" style={{ height: 32 }} />
                 </AutoComplete>
               </Form.Item>
               <Button icon={<SyncOutlined spin={isFetchingModels} />} onClick={fetchModels} style={{ height: 32 }}>

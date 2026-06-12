@@ -8,10 +8,13 @@ const { Text } = Typography;
 
 type SystemHotkeyCardProps = {
   onRestoreDefaultHotkeys: () => void;
-  onHotkeyChange: (field: "hotkey" | "translateHotkey", value: string) => void;
+  onHotkeyChange: (field: HotkeyField, value: string) => void;
   onClearScreenshotHotkey: () => void;
   onClearTranslateHotkey: () => void;
+  onClearRecordingHotkey: () => void;
 };
+
+type HotkeyField = "hotkey" | "translateHotkey" | "recordingHotkey";
 
 const modifierKeys = new Set(["Alt", "Control", "Ctrl", "Shift", "Meta", "OS", "Win", "Windows"]);
 
@@ -44,10 +47,11 @@ export default function SystemHotkeyCard({
   onHotkeyChange,
   onClearScreenshotHotkey,
   onClearTranslateHotkey,
+  onClearRecordingHotkey,
 }: SystemHotkeyCardProps) {
   const { text } = useI18n();
   const labels = text.settings;
-  const handleHotkeyKeyDown = (field: "hotkey" | "translateHotkey") => (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleHotkeyKeyDown = (field: HotkeyField) => (event: KeyboardEvent<HTMLInputElement>) => {
     event.preventDefault();
     event.stopPropagation();
     if (event.key === "Backspace" || event.key === "Delete" || event.key === "Escape") {
@@ -88,9 +92,18 @@ export default function SystemHotkeyCard({
           >
             <Input readOnly onKeyDown={handleHotkeyKeyDown("translateHotkey")} placeholder={labels.hotkeyPlaceholderAltT} style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
           </Form.Item>
+          <Form.Item
+            label={labels.recordingHotkey}
+            name="recordingHotkey"
+            rules={[{ pattern: hotkeyPattern, message: labels.hotkeyFormatAltR }]}
+            style={{ marginBottom: 12 }}
+          >
+            <Input readOnly onKeyDown={handleHotkeyKeyDown("recordingHotkey")} placeholder={labels.hotkeyPlaceholderAltR} style={{ height: 32, fontFamily: "monospace", textAlign: "center" }} />
+          </Form.Item>
           <Space wrap>
             <Button onClick={onClearScreenshotHotkey}>{labels.clearScreenshotHotkey}</Button>
             <Button onClick={onClearTranslateHotkey}>{labels.clearTranslateHotkey}</Button>
+            <Button onClick={onClearRecordingHotkey}>{labels.clearRecordingHotkey}</Button>
             <Button onClick={onRestoreDefaultHotkeys}>{labels.restoreDefaults}</Button>
           </Space>
           <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 8, lineHeight: 1.45 }}>

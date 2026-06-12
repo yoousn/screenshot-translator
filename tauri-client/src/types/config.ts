@@ -3,6 +3,9 @@ export interface Config {
   lanServerUrl?: string;
   preferLanServer?: boolean;
   clientToken?: string;
+  hotkey?: string;
+  translateHotkey?: string;
+  recordingHotkey?: string;
   useLocalOcr?: boolean;
   fallbackToRemoteOcr?: boolean;
   localOcrTimeoutMs?: number;

@@ -1,6 +1,54 @@
 import ipaddress
+import logging
+import re
 import socket
 import urllib.parse
+
+
+SECRET_PATTERN = re.compile(
+    r"(authorization|x-api-key|client[_\s-]*token|token|api[_-]?key|secret[_-]?key)\s*[:=]\s*([^\s,;]+)|"
+    r"(bearer|deepl-auth-key)\s+([A-Za-z0-9._\-]+)",
+    re.IGNORECASE,
+)
+AUTH_BEARER_PATTERN = re.compile(
+    r"(authorization\s*[:=]\s*bearer\s+)([^\s,;]+)",
+    re.IGNORECASE,
+)
+
+
+def redact(text: object) -> str:
+    value = str(text)
+    value = AUTH_BEARER_PATTERN.sub(lambda match: f"{match.group(1)}***REDACTED***", value)
+    return SECRET_PATTERN.sub(lambda match: f"{match.group(1) or match.group(3)}=***REDACTED***", value)
+
+
+class RedactFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact(record.getMessage())
+        record.args = ()
+        return True
+
+
+_ORIGINAL_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
+_REDACTION_FACTORY_INSTALLED = False
+
+
+def install_redaction_filter() -> None:
+    global _REDACTION_FACTORY_INSTALLED
+    if not _REDACTION_FACTORY_INSTALLED:
+        def redacting_factory(*args, **kwargs):
+            record = _ORIGINAL_LOG_RECORD_FACTORY(*args, **kwargs)
+            record.msg = redact(record.getMessage())
+            record.args = ()
+            return record
+
+        logging.setLogRecordFactory(redacting_factory)
+        _REDACTION_FACTORY_INSTALLED = True
+
+    root = logging.getLogger()
+    if any(isinstance(item, RedactFilter) for item in root.filters):
+        return
+    root.addFilter(RedactFilter())
 
 TRUSTED_PUBLIC_DNS_BYPASS_HOSTS = {
     "api-free.deepl.com",

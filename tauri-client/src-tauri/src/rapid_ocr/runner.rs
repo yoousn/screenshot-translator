@@ -3,7 +3,7 @@ use base64::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::worker::{rapid_ocr_worker_enabled, run_rapidocr_worker_ocr};
 
@@ -42,8 +42,9 @@ pub fn run_local_ocr_sync(
     image_base64: String,
     _executable_path: Option<String>,
     small_text_retry: Option<bool>,
+    worker_timeout: Option<Duration>,
 ) -> Result<Vec<OcrBlock>, String> {
-    match run_rapidocr_sync(&app, &image_base64, small_text_retry) {
+    match run_rapidocr_sync(&app, &image_base64, small_text_retry, worker_timeout) {
         Ok(blocks) if !blocks.is_empty() => Ok(blocks),
         Ok(_) => {
             Err(
@@ -58,6 +59,7 @@ pub fn run_rapidocr_sync(
     app: &tauri::AppHandle,
     image_base64: &str,
     small_text_retry: Option<bool>,
+    worker_timeout: Option<Duration>,
 ) -> Result<Vec<OcrBlock>, String> {
     let total_started = Instant::now();
     let image_bytes = BASE64_STANDARD
@@ -103,6 +105,7 @@ pub fn run_rapidocr_sync(
             &mode,
             &model_root,
             final_small_text_retry,
+            worker_timeout.unwrap_or_else(|| Duration::from_millis(60_000)),
         ) {
             Ok(output) => Ok(output),
             Err(error) => {

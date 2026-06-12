@@ -1,7 +1,7 @@
 import pytest
 import requests
 from unittest.mock import patch
-from translator import BaseTranslator, GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator
+from translator import BaseTranslator, GoogleTranslator, LLMTranslator, BaiduTranslator, DeepLTranslator, SEGMENT_SEPARATOR
 
 
 class FakeLLMResponse:
@@ -43,6 +43,26 @@ class FakeDeepLSession:
         return FakeDeepLResponse()
 
 
+class FakeGoogleBatchResponse:
+    status_code = 200
+
+    def __init__(self, translated_full: str):
+        self.translated_full = translated_full
+
+    def json(self):
+        return [[[self.translated_full]]]
+
+
+class FakeGoogleBatchSession:
+    def __init__(self, translated_full: str):
+        self.translated_full = translated_full
+        self.last_data = None
+
+    def post(self, _url, data, timeout):
+        self.last_data = data
+        return FakeGoogleBatchResponse(self.translated_full)
+
+
 def test_google_translation():
     translator = GoogleTranslator()
     try:
@@ -51,6 +71,16 @@ def test_google_translation():
         pytest.skip(f"Google Translate is not reachable in current env: {exc}")
     assert isinstance(res, str)
     assert res.strip()
+
+
+def test_google_batch_uses_stable_segment_separator():
+    translator = GoogleTranslator()
+    translator.session = FakeGoogleBatchSession(f"打开{SEGMENT_SEPARATOR}保存")
+
+    result = translator._do_translate_batch(["Open", "Save"], "en", "zh", {})
+
+    assert result == ["打开", "保存"]
+    assert SEGMENT_SEPARATOR in translator.session.last_data["q"]
 
 
 def test_llm_translation_format():

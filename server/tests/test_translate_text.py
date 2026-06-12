@@ -99,6 +99,62 @@ def test_translate_text_fallback_failure_returns_blank_translation():
     assert data["timings"]["provider_misses"] == 1
     assert data["timings"]["provider_failures"] == 1
 
+
+def test_translate_text_provider_error_is_redacted():
+    cfg = load_server_config()
+    token = cfg["client_token"]
+
+    class LeakyTranslator:
+        def translate_batch(self, *args, **kwargs):
+            raise RuntimeError("x-api-key: sk-secret-token")
+
+    payload = {
+        "blocks": [
+            {"text": "Open preview", "confidence": 0.9, "box": [[0,0],[10,0],[10,5],[0,5]]},
+        ],
+        "source_lang": "en",
+        "target_lang": "zh"
+    }
+    with patch("app.get_active_translator", return_value=LeakyTranslator()):
+        response = client.post(
+            "/api/translate_text",
+            headers={"X-API-Key": token},
+            json=payload
+        )
+    assert response.status_code == 200
+    provider_error = response.json()["provider_error"]
+    assert "sk-secret-token" not in provider_error
+    assert "***REDACTED***" in provider_error
+
+
+def test_translate_text_mismatched_provider_result_returns_aligned_blank_translations():
+    cfg = load_server_config()
+    token = cfg["client_token"]
+
+    class MisalignedTranslator:
+        def translate_batch(self, *args, **kwargs):
+            return ["only one"]
+
+    payload = {
+        "blocks": [
+            {"text": "Open", "confidence": 0.9, "box": [[0,0],[10,0],[10,5],[0,5]]},
+            {"text": "Save", "confidence": 0.9, "box": [[20,0],[30,0],[30,5],[20,5]]},
+        ],
+        "source_lang": "en",
+        "target_lang": "zh",
+    }
+    with patch("app.get_active_translator", return_value=MisalignedTranslator()):
+        response = client.post(
+            "/api/translate_text",
+            headers={"X-API-Key": token},
+            json=payload,
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["translations"] == ["", ""]
+    assert "provider_error" in data
+    assert data["timings"]["blocks"] == 2
+
 def test_google_translator_uses_script_source_hint_for_korean():
     class FakeResponse:
         status_code = 200
