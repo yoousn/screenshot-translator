@@ -5,6 +5,7 @@ mod tests {
         build_diagnostic_readiness_by_module, startup_diagnostics_probe_path,
     };
     use crate::hotkeys::parse_hotkey;
+    use crate::rapid_ocr::rapid_ocr_required_model_files;
     use crate::recording_overlay::{
         recording_color_ref, RECORDING_BORDER_BLUE, RECORDING_BORDER_RED, RECORDING_BORDER_YELLOW,
     };
@@ -47,6 +48,16 @@ mod tests {
         };
         assert_eq!(mapped.confidence, 0.975);
         assert_eq!(mapped.text, "Test OCR");
+    }
+
+    #[test]
+    fn test_rapidocr_onnx_readiness_does_not_require_external_dictionary_files() {
+        for version in ["v5", "v4"] {
+            let files = rapid_ocr_required_model_files(version);
+            assert!(!files.contains(&"ppocr_keys_v1.txt"));
+            assert!(!files.contains(&"ppocrv5_dict.txt"));
+            assert!(files.iter().all(|file| file.ends_with(".onnx")));
+        }
     }
 
     #[test]

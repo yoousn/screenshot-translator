@@ -75,3 +75,10 @@ export type RapidOcrModelInstallResult = {
   };
   elapsedMs?: number;
 };
+
+export type RapidOcrModelInstallProgress = {
+  phase: string;
+  detail?: string;
+  percent: number;
+  status: "active" | "success" | "exception";
+};

@@ -6,6 +6,7 @@ pub use worker::*;
 
 use std::fs;
 use std::time::{Duration, Instant};
+use tauri::Emitter;
 
 const RAPIDOCR_DOCS_MODEL_LIST_URL: &str =
     "https://rapidai.github.io/RapidOCRDocs/main/model_list/";
@@ -205,9 +206,21 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
 
 #[tauri::command]
 pub async fn install_rapid_ocr_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    tokio::task::spawn_blocking(move || install_rapid_ocr_models_sync(&app))
+    emit_rapid_ocr_install_progress(
+        &app,
+        "准备安装",
+        "正在检查模型目录和 RapidOCR runner。",
+        5,
+        "active",
+    );
+    let task_app = app.clone();
+    let result = tokio::task::spawn_blocking(move || install_rapid_ocr_models_sync(&task_app))
         .await
-        .map_err(|error| format!("RapidOCR model install task failed: {error}"))?
+        .map_err(|error| format!("RapidOCR model install task failed: {error}"))?;
+    if let Err(error) = &result {
+        emit_rapid_ocr_install_progress(&app, "安装失败", error, 100, "exception");
+    }
+    result
 }
 
 fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -222,6 +235,13 @@ fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::V
 
     let _ = stop_rapid_ocr_worker_internal(1500);
     let model_root_arg = model_root.to_string_lossy().to_string();
+    emit_rapid_ocr_install_progress(
+        app,
+        "下载并初始化模型",
+        "RapidOCR 正在从官方 ModelScope 源补齐缺失的 ONNX 模型。",
+        15,
+        "active",
+    );
     let warm_result = run_rapidocr_command_value(
         app,
         vec![
@@ -230,6 +250,13 @@ fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::V
             model_root_arg.clone(),
         ],
     )?;
+    emit_rapid_ocr_install_progress(
+        app,
+        "验证 Rapid OCR V5",
+        "模型下载阶段已完成，正在验证默认 V5 模型。",
+        80,
+        "active",
+    );
     let probe_v5 = run_rapidocr_command_value(
         app,
         vec![
@@ -240,6 +267,13 @@ fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::V
             model_root_arg.clone(),
         ],
     )?;
+    emit_rapid_ocr_install_progress(
+        app,
+        "验证 Rapid OCR V4",
+        "V5 已完成，正在验证兼容 V4 模型。",
+        90,
+        "active",
+    );
     let probe_v4 = run_rapidocr_command_value(
         app,
         vec![
@@ -266,7 +300,7 @@ fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::V
             .unwrap_or_default()
             == "success";
 
-    Ok(serde_json::json!({
+    let result = serde_json::json!({
         "ok": ok,
         "modelRoot": model_root.to_string_lossy().to_string(),
         "source": {
@@ -285,7 +319,43 @@ fn install_rapid_ocr_models_sync(app: &tauri::AppHandle) -> Result<serde_json::V
             "v4": missing_v4
         },
         "elapsedMs": started.elapsed().as_millis()
-    }))
+    });
+    if ok {
+        emit_rapid_ocr_install_progress(
+            app,
+            "安装完成",
+            "Rapid OCR V5 / V4 模型均已通过验证。",
+            100,
+            "success",
+        );
+    } else {
+        emit_rapid_ocr_install_progress(
+            app,
+            "文件检查未通过",
+            "下载已结束，但仍有模型文件缺失或模型验证失败。",
+            100,
+            "exception",
+        );
+    }
+    Ok(result)
+}
+
+fn emit_rapid_ocr_install_progress(
+    app: &tauri::AppHandle,
+    phase: &str,
+    detail: &str,
+    percent: u8,
+    status: &str,
+) {
+    let _ = app.emit(
+        "rapidocr-model-install-progress",
+        serde_json::json!({
+            "phase": phase,
+            "detail": detail,
+            "percent": percent,
+            "status": status,
+        }),
+    );
 }
 
 #[tauri::command]

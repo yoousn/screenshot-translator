@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Alert, Button, Card, Col, Descriptions, Divider, List, Row, Select, Space, Tag, Typography, message } from "antd";
+import React, { useEffect, useState } from "react";
+import { Alert, Button, Card, Col, Descriptions, Divider, List, Progress, Row, Select, Space, Tag, Typography, message } from "antd";
 import {
   ApiOutlined,
   CheckCircleOutlined,
@@ -11,10 +11,11 @@ import {
   ToolOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import useOcrConfigController from "../hooks/useOcrConfigController";
 import useRapidOcrController from "../hooks/useRapidOcrController";
-import type { RapidOcrModelInstallResult, RapidOcrModelVersion } from "../ocr-models";
+import type { RapidOcrModelInstallProgress, RapidOcrModelInstallResult, RapidOcrModelVersion } from "../ocr-models";
 
 const { Text, Title } = Typography;
 
@@ -38,12 +39,22 @@ export default function ModelManagement() {
   const rapidOcr = useRapidOcrController({ autoRefresh: true });
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState<RapidOcrModelInstallResult | null>(null);
+  const [installProgress, setInstallProgress] = useState<RapidOcrModelInstallProgress | null>(null);
 
   const modelVersion = (config.rapidOcrModelVersion || "v5") as RapidOcrModelVersion;
   const modelRoot = installResult?.modelRoot || rapidOcr.status?.modelRoot || rapidOcr.status?.modelDir || "models\\rapidocr";
   const missingModels = rapidOcr.status?.missingModelFiles || [];
   const ready = Boolean(rapidOcr.status?.ready);
   const modelPackReady = Boolean(rapidOcr.status?.modelPacksReady);
+
+  useEffect(() => {
+    const unlisten = listen<RapidOcrModelInstallProgress>("rapidocr-model-install-progress", (event) => {
+      setInstallProgress(event.payload);
+    });
+    return () => {
+      unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
 
   const saveRapidOcrModelVersion = async (rapidOcrModelVersion: RapidOcrModelVersion) => {
     setConfig({ ...config, rapidOcrModelVersion });
@@ -57,6 +68,7 @@ export default function ModelManagement() {
 
   const installModels = async () => {
     setInstalling(true);
+    setInstallProgress({ phase: "准备安装", detail: "正在启动 RapidOCR 模型安装器。", percent: 0, status: "active" });
     try {
       const result = await invoke<RapidOcrModelInstallResult>("install_rapid_ocr_models");
       setInstallResult(result);
@@ -67,6 +79,7 @@ export default function ModelManagement() {
         message.warning("模型下载完成，但仍有文件需要检查。");
       }
     } catch (error: any) {
+      setInstallProgress({ phase: "安装失败", detail: error?.message || String(error), percent: 100, status: "exception" });
       message.error(`模型下载/安装失败：${error?.message || error}`);
     } finally {
       setInstalling(false);
@@ -128,6 +141,17 @@ export default function ModelManagement() {
                 </Tag>
               </Space>
 
+              {installProgress && (
+                <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                  <Progress
+                    percent={installProgress.percent}
+                    status={installProgress.status}
+                    format={() => `${installProgress.phase} ${installProgress.percent}%`}
+                  />
+                  {installProgress.detail && <Text type="secondary" style={{ fontSize: 12 }}>{installProgress.detail}</Text>}
+                </Space>
+              )}
+
               <Space wrap align="center">
                 <Text strong>当前模型版本</Text>
                 <Select value={modelVersion} options={modelOptions} style={{ width: 220 }} onChange={(value) => saveRapidOcrModelVersion(value)} />
@@ -138,6 +162,9 @@ export default function ModelManagement() {
                 <Descriptions.Item label="当前模型">Rapid OCR {modelVersion.toUpperCase()}</Descriptions.Item>
                 <Descriptions.Item label="缺失文件">{missingModels.length ? missingModels.join("、") : "无"}</Descriptions.Item>
                 <Descriptions.Item label="最近安装耗时">{formatElapsed(installResult?.elapsedMs) || "未运行"}</Descriptions.Item>
+                <Descriptions.Item label="字典文件说明">
+                  ONNX 模型已内嵌字符表，<Text code>ppocr_keys_v1.txt</Text> 和 <Text code>ppocrv5_dict.txt</Text> 无需下载到模型目录。
+                </Descriptions.Item>
               </Descriptions>
             </Space>
           </Card>
@@ -167,7 +194,7 @@ export default function ModelManagement() {
                 header={<Text strong>手动下载方式</Text>}
                 dataSource={[
                   "打开 ModelScope 的 RapidAI/RapidOCR 模型仓库。",
-                  "下载本应用需要的 ONNX 模型和字典文件。",
+                  "下载本应用需要的 ONNX 模型；ONNX 字符表已内嵌，不需要另下字典文件。",
                   "把文件放到根目录 models\\rapidocr。",
                   "回到本页点击重新检测或运行模型自测。",
                 ]}

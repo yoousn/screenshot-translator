@@ -265,19 +265,19 @@ pub fn rapid_ocr_model_install_root(app: &tauri::AppHandle) -> PathBuf {
 }
 
 pub fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> {
-    let mut files = vec![
-        "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
-        "ppocr_keys_v1.txt",
-        "ppocrv5_dict.txt",
-    ];
     if model_version == "v4" {
-        files.extend([
+        vec![
+            "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
             "ch_PP-OCRv4_det_mobile.onnx",
             "ch_PP-OCRv4_rec_mobile.onnx",
             "latin_PP-OCRv3_rec_mobile.onnx",
-        ]);
+            "korean_PP-OCRv4_rec_mobile.onnx",
+            "arabic_PP-OCRv4_rec_mobile.onnx",
+            "cyrillic_PP-OCRv3_rec_mobile.onnx",
+        ]
     } else {
-        files.extend([
+        vec![
+            "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
             "ch_PP-OCRv5_det_mobile.onnx",
             "ch_PP-OCRv5_rec_mobile.onnx",
             "latin_PP-OCRv5_rec_mobile.onnx",
@@ -285,9 +285,8 @@ pub fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> 
             "arabic_PP-OCRv5_rec_mobile.onnx",
             "cyrillic_PP-OCRv5_rec_mobile.onnx",
             "th_PP-OCRv5_rec_mobile.onnx",
-        ]);
+        ]
     }
-    files
 }
 
 pub fn rapid_ocr_missing_model_files(model_root: &Path, model_version: &str) -> Vec<String> {

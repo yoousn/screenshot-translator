@@ -4057,3 +4057,51 @@ Alt+A
 - Manual desktop QA: open the real exe, click `模型管理` -> `一键下载/安装模型`, verify V5/V4 probes pass and files land under `models/rapidocr`.
 - Manual desktop QA: delete or rename one model file, restart the app, and confirm the startup status plus model page explain the missing asset and recovery action clearly.
 - Add a signed model-pack manifest with checksums before treating model installation as fully release-hardened.
+
+## Chapter 281: RapidOCR Dictionary False-Missing Fix And Install Progress (2026-06-13)
+
+### Goals Completed
+- Fixed the false missing-file loop where `ppocr_keys_v1.txt` and `ppocrv5_dict.txt` were incorrectly required inside root `models/rapidocr` even though the product uses RapidOCR's ONNXRuntime path.
+- Aligned V5 and V4 readiness lists with the actual ONNX models initialized by the bundled runner, including each version's detector, classifier, Chinese recognition model, and multilingual fallback recognition models.
+- Added a RapidOCR installation progress event contract with preparing, download/initialization, V5 verification, V4 verification, completion, and failure phases.
+- Added an FFmpeg-style progress bar and progress detail text below the model install actions.
+- Added beginner-facing dictionary guidance explaining that ONNX models embed their character table and do not require the two fallback dictionary files in the root model directory.
+- Corrected the manual download steps so they no longer instruct users to download unnecessary dictionary files.
+
+### External Findings
+- RapidOCR's official recognizer source explicitly states that ONNX has an internal character table; external character dictionary files are used by other inference engines when the session does not expose character keys.
+- RapidOCR's official model documentation confirms that PP-OCRv4/v5 models are hosted on ModelScope and can be automatically downloaded through RapidOCR's model configuration.
+- The bundled runner independently initialized both V5 and V4 successfully while the two dictionary files were absent from root `models/rapidocr`, confirming the UI failure was caused by the product's readiness checklist rather than a download failure.
+
+### Modified Files
+- `tauri-client/src-tauri/src/rapid_ocr/mod.rs`
+- `tauri-client/src-tauri/src/rapid_ocr/runner.rs`
+- `tauri-client/src-tauri/src/tests.rs`
+- `tauri-client/src/ocr-models/types.ts`
+- `tauri-client/src/pages/ModelManagement.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not add byte-level transfer progress because the bundled RapidOCR runner currently owns the ModelScope download stream and only returns after model initialization; the new progress bar reports truthful installation phases.
+- Did not copy fallback dictionary files into root `models/rapidocr`, because that would hide the incorrect readiness contract instead of fixing it.
+- Did not rebuild or package a release exe while the user's existing desktop app may be running.
+
+### Validation
+- Passed: `cd tauri-client/src-tauri; cargo fmt`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n` with `584 zh-CN keys match 584 en-US keys`.
+- Passed: `cd tauri-client/src-tauri; cargo check`.
+- Passed: `cd tauri-client/src-tauri; cargo test`, including the new regression test that forbids external dictionary files in ONNX readiness lists.
+- Passed: `cd tauri-client; npm run build`; Vite emitted existing dynamic-import/chunk-size warnings only.
+- Passed: bundled `rapidocr-runner.exe` probes for both V5 and V4 against root `models/rapidocr`.
+- Passed: local root-model audit found no missing V5 or V4 required ONNX files while confirming both dictionary files remain absent as expected.
+- Passed: in-app browser smoke confirmed the model page explains the dictionary behavior and renders the install progress bar.
+- Passed: `git diff --check`; Git emitted existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Progress is installation-phase progress rather than byte-level network progress; byte-level progress requires the product to own the ModelScope download stream instead of delegating it to the bundled RapidOCR runner.
+- The running desktop exe must be rebuilt or relaunched from a new build before it uses the corrected readiness list and progress event contract.
+
+### Next Steps
+- Manual desktop QA after rebuilding: open `模型管理`, confirm the old dictionary-file warning is gone, then click install and confirm the phase progress bar reaches completion.
+- If byte-level progress becomes a release requirement, move ModelScope downloads into an owned Rust installer that consumes RapidOCR's trusted model manifest and verifies its existing SHA256 values before invoking the runner.
