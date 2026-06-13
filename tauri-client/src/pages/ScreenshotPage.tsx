@@ -22,6 +22,7 @@ import { useScreenshotTextSource } from "../hooks/useScreenshotTextSource";
 import { useScreenshotActions } from "../hooks/useScreenshotActions";
 import { useScreenshotInteraction } from "../hooks/useScreenshotInteraction";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
+import { getLogicalCanvasSize } from "../utils/screenshotViewport";
 
 const ACTION_TOOLBAR_FALLBACK_SIZE = { width: 680, height: 86 };
 const RECORDING_TOOLBAR_FALLBACK_SIZE = { width: 980, height: 96 };
@@ -553,6 +554,7 @@ export default function ScreenshotPage() {
     frameInteractiveRef,
     imageReadyRef,
     activeSessionIdRef: displayedSessionIdRef,
+    displayedPhysicalBoundsRef,
     isSelecting,
     setIsSelecting,
     isSelectingRef,
@@ -913,8 +915,7 @@ export default function ScreenshotPage() {
       const shellCanvas = canvasRef.current;
       const shellCtx = shellCanvas?.getContext("2d");
       if (shellCanvas && shellCtx) {
-        const width = Math.max(1, window.innerWidth);
-        const height = Math.max(1, window.innerHeight);
+        const { width, height } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
         shellCanvas.width = width;
         shellCanvas.height = height;
         shellCanvas.style.width = `${width}px`;

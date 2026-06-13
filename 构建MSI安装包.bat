@@ -28,6 +28,8 @@ echo(
 if defined DRY_RUN goto :done
 
 call :kill_running || goto :fail
+call :ensure_node_dependencies || goto :fail
+call :sync_icons || goto :fail
 
 pushd "%CLIENT_DIR%" >nul
 call npm run tauri build -- --bundles msi
@@ -78,6 +80,14 @@ if not exist "%ROOT%scripts\create-root-shortcut.ps1" (
   echo([error] Missing shortcut helper: %ROOT%scripts\create-root-shortcut.ps1
   exit /b 1
 )
+if not exist "%ROOT%scripts\sync-app-icons.ps1" (
+  echo([error] Missing icon sync helper: %ROOT%scripts\sync-app-icons.ps1
+  exit /b 1
+)
+if not exist "%ROOT%scripts\ensure-node-dependencies.bat" (
+  echo([error] Missing dependency helper: %ROOT%scripts\ensure-node-dependencies.bat
+  exit /b 1
+)
 exit /b 0
 
 :kill_running
@@ -86,6 +96,20 @@ taskkill /F /T /IM %APP_EXE_NAME%.exe >nul 2>nul
 if %errorlevel% equ 0 echo([prepare] Closed %APP_EXE_NAME%.exe
 taskkill /F /T /IM tauri-client.exe >nul 2>nul
 if %errorlevel% equ 0 echo([prepare] Closed legacy tauri-client.exe
+echo(
+exit /b 0
+
+:ensure_node_dependencies
+call "%ROOT%scripts\ensure-node-dependencies.bat" "%CLIENT_DIR%"
+exit /b %errorlevel%
+
+:sync_icons
+echo([prepare] Synchronizing application icons ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\sync-app-icons.ps1" -Source "%TAURI_DIR%\icons\icon.png" -IconsDir "%TAURI_DIR%\icons"
+if errorlevel 1 (
+  echo([error] Failed to synchronize application icons
+  exit /b 1
+)
 echo(
 exit /b 0
 

@@ -6,6 +6,7 @@ import type { NativeScreenshotDiagnosticsStatus, Rect, ScreenshotPhysicalBounds 
 import type { Config } from "../types/config";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
 import { logScreenshotPerf } from "../utils/debugLog";
+import { getLogicalCanvasSize, getViewportDevicePixelRatio } from "../utils/screenshotViewport";
 
 const logScreenshotBaseline = (sessionId: string | number, phase: string, elapsedMs: number, detail = "") => {
   invoke("log_screenshot_perf", {
@@ -154,6 +155,43 @@ export function useScreenshotLoader({
     }
   };
 
+  const logViewportInstrumentation = (
+    phase: string,
+    sessionKey: string | number,
+    image?: ScreenshotImageSource | null,
+  ) => {
+    const physicalBounds = displayedPhysicalBoundsRef.current;
+    const viewportWidth = Math.max(1, window.innerWidth);
+    const viewportHeight = Math.max(1, window.innerHeight);
+    const devicePixelRatio = getViewportDevicePixelRatio();
+    const imageWidth = image ? getScreenshotImageWidth(image) : 0;
+    const imageHeight = image ? getScreenshotImageHeight(image) : 0;
+    const expectedPhysicalWidth = Math.round(viewportWidth * devicePixelRatio);
+    const expectedPhysicalHeight = Math.round(viewportHeight * devicePixelRatio);
+    const currentWindow = getCurrentWindow();
+
+    void Promise.all([
+      currentWindow.outerPosition().catch(() => null),
+      currentWindow.innerSize().catch(() => null),
+      currentWindow.scaleFactor().catch(() => null),
+    ]).then(([outerPosition, innerSize, scaleFactor]) => {
+      const physicalMatchesImage = !!physicalBounds
+        && physicalBounds.width === imageWidth
+        && physicalBounds.height === imageHeight;
+      const viewportMatchesImage = imageWidth === expectedPhysicalWidth
+        && imageHeight === expectedPhysicalHeight;
+      const viewportMatchesPhysical = !!physicalBounds
+        && physicalBounds.width === expectedPhysicalWidth
+        && physicalBounds.height === expectedPhysicalHeight;
+      logScreenshotBaseline(
+        sessionKey,
+        phase,
+        performance.now() - frontendSessionStartedAtRef.current,
+        `dpr=${devicePixelRatio.toFixed(3)} viewport=${viewportWidth}x${viewportHeight} expected_physical=${expectedPhysicalWidth}x${expectedPhysicalHeight} image=${imageWidth}x${imageHeight} physical_bounds=${physicalBounds ? `${physicalBounds.x},${physicalBounds.y},${physicalBounds.width},${physicalBounds.height}` : "none"} outer_position=${outerPosition ? `${outerPosition.x},${outerPosition.y}` : "unknown"} inner_size=${innerSize ? `${innerSize.width}x${innerSize.height}` : "unknown"} scale_factor=${scaleFactor ?? "unknown"} image_matches_viewport=${viewportMatchesImage} image_matches_physical=${physicalMatchesImage} physical_matches_viewport=${viewportMatchesPhysical}`,
+      );
+    });
+  };
+
   const startNewCaptureSession = (mode = "normal", remoteSessionId?: string | number, preserveVisibleShell = false, physicalBounds?: ScreenshotPhysicalBounds | null) => {
     clearPendingConfirm();
     message.destroy("screenshot-overlay");
@@ -237,10 +275,19 @@ export function useScreenshotLoader({
   };
 
   const captureAnalysisImageData = (img: ScreenshotImageSource, sessionId: number, remoteSessionId?: string | number) => {
-    window.setTimeout(() => {
+    if (configRef.current.enableVisualDetection !== true) {
+      analysisImageDataRef.current = null;
+      logScreenshotBaseline(
+        remoteSessionId || sessionId,
+        "analysis_image_data_skipped",
+        performance.now() - frontendSessionStartedAtRef.current,
+        "reason=visual_detection_disabled",
+      );
+      return;
+    }
+    const capture = () => {
       if (sessionId !== captureIdRef.current) return;
-      const width = Math.max(1, window.innerWidth);
-      const height = Math.max(1, window.innerHeight);
+      const { width, height } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
       const analysisCanvas = document.createElement("canvas");
       analysisCanvas.width = width;
       analysisCanvas.height = height;
@@ -253,7 +300,13 @@ export function useScreenshotLoader({
       } catch {
         analysisImageDataRef.current = null;
       }
-    }, 0);
+    };
+    const requestIdleCallback = (window as any).requestIdleCallback;
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(capture, { timeout: 500 });
+    } else {
+      window.setTimeout(capture, 120);
+    }
   };
 
   const recoverPreShowDrag = async (sessionKey: string | number, sessionId: number) => {
@@ -266,8 +319,7 @@ export function useScreenshotLoader({
       || rectRef.current.h > 0
     );
     const applyPreShowRect = (preCapture: any, finalize: boolean) => {
-      const maxW = Math.max(1, window.innerWidth);
-      const maxH = Math.max(1, window.innerHeight);
+      const { width: maxW, height: maxH } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
       const startX = clampToViewport(Math.round(Number(preCapture.x) || 0), maxW - 1);
       const startY = clampToViewport(Math.round(Number(preCapture.y) || 0), maxH - 1);
       const currentX = clampToViewport(Math.round(Number(preCapture.currentX) || startX), maxW - 1);
@@ -285,7 +337,7 @@ export function useScreenshotLoader({
       return { next, valid };
     };
 
-    for (let index = 0; index < 48; index += 1) {
+    for (let index = 0; index < 24; index += 1) {
       if (sessionId !== captureIdRef.current) return;
       if (!overlayVisibleRef.current) return;
       if (!loggedStart && localSelectionStarted()) {
@@ -318,7 +370,7 @@ export function useScreenshotLoader({
       const leftDown = preCapture.leftDown === true;
       const completed = preCapture.completed === true;
       if (dragDistance < 3 && leftDown) {
-        await wait(16);
+        await wait(33);
         continue;
       }
       if (dragDistance < 3 && !completed) return;
@@ -341,13 +393,12 @@ export function useScreenshotLoader({
         );
         return;
       }
-      await wait(16);
+      await wait(33);
     }
   };
 
   const initCanvas = (img: ScreenshotImageSource, sessionId?: number, remoteSessionId?: string | number) => {
-    const width = Math.max(1, window.innerWidth);
-    const height = Math.max(1, window.innerHeight);
+    const { width, height } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
 
     const offscreen = document.createElement("canvas");
     offscreen.width = width;
@@ -384,11 +435,11 @@ export function useScreenshotLoader({
     const wasNativeOverlayVisible = nativeOverlayVisibleRef.current;
     logScreenshotPerf(`frontend image ready bytes=${bytes || 0}`);
     logScreenshotBaseline(remoteSessionId || sessionId, "image_ready", performance.now() - frontendSessionStartedAtRef.current, `bytes=${bytes || 0}`);
+    logViewportInstrumentation("image_ready_metrics", remoteSessionId || sessionId, img);
 
     const canvas = document.querySelector("canvas");
     if (canvas) {
-      const width = Math.max(1, window.innerWidth);
-      const height = Math.max(1, window.innerHeight);
+      const { width, height } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
       canvas.width = width;
       canvas.height = height;
       canvas.style.width = `${width}px`;
@@ -696,17 +747,48 @@ export function useScreenshotLoader({
     return { width: fallbackWidth, height: fallbackHeight, imageBytes: fallbackWidth * fallbackHeight * 4 };
   };
 
-  const loadImageFromBytes = (raw: unknown, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
+  const loadImageFromBytes = async (raw: unknown, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
     if (sessionId !== captureIdRef.current) return false;
     const data = normalizeScreenshotBytes(raw);
     if (!data || data.byteLength < 1000) return false;
-    const objectUrl = URL.createObjectURL(new Blob([data], { type: "image/png" }));
-    loadImageFromSource(objectUrl, sessionId, bytes || data.byteLength, remoteSessionId, true);
-    return true;
+    const decodeStartedAt = performance.now();
+    try {
+      const bitmap = await createImageBitmap(new Blob([data], { type: "image/png" }));
+      if (sessionId !== captureIdRef.current) {
+        bitmap.close();
+        return false;
+      }
+      const sourceCanvas = document.createElement("canvas");
+      sourceCanvas.width = bitmap.width;
+      sourceCanvas.height = bitmap.height;
+      const sourceCtx = sourceCanvas.getContext("2d");
+      if (!sourceCtx) {
+        bitmap.close();
+        return false;
+      }
+      sourceCtx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      logScreenshotBaseline(
+        remoteSessionId || sessionId,
+        "png_bitmap_ready",
+        performance.now() - frontendSessionStartedAtRef.current,
+        `decode_ms=${Math.round(performance.now() - decodeStartedAt)} bytes=${bytes || data.byteLength}`,
+      );
+      completeImageLoad(sourceCanvas, sessionId, bytes || data.byteLength, remoteSessionId);
+      return true;
+    } catch (error: any) {
+      logScreenshotBaseline(
+        remoteSessionId || sessionId,
+        "png_bitmap_failed",
+        performance.now() - frontendSessionStartedAtRef.current,
+        `reason=${error?.message || String(error)}`,
+      );
+      return false;
+    }
   };
 
 
-  const loadImageFromRgbaBytes = (raw: unknown, width: number, height: number, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
+  const loadImageFromRgbaBytes = async (raw: unknown, width: number, height: number, sessionId: number, bytes?: number, remoteSessionId?: string | number) => {
     if (sessionId !== captureIdRef.current) return false;
     const data = normalizeScreenshotBytes(raw);
     const expectedBytes = width * height * 4;
@@ -720,12 +802,34 @@ export function useScreenshotLoader({
       return false;
     }
     const rgbaStartedAt = performance.now();
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await createImageBitmap(
+        new ImageData(new Uint8ClampedArray(data.buffer, data.byteOffset, expectedBytes), width, height),
+      );
+    } catch (error: any) {
+      logScreenshotBaseline(
+        remoteSessionId || sessionId,
+        "rgba_bitmap_failed",
+        performance.now() - frontendSessionStartedAtRef.current,
+        `reason=${error?.message || String(error)} bytes=${bytes || data.byteLength}`,
+      );
+      return false;
+    }
+    if (sessionId !== captureIdRef.current) {
+      bitmap.close();
+      return false;
+    }
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = width;
     sourceCanvas.height = height;
     const sourceCtx = sourceCanvas.getContext("2d");
-    if (!sourceCtx) return false;
-    sourceCtx.putImageData(new ImageData(new Uint8ClampedArray(data.buffer, data.byteOffset, expectedBytes), width, height), 0, 0);
+    if (!sourceCtx) {
+      bitmap.close();
+      return false;
+    }
+    sourceCtx.drawImage(bitmap, 0, 0);
+    bitmap.close();
     logScreenshotBaseline(remoteSessionId || sessionId, "rgba_canvas_ready", performance.now() - frontendSessionStartedAtRef.current, `build_ms=${Math.round(performance.now() - rgbaStartedAt)} bytes=${bytes || data.byteLength}`);
     completeImageLoad(sourceCanvas, sessionId, bytes || data.byteLength, remoteSessionId);
     return true;
@@ -754,7 +858,7 @@ export function useScreenshotLoader({
       try {
         const info = getSharedBufferImageInfo(directBuffer, width, height);
         logScreenshotBaseline(remoteSessionId, "shared_buffer_received", performance.now() - frontendSessionStartedAtRef.current, `source=direct bytes=${directBuffer.byteLength} image_bytes=${info.imageBytes} size=${info.width}x${info.height}`);
-        return loadImageFromRgbaBytes(directBuffer, info.width, info.height, sessionId, info.imageBytes, remoteSessionId);
+        return await loadImageFromRgbaBytes(directBuffer, info.width, info.height, sessionId, info.imageBytes, remoteSessionId);
       } finally {
         directReceiver.release(directBuffer);
       }
@@ -803,7 +907,7 @@ export function useScreenshotLoader({
     try {
       const info = getSharedBufferImageInfo(buffer, width, height);
       logScreenshotBaseline(remoteSessionId, "shared_buffer_received", performance.now() - frontendSessionStartedAtRef.current, `source=${receiver.source === "pending" ? "late-direct" : "requested"} bytes=${buffer.byteLength} image_bytes=${info.imageBytes} size=${info.width}x${info.height}`);
-      return loadImageFromRgbaBytes(buffer, info.width, info.height, sessionId, info.imageBytes, remoteSessionId);
+      return await loadImageFromRgbaBytes(buffer, info.width, info.height, sessionId, info.imageBytes, remoteSessionId);
     } finally {
       receiver.release(buffer);
     }
@@ -816,7 +920,7 @@ export function useScreenshotLoader({
       const rawStartedAt = performance.now();
       const raw = await invoke<unknown>("get_fullscreen_rgba_bytes", { sessionId: remoteSessionId == null ? null : String(remoteSessionId) });
       logScreenshotBaseline(remoteSessionId || sessionId, "rgba_fetch_end", performance.now() - frontendSessionStartedAtRef.current, `fetch_ms=${Math.round(performance.now() - rawStartedAt)} bytes=${bytes || 0} size=${width}x${height}`);
-      if (loadImageFromRgbaBytes(raw, width, height, sessionId, bytes, remoteSessionId)) return;
+      if (await loadImageFromRgbaBytes(raw, width, height, sessionId, bytes, remoteSessionId)) return;
     } catch (rawErr) {
       console.warn("[ScreenshotPage] rgba screenshot fetch failed, falling back to PNG", rawErr);
     }
@@ -829,7 +933,7 @@ export function useScreenshotLoader({
       const binaryStartedAt = performance.now();
       const binary = await invoke<unknown>("get_fullscreen_image_bytes");
       logScreenshotBaseline(remoteSessionId || sessionId, "binary_fetch_end", performance.now() - frontendSessionStartedAtRef.current, `fetch_ms=${Math.round(performance.now() - binaryStartedAt)} bytes=${bytes || 0}`);
-      if (loadImageFromBytes(binary, sessionId, bytes, remoteSessionId)) return;
+      if (await loadImageFromBytes(binary, sessionId, bytes, remoteSessionId)) return;
     } catch (binaryErr) {
       console.warn("[ScreenshotPage] binary screenshot fetch failed, falling back to base64", binaryErr);
     }

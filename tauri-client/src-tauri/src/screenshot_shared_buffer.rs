@@ -1,5 +1,7 @@
 #[cfg(target_os = "windows")]
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, RecvTimeoutError};
+#[cfg(target_os = "windows")]
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -31,6 +33,8 @@ impl ScreenshotSharedBufferPostResult {
 
 const SCREENSHOT_TRANSFER_TYPE: &str = "screenshot";
 const IMAGE_EXTRA_INFO_BYTES: usize = 8;
+#[cfg(target_os = "windows")]
+const SHARED_BUFFER_POST_TIMEOUT_MS: u64 = 500;
 
 pub fn build_rgba_shared_buffer_payload(
     frame: &crate::screenshot_native::RgbaFrame,
@@ -171,7 +175,7 @@ pub fn post_rgba_frame_to_webview(
         return Err(format!("failed to enter WebView2 context: {error}"));
     }
 
-    match receiver.recv() {
+    match receiver.recv_timeout(Duration::from_millis(SHARED_BUFFER_POST_TIMEOUT_MS)) {
         Ok(Ok(())) => Ok(ScreenshotSharedBufferPostResult {
             posted: true,
             transfer_type,
@@ -182,7 +186,12 @@ pub fn post_rgba_frame_to_webview(
             reason: None,
         }),
         Ok(Err(error)) => Err(error),
-        Err(_) => Err("failed to receive WebView2 SharedBuffer post result".to_string()),
+        Err(RecvTimeoutError::Timeout) => Err(format!(
+            "timed out after {SHARED_BUFFER_POST_TIMEOUT_MS}ms waiting for WebView2 SharedBuffer post"
+        )),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("failed to receive WebView2 SharedBuffer post result".to_string())
+        }
     }
 }
 
@@ -224,5 +233,11 @@ mod tests {
         };
 
         assert!(build_rgba_shared_buffer_payload(&frame).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shared_buffer_post_wait_is_bounded() {
+        assert!((1..=1000).contains(&SHARED_BUFFER_POST_TIMEOUT_MS));
     }
 }

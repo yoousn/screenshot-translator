@@ -26,6 +26,8 @@ echo(
 
 call :kill_running || goto :fail
 call :check_inputs || goto :fail
+call :ensure_node_dependencies || goto :fail
+call :sync_icons || goto :fail
 call :prepare_output || goto :fail
 call :build_tauri || goto :fail
 call :copy_installers || goto :fail
@@ -108,7 +110,29 @@ if not exist "%ROOT%models\rapidocr\ch_PP-OCRv5_det_mobile.onnx" (
   echo([error] Missing RapidOCR models: %ROOT%models\rapidocr
   exit /b 1
 )
+if not exist "%ROOT%scripts\sync-app-icons.ps1" (
+  echo([error] Missing icon sync helper: %ROOT%scripts\sync-app-icons.ps1
+  exit /b 1
+)
+if not exist "%ROOT%scripts\ensure-node-dependencies.bat" (
+  echo([error] Missing dependency helper: %ROOT%scripts\ensure-node-dependencies.bat
+  exit /b 1
+)
 echo([prepare] Resource check passed
+echo(
+exit /b 0
+
+:ensure_node_dependencies
+call "%ROOT%scripts\ensure-node-dependencies.bat" "%CLIENT_DIR%"
+exit /b %errorlevel%
+
+:sync_icons
+echo([prepare] Synchronizing application icons ...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\sync-app-icons.ps1" -Source "%TAURI_DIR%\icons\icon.png" -IconsDir "%TAURI_DIR%\icons"
+if errorlevel 1 (
+  echo([error] Failed to synchronize application icons
+  exit /b 1
+)
 echo(
 exit /b 0
 

@@ -373,22 +373,88 @@ export function useScreenshotActions({
           logSaveBaseline("dialog_cancel_exit", performance.now() - actionStartedAt);
           return;
         }
+        const saveSessionId = displayedSessionIdRef.current;
+        const physicalBounds = displayedPhysicalBoundsRef.current;
+        const canSaveFromCache = (
+          annotationsRef.current.length === 0
+          && !translatedResult
+          && !!saveSessionId
+          && !!physicalBounds
+          && !!canvasRef.current
+          && !!imageRef.current
+        );
+        const overlayLabel = screenshotWindow?.label || getCurrentWindow().label;
+
+        if (canSaveFromCache) {
+          const bounds = getDesktopPhysicalSelection({
+            canvas: canvasRef.current,
+            image: imageRef.current as any,
+            rect: rectRef.current,
+            physicalBounds,
+          });
+          const fallbackInput = {
+            canvas: canvasRef.current,
+            image: imageRef.current,
+            rect: { ...rectRef.current },
+          };
+          const writeStartedAt = performance.now();
+          logSaveBaseline("cache_save_start", writeStartedAt - actionStartedAt, `path=${savePath}`);
+          const savePromise = invoke<string>("save_selection_from_cache", {
+            sessionId: saveSessionId,
+            rect: {
+              x: bounds.x - physicalBounds.x,
+              y: bounds.y - physicalBounds.y,
+              w: bounds.width,
+              h: bounds.height,
+            },
+            path: savePath,
+          });
+
+          message.destroy();
+          await invoke("cancel_screenshot", { label: overlayLabel, restoreMain: false });
+          resetScreenshotState();
+          logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt, "route=cache");
+
+          void savePromise
+            .then((savedPath) => {
+              const writeMs = Math.round(performance.now() - writeStartedAt);
+              logSaveBaseline("cache_save_end", performance.now() - actionStartedAt, `write_ms=${writeMs} path=${savedPath}`);
+              logScreenshotPerf(`save-as cache total=${Math.round(performance.now() - actionStartedAt)}ms choose=${chooseMs}ms write=${writeMs}ms path=${savedPath}`);
+            })
+            .catch(async (cacheError) => {
+              logSaveBaseline("cache_save_fallback", performance.now() - actionStartedAt, `error=${String(cacheError)}`);
+              try {
+                const fallback = cropSelectionFromLoadedImage(fallbackInput);
+                const savedPath = await invoke<string>("write_image_to_file", { imageBase64: fallback.base64, path: savePath });
+                logSaveBaseline("cache_save_fallback_end", performance.now() - actionStartedAt, `path=${savedPath}`);
+              } catch (fallbackError: any) {
+                message.error(`保存失败：${fallbackError?.message || fallbackError || cacheError}`);
+              }
+            });
+          return;
+        }
+
         const outputStartedAt = performance.now();
-        logSaveBaseline("output_render_start", outputStartedAt - actionStartedAt);
+        logSaveBaseline("output_render_start", outputStartedAt - actionStartedAt, "route=rendered");
         const base64 = await tryWgcSelectedOutputBase64Candidate("save") ?? await getOutputBase64("save");
         const outputMs = Math.round(performance.now() - outputStartedAt);
         logSaveBaseline("output_render_end", performance.now() - actionStartedAt, `output_ms=${outputMs} bytes=${Math.round(base64.length * 0.75)}`);
         const writeStartedAt = performance.now();
-        logSaveBaseline("file_write_start", writeStartedAt - actionStartedAt, `path=${savePath}`);
-        const savedPath = await invoke<string>("write_image_to_file", { imageBase64: base64, path: savePath });
-        const writeMs = Math.round(performance.now() - writeStartedAt);
-        logSaveBaseline("file_write_end", performance.now() - actionStartedAt, `write_ms=${writeMs} path=${savedPath}`);
-        logScreenshotPerf(`save-as total=${Math.round(performance.now() - actionStartedAt)}ms choose=${chooseMs}ms output=${outputMs}ms write=${writeMs}ms path=${savedPath}`);
-        await emit("screenshot-captured", base64);
+        logSaveBaseline("file_write_start", writeStartedAt - actionStartedAt, `path=${savePath} route=rendered`);
+        const savePromise = invoke<string>("write_image_to_file", { imageBase64: base64, path: savePath });
         message.destroy();
-        await invoke("cancel_screenshot", { label: screenshotWindow?.label || getCurrentWindow().label, restoreMain: false });
+        await invoke("cancel_screenshot", { label: overlayLabel, restoreMain: false });
         resetScreenshotState();
-        logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt);
+        logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt, "route=rendered");
+        void savePromise
+          .then((savedPath) => {
+            const writeMs = Math.round(performance.now() - writeStartedAt);
+            logSaveBaseline("file_write_end", performance.now() - actionStartedAt, `write_ms=${writeMs} path=${savedPath}`);
+            logScreenshotPerf(`save-as rendered total=${Math.round(performance.now() - actionStartedAt)}ms choose=${chooseMs}ms output=${outputMs}ms write=${writeMs}ms path=${savedPath}`);
+          })
+          .catch((error: any) => {
+            message.error(`保存失败：${error?.message || error}`);
+          });
         return;
       }
       const wgcCopiedBase64 = action === "copy" ? await tryWgcSelectedOutputBase64Candidate("copy") : null;

@@ -7,22 +7,59 @@ type PhysicalSelectionInput = {
   rect: Rect;
 };
 
-export const getPhysicalSelection = ({ canvas, image, rect }: PhysicalSelectionInput) => {
-  if (!canvas || !image || rect.w <= 0 || rect.h <= 0) throw new Error("选区范围无效");
-  const imageWidth = image instanceof HTMLImageElement ? image.naturalWidth : image.width;
-  const imageHeight = image instanceof HTMLImageElement ? image.naturalHeight : image.height;
-  const scaleX = imageWidth / canvas.width;
-  const scaleY = imageHeight / canvas.height;
-  const x = Math.max(0, Math.min(imageWidth - 1, Math.round(rect.x * scaleX)));
-  const y = Math.max(0, Math.min(imageHeight - 1, Math.round(rect.y * scaleY)));
-  const w = Math.max(1, Math.min(imageWidth - x, Math.round(rect.w * scaleX)));
-  const h = Math.max(1, Math.min(imageHeight - y, Math.round(rect.h * scaleY)));
-  return { x, y, w, h };
+const clampSelectionToTarget = (
+  rect: Rect,
+  canvasWidth: number,
+  canvasHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+) => {
+  const safeCanvasWidth = Math.max(1, canvasWidth);
+  const safeCanvasHeight = Math.max(1, canvasHeight);
+  const safeTargetWidth = Math.max(1, targetWidth);
+  const safeTargetHeight = Math.max(1, targetHeight);
+  const scaleX = safeTargetWidth / safeCanvasWidth;
+  const scaleY = safeTargetHeight / safeCanvasHeight;
+  const left = rect.x * scaleX;
+  const top = rect.y * scaleY;
+  const right = (rect.x + rect.w) * scaleX;
+  const bottom = (rect.y + rect.h) * scaleY;
+
+  const x = Math.max(0, Math.min(safeTargetWidth - 1, Math.round(left)));
+  const y = Math.max(0, Math.min(safeTargetHeight - 1, Math.round(top)));
+  const clampedRight = Math.max(x + 1, Math.min(safeTargetWidth, Math.round(right)));
+  const clampedBottom = Math.max(y + 1, Math.min(safeTargetHeight, Math.round(bottom)));
+
+  return {
+    x,
+    y,
+    w: Math.max(1, Math.min(safeTargetWidth - x, clampedRight - x)),
+    h: Math.max(1, Math.min(safeTargetHeight - y, clampedBottom - y)),
+  };
 };
 
-export const getDesktopPhysicalSelection = (input: PhysicalSelectionInput & { physicalBounds: ScreenshotPhysicalBounds | null | undefined }) => {
-  if (!input.physicalBounds) throw new Error("截图物理屏幕范围不可用");
-  const local = getPhysicalSelection(input);
+export const getPhysicalSelection = ({ canvas, image, rect }: PhysicalSelectionInput) => {
+  if (!canvas || !image || rect.w <= 0 || rect.h <= 0) {
+    throw new Error("Selection bounds are invalid");
+  }
+  const imageWidth = image instanceof HTMLImageElement ? image.naturalWidth : image.width;
+  const imageHeight = image instanceof HTMLImageElement ? image.naturalHeight : image.height;
+  return clampSelectionToTarget(rect, canvas.width, canvas.height, imageWidth, imageHeight);
+};
+
+export const getDesktopPhysicalSelection = (
+  input: PhysicalSelectionInput & { physicalBounds: ScreenshotPhysicalBounds | null | undefined },
+) => {
+  if (!input.physicalBounds) {
+    throw new Error("Screenshot physical bounds are unavailable");
+  }
+  const local = clampSelectionToTarget(
+    input.rect,
+    input.canvas?.width || window.innerWidth,
+    input.canvas?.height || window.innerHeight,
+    input.physicalBounds.width,
+    input.physicalBounds.height,
+  );
   return {
     x: input.physicalBounds.x + local.x,
     y: input.physicalBounds.y + local.y,
@@ -30,14 +67,15 @@ export const getDesktopPhysicalSelection = (input: PhysicalSelectionInput & { ph
     height: local.h,
   };
 };
+
 export const cropSelectionFromLoadedImage = (input: PhysicalSelectionInput) => {
-  if (!input.image) throw new Error("截图图片未加载");
+  if (!input.image) throw new Error("Screenshot image is unavailable");
   const { x, y, w, h } = getPhysicalSelection(input);
   const cropCanvas = document.createElement("canvas");
   cropCanvas.width = w;
   cropCanvas.height = h;
   const ctx = cropCanvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 不可用");
+  if (!ctx) throw new Error("Canvas is unavailable");
   ctx.drawImage(input.image, x, y, w, h, 0, 0, w, h);
   return { base64: cropCanvas.toDataURL("image/png").split(",")[1] || "", x, y, w, h };
 };
@@ -46,7 +84,7 @@ export const loadPngImage = (base64: string) => new Promise<HTMLImageElement>((r
   const img = new Image();
   img.onload = () => resolve(img);
   img.onerror = reject;
-  img.src = "data:image/png;base64," + base64;
+  img.src = `data:image/png;base64,${base64}`;
 });
 
 type RenderEditedSelectionOptions = PhysicalSelectionInput & {
@@ -65,13 +103,13 @@ export const renderEditedSelectionBase64 = async ({
   fallbackColor,
   fallbackSize,
 }: RenderEditedSelectionOptions) => {
-  if (!image) throw new Error("截图图片未加载");
+  if (!image) throw new Error("Screenshot image is unavailable");
   const physical = getPhysicalSelection({ canvas, image, rect });
   const cropCanvas = document.createElement("canvas");
   cropCanvas.width = physical.w;
   cropCanvas.height = physical.h;
   const ctx = cropCanvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 不可用");
+  if (!ctx) throw new Error("Canvas is unavailable");
 
   if (translatedResult) {
     const translatedImage = await loadPngImage(translatedResult);

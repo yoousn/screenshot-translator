@@ -4146,3 +4146,210 @@ Alt+A
 ### Next Steps
 - Keep the new transport-policy assertion as a deployment gate so future server deployments cannot silently restore pinned transport for official providers.
 - Separately normalize the N100 Python dependency environment and deployment console encoding.
+
+## Chapter 283: Translation Spinner And Optimistic Cached Screenshot Save (2026-06-13)
+
+### Goals Completed
+- Made the translation loading spinner remain visible and centered for small selections, scale with the selection short edge, and remain square through `boxSizing: "border-box"`.
+- Added `save_selection_from_cache`, which clones the session-matched cached RGBA frame before background work, crops frame-local physical coordinates, encodes PNG/JPEG, and writes without base64 IPC.
+- Changed the cached PNG path to RGB24 `Default + Adaptive` lossless encoding and JPEG quality 92.
+- Changed the base64 fallback PNG recompression from `Best` to `Default` while preserving alpha when the rendered output requires it.
+- Made pure unedited screenshot saves close the overlay optimistically and complete cached-frame encoding/writing in the background.
+- Preserved rendered-output saving for annotated or translated screenshots so cached raw pixels cannot discard user edits.
+- Preserved multi-monitor correctness by converting authoritative desktop physical bounds back to cached-frame-local coordinates before invoking the cached save command.
+- Prevented a failed JPEG re-encode from writing PNG bytes under a `.jpg` extension.
+
+### External Findings
+- The `image` crate documents `PngEncoder::new_with_quality` compression/filter choices as encoding hints; `Default + Adaptive` remains PNG lossless while avoiding the CPU cost of `Best`.
+- MDN documents `box-sizing: border-box` as including borders inside the declared width and height, which keeps the spinner's rendered outer box square.
+
+### Modified Files
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src/components/screenshot/TranslationLoadingOverlay.tsx`
+- `tauri-client/src/hooks/useScreenshotActions.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not route annotated or translated screenshots through the raw RGBA cache because that would discard edits.
+- Did not change copy, OCR, translation, pin, or scroll-capture output behavior.
+- Did not run `npm run build`, a Tauri packaged build, or installer build, following the user's instruction not to build.
+
+### Validation
+- Passed: `cd tauri-client/src-tauri; cargo fmt --check`.
+- Passed: `cd tauri-client/src-tauri; cargo check`.
+- Passed: `cd tauri-client/src-tauri; cargo test`.
+- Passed: `cd tauri-client/src-tauri; cargo test image_save_reencode_tests -- --nocapture` with 5 tests.
+- Passed: cached `1661x884` opaque RGB PNG fixture decoded pixel-identically; Fast/NoFilter baseline was `5,874,693` bytes and cached Default/Adaptive RGB PNG was `10,856` bytes.
+- Passed: JPEG quality 92 fixture was `403,774` bytes.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `git diff --check` with existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- Real desktop QA is still required to measure save-dialog-confirmation to overlay disappearance against the `<100ms` target.
+- Real desktop QA is still required for spinner appearance at 100%, 125%, and 150% DPI and for cached save crop correctness on negative-coordinate secondary monitors.
+- Background save failure currently reports through the existing frontend message path after the overlay closes; a future product-wide native error-toast path would provide stronger recovery visibility.
+
+### Next Steps
+- Manually test pure PNG/JPEG save, annotated save, and translated save on the real desktop application.
+- Capture `cache_save_start`, `overlay_exit_after_save`, and `cache_save_end` logs to quantify perceived close latency separately from background encode/write latency.
+- Test small translation selections and negative-coordinate secondary-monitor crops at 100%, 125%, and 150% scaling.
+
+## Chapter 284: Deterministic Build Icon Synchronization (2026-06-13)
+
+### Goals Completed
+- Identified the intended build entry points and their output ownership:
+  - `构建EXE-不打安装包.bat` builds only the latest target-release executable.
+  - `build.bat --portable-only --no-launch` builds the complete portable runtime without installers.
+  - `构建MSI安装包.bat`, `构建NSIS安装包.bat`, and `完整发布-双安装包.bat` are installer/release entry points.
+- Made every direct Tauri build entry synchronize derived application icons from `src-tauri/icons/icon.png` before compilation.
+- Added explicit preflight checks so builds fail clearly when `scripts/sync-app-icons.ps1` is missing.
+- Ensured the root launcher's resource compilation also consumes the newly synchronized multi-size `icon.ico`.
+
+### Root Cause Findings
+- The existing build entry points did not invoke the repository's icon synchronization script, so changing the source icon did not guarantee that the executable and installer icons were refreshed.
+- The checked-in `icon.ico` was only about 529 bytes, while a validated synchronization run generated a multi-size `icon.ico` of about 56 KB.
+- The current `target/release/YsnTrans.exe` was written at `2026-06-13 18:36:19`, after the relevant screenshot source changes, so it is the latest currently built target-release artifact.
+- The complete portable executable and root launcher are currently absent; launching an older pinned shortcut or an executable from another location can therefore show an older build or cached icon.
+
+### Modified Files
+- `构建EXE-不打安装包.bat`
+- `构建MSI安装包.bat`
+- `构建NSIS安装包.bat`
+- `build.bat`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not run a frontend build, Tauri executable build, portable build, or installer build.
+- Did not clear the Windows icon cache or restart Explorer because those actions are disruptive.
+- Did not alter the user's source icon design.
+
+### Validation
+- Passed: `构建EXE-不打安装包.bat --dry-run --no-pause`.
+- Passed: `构建MSI安装包.bat --dry-run --no-pause`.
+- Passed: `构建NSIS安装包.bat --dry-run --no-pause`.
+- Passed: `scripts/sync-app-icons.ps1` against a temporary icon directory; generated PNG derivatives plus multi-size `icon.ico` and `taskbar.ico`.
+- Pending by user instruction: actual executable/portable/installer build.
+
+### Known Risks
+- Windows may continue showing a cached icon for an already pinned taskbar item or old shortcut even after rebuilding; re-pinning the newly built executable is the least disruptive recovery path.
+- `build.bat` does not currently expose a dry-run mode, so its full portable copy path was inspected but not executed.
+
+### Next Steps
+- Use `build.bat --portable-only --no-launch` for the next complete no-installer build.
+- After that build, launch or pin `release/YSN-Screenshot-Translator/YsnTrans.exe` rather than an older taskbar item.
+
+## Chapter 285: Screenshot Overlay Freeze Root-Cause Hardening (2026-06-13)
+
+### Goals Completed
+- Converted `get_fullscreen_image`, `get_fullscreen_image_bytes`, `get_fullscreen_rgba_bytes`, and `post_fullscreen_rgba_shared_buffer` from synchronous Tauri commands to async commands.
+- Moved full-screen PNG encoding, base64 conversion, RGBA cloning, and requested SharedBuffer posting into `spawn_blocking` workers.
+- Added `[screenshot-baseline]` start/end timing phases for every heavy fallback command, including worker status and error details.
+- Moved the initial direct SharedBuffer post onto a blocking worker so it no longer blocks the async screenshot runtime worker.
+- Replaced the SharedBuffer post's unbounded `recv()` wait with a bounded 500ms timeout and a regression test that prevents an unbounded wait from returning.
+- Changed PNG cache-miss encoding to clone the cached RGBA `Arc` under lock and perform full-screen encoding after releasing the global cache lock.
+- Changed RGBA and PNG-byte frontend fallback decoding to asynchronous `createImageBitmap` paths before drawing into the source canvas.
+- Stopped precomputing full-screen analysis `ImageData` when visual detection is disabled; when enabled, analysis capture now waits for idle time where supported.
+- Reduced pre-show drag polling from up to 48 calls every 16ms to up to 24 calls every 33ms while preserving approximately the same recovery window.
+- Moved native overlay full-screen dimmed-bitmap generation outside the bitmap-store lock.
+- Changed native overlay raise/cancel flows so their thread-reply waits do not hold the global native-session lock.
+
+### External Findings
+- Tauri's official command guide states that async commands are preferred for heavy work to avoid UI freezes, and commands without `async` execute on the main thread unless explicitly marked async.
+- Tauri's official guide recommends `tauri::ipc::Response` for large byte-array responses; the PNG and RGBA byte fallbacks continue using that optimized response type.
+- MDN documents `createImageBitmap` as returning a promise for asynchronous bitmap preparation; the fallback decode paths now use it instead of synchronous full-screen `putImageData`.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/screenshot_shared_buffer.rs`
+- `tauri-client/src-tauri/src/screenshot_native/native_overlay_session.rs`
+- `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not change PNG as the default screenshot format.
+- Did not change or remove `save_selection_from_cache`, cached direct saving, or rendered annotated/translated saving.
+- Did not change `Cargo.toml` or intentionally modify `YsnTrans.lnk`.
+- Did not lower native overlay start/command timeouts from 500ms to 120ms because real multi-monitor and high-DPI timing evidence is still required before tightening that fallback threshold.
+- Did not replace the masked screenshot canvas with a CSS overlay; that needs a separate visual/interaction regression chapter.
+- Did not run a frontend production build, Tauri executable build, portable build, or installer build.
+
+### Validation
+- Passed: static audit found no synchronous definitions of the four heavy fullscreen fallback commands.
+- Passed: static audit found no unbounded `receiver.recv()` in the SharedBuffer post path.
+- Passed: static audit found no `putImageData` in `useScreenshotLoader.ts`.
+- Passed: `cd tauri-client/src-tauri; cargo fmt --check`.
+- Passed: `cd tauri-client/src-tauri; cargo check`.
+- Passed: `cd tauri-client/src-tauri; cargo test`, including bounded SharedBuffer wait and native dimming regression coverage.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `git diff --check` with existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- The required real-desktop acceptance run remains pending: 20 repeated captures across single/multi-monitor and 125%/150% DPI, including a forced SharedBuffer miss.
+- Full-screen masked-canvas construction still performs one synchronous draw and dim fill before the WebView overlay becomes ready; it is a remaining frame-jank target, but no longer shares the same multi-second main-thread freeze risk as synchronous Rust fallback commands.
+- SharedBuffer creation and the final native copy must still enter the WebView2 context; the bounded worker wait prevents indefinite caller blocking, but real-device logs must confirm its normal latency.
+
+### Next Steps
+- Rebuild only when requested, then run the handoff's 20-capture real-desktop matrix and inspect the new `fullscreen_*_command_start/end`, `shared_buffer_*`, `rgba_canvas_ready`, `png_bitmap_ready`, and `mask_canvas_ready` phases.
+- Force a SharedBuffer miss and confirm the PNG fallback completes without a Windows “Not Responding” overlay.
+- If `mask_canvas_ready` remains above 100ms on 4K displays, move masked-canvas preparation to a dedicated offscreen/worker path in a separate focused chapter.
+
+## Chapter 286: Reliable Build Dependency Recovery And Windows Cache Cleanup (2026-06-13)
+
+### Goals Completed
+- Diagnosed the EXE-only build stopping after icon synchronization: the old `clean_all_cache.bat` had deleted `tauri-client/node_modules`, including the local Tauri CLI, and also removed the entire Rust `target` directory.
+- Added a shared Node dependency preflight helper that restores dependencies with `npm ci --no-audit --no-fund` when the local Tauri CLI is missing.
+- Integrated dependency recovery into every direct Tauri build entry before icon synchronization and compilation.
+- Reworked `clean_all_cache.bat` so normal cleanup preserves `node_modules`, release outputs, OCR models, resources, source files, user data, and Git history.
+- Added explicit `--deep`, `--project-only`, `--windows-only`, `--dry-run`, `--no-pause`, and `--no-explorer-restart` cleanup modes.
+- Made Windows icon/thumbnail cache cleanup run in fast repeated passes because Windows can automatically restart Explorer and recreate cache databases during deletion.
+- Treated cache files that disappear during cleanup as success instead of a false failure.
+- Added next-Windows-restart deletion scheduling for genuinely locked cache files.
+- Added a 3-second hard timeout for the Windows `ie4uinit.exe -ClearIconCache` helper.
+- Guaranteed Explorer recovery through a PowerShell `finally` block and a BAT-level fallback check.
+- Normalized all modified build and cleanup BAT files to Windows CRLF line endings.
+
+### Root Cause Findings
+- `tauri-client/node_modules` was absent, so `npm run tauri -- --version` failed because `tauri` was not recognized.
+- `tauri-client/src-tauri/target` was absent, so the next build must be a full Rust rebuild rather than an incremental build.
+- The old cache script silently deleted dependencies during ordinary cleanup while explicitly not clearing Windows caches or restarting Explorer.
+- Windows immediately recreates a minimal set of icon cache files after Explorer restarts; this is normal and must not be reported as cleanup failure.
+
+### Added Files
+- `scripts/ensure-node-dependencies.bat`
+
+### Modified Files
+- `构建EXE-不打安装包.bat`
+- `构建MSI安装包.bat`
+- `构建NSIS安装包.bat`
+- `build.bat`
+- `clean_all_cache.bat`
+- `refresh_windows_icon_cache.ps1`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not run an EXE, portable, MSI, NSIS, frontend production, or Tauri packaged build.
+- Did not delete OCR models, RapidOCR resources, FFmpeg resources, user data, or Git history.
+- Did not intentionally modify `Cargo.toml` or `YsnTrans.lnk`.
+
+### Validation
+- Passed: actual Windows icon/thumbnail cache cleanup returned exit code `0`.
+- Passed: Explorer restarted successfully; final observed Explorer PID was `9796`, started at `2026-06-13 19:20:08`.
+- Passed: restored missing Node dependencies with `npm ci`; installed 159 packages.
+- Passed: `cd tauri-client; npm run tauri -- --version` returned `tauri-cli 2.11.2`.
+- Passed: dependency helper reports `Node dependencies are ready` after recovery.
+- Passed: EXE-only, MSI, and NSIS build entry dry-runs.
+- Passed: default/project-only/windows-only cache-cleaner dry-runs.
+- Passed: PowerShell cache-helper syntax parse.
+- Passed: all modified BAT files contain zero bare-LF lines.
+- Passed: `git diff --check` with existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- The next executable build will be substantially slower because the old cleanup script already removed the full Rust `target` cache.
+- Windows recreates required icon/thumbnail cache databases after Explorer starts; seeing a small set of cache files afterward does not mean cleanup failed.
+- Automatic `npm ci` requires npm registry access when dependencies are missing.
+
+### Next Steps
+- Run the EXE-only build entry when ready; it will now restore missing Node dependencies automatically before icon synchronization and compilation.
+- Keep routine cache cleanup on the default mode; use `--deep` only when intentionally removing dependencies and release outputs.

@@ -56,11 +56,15 @@ fn now_epoch_millis_local() -> u64 {
         .unwrap_or(0)
 }
 
-fn ensure_png_extension(path: PathBuf) -> PathBuf {
+fn ensure_image_extension(path: PathBuf) -> PathBuf {
     if path
         .extension()
         .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("png"))
+        .map(|extension| {
+            extension.eq_ignore_ascii_case("png")
+                || extension.eq_ignore_ascii_case("jpg")
+                || extension.eq_ignore_ascii_case("jpeg")
+        })
         .unwrap_or(false)
     {
         path
@@ -69,6 +73,243 @@ fn ensure_png_extension(path: PathBuf) -> PathBuf {
         next.set_extension("png");
         next
     }
+}
+
+fn composite_rgba_on_white(
+    rgba: &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+) -> image::ImageBuffer<image::Rgb<u8>, Vec<u8>> {
+    let mut rgb = image::RgbImage::new(rgba.width(), rgba.height());
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let alpha = pixel[3] as u32;
+        let inv_alpha = 255_u32.saturating_sub(alpha);
+        let red = (pixel[0] as u32 * alpha + 255 * inv_alpha + 127) / 255;
+        let green = (pixel[1] as u32 * alpha + 255 * inv_alpha + 127) / 255;
+        let blue = (pixel[2] as u32 * alpha + 255 * inv_alpha + 127) / 255;
+        rgb.put_pixel(x, y, image::Rgb([red as u8, green as u8, blue as u8]));
+    }
+    rgb
+}
+
+fn reencode_image_for_path(png_bytes: &[u8], path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+
+    let image = image::load_from_memory(png_bytes)
+        .map_err(|error| format!("Decode screenshot image failed: {error}"))?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    let mut buffer = std::io::Cursor::new(Vec::new());
+
+    match extension.as_str() {
+        "jpg" | "jpeg" => {
+            let rgba = image.to_rgba8();
+            let rgb = if rgba.pixels().all(|pixel| pixel[3] == 255) {
+                image.to_rgb8()
+            } else {
+                composite_rgba_on_white(&rgba)
+            };
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 92)
+                .encode_image(&image::DynamicImage::ImageRgb8(rgb))
+                .map_err(|error| format!("Encode JPEG failed: {error}"))?;
+        }
+        _ => {
+            let rgba = image.to_rgba8();
+            let opaque = rgba.pixels().all(|pixel| pixel[3] == 255);
+            let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                &mut buffer,
+                image::codecs::png::CompressionType::Default,
+                image::codecs::png::FilterType::Adaptive,
+            );
+            if opaque {
+                let rgb = image.to_rgb8();
+                encoder
+                    .write_image(
+                        rgb.as_raw(),
+                        rgb.width(),
+                        rgb.height(),
+                        image::ColorType::Rgb8.into(),
+                    )
+                    .map_err(|error| format!("Encode PNG failed: {error}"))?;
+            } else {
+                encoder
+                    .write_image(
+                        rgba.as_raw(),
+                        rgba.width(),
+                        rgba.height(),
+                        image::ColorType::Rgba8.into(),
+                    )
+                    .map_err(|error| format!("Encode PNG failed: {error}"))?;
+            }
+        }
+    }
+
+    Ok(buffer.into_inner())
+}
+
+fn encode_selection_bytes_for_path(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(crate::screenshot_native::RgbaFrame::BYTES_PER_PIXEL))
+        .ok_or_else(|| "Selection dimensions overflow".to_string())?;
+    if rgba.len() != expected_len {
+        return Err(format!(
+            "RGBA buffer size mismatch: expected {expected_len}, got {}",
+            rgba.len()
+        ));
+    }
+
+    let rgb_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "RGB buffer dimensions overflow".to_string())?;
+    let mut rgb = Vec::with_capacity(rgb_len);
+    for pixel in rgba.chunks_exact(crate::screenshot_native::RgbaFrame::BYTES_PER_PIXEL) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    match extension.as_str() {
+        "jpg" | "jpeg" => {
+            let image = image::RgbImage::from_raw(width, height, rgb)
+                .ok_or_else(|| "RGB buffer size mismatch".to_string())?;
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 92)
+                .encode_image(&image::DynamicImage::ImageRgb8(image))
+                .map_err(|error| format!("Encode JPEG failed: {error}"))?;
+        }
+        _ => {
+            image::codecs::png::PngEncoder::new_with_quality(
+                &mut buffer,
+                image::codecs::png::CompressionType::Default,
+                image::codecs::png::FilterType::Adaptive,
+            )
+            .write_image(&rgb, width, height, image::ColorType::Rgb8.into())
+            .map_err(|error| format!("Encode PNG failed: {error}"))?;
+        }
+    }
+    Ok(buffer.into_inner())
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct ScreenshotPhysicalRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+fn crop_cached_rgba_selection(
+    frame: &crate::screenshot_native::RgbaFrame,
+    rect: ScreenshotPhysicalRect,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    frame
+        .validate()
+        .map_err(|error| format!("Invalid cached screenshot frame: {error}"))?;
+    let frame_width = i64::from(frame.width);
+    let frame_height = i64::from(frame.height);
+    if frame_width <= 0 || frame_height <= 0 || rect.w == 0 || rect.h == 0 {
+        return Err("Screenshot selection is empty".to_string());
+    }
+
+    let requested_left = i64::from(rect.x);
+    let requested_top = i64::from(rect.y);
+    let requested_right = requested_left
+        .checked_add(i64::from(rect.w))
+        .ok_or_else(|| "Screenshot selection right edge overflow".to_string())?;
+    let requested_bottom = requested_top
+        .checked_add(i64::from(rect.h))
+        .ok_or_else(|| "Screenshot selection bottom edge overflow".to_string())?;
+    let x = requested_left.clamp(0, frame_width);
+    let y = requested_top.clamp(0, frame_height);
+    let right = requested_right.clamp(0, frame_width);
+    let bottom = requested_bottom.clamp(0, frame_height);
+    if right <= x || bottom <= y {
+        return Err("Screenshot selection does not intersect cached frame".to_string());
+    }
+    let width = (right - x) as u32;
+    let height = (bottom - y) as u32;
+    let row_stride = (frame.width as usize)
+        .checked_mul(crate::screenshot_native::RgbaFrame::BYTES_PER_PIXEL)
+        .ok_or_else(|| "Screenshot row stride overflow".to_string())?;
+    let crop_row_bytes = (width as usize)
+        .checked_mul(crate::screenshot_native::RgbaFrame::BYTES_PER_PIXEL)
+        .ok_or_else(|| "Screenshot crop row size overflow".to_string())?;
+    let mut cropped = Vec::with_capacity(
+        crop_row_bytes
+            .checked_mul(height as usize)
+            .ok_or_else(|| "Screenshot crop size overflow".to_string())?,
+    );
+
+    for row in 0..height as usize {
+        let source_y = y as usize + row;
+        let start = source_y
+            .checked_mul(row_stride)
+            .and_then(|offset| {
+                offset.checked_add(
+                    (x as usize) * crate::screenshot_native::RgbaFrame::BYTES_PER_PIXEL,
+                )
+            })
+            .ok_or_else(|| "Screenshot crop offset overflow".to_string())?;
+        let end = start
+            .checked_add(crop_row_bytes)
+            .ok_or_else(|| "Screenshot crop end overflow".to_string())?;
+        cropped.extend_from_slice(
+            frame
+                .bytes
+                .get(start..end)
+                .ok_or_else(|| "Screenshot crop exceeds cached frame".to_string())?,
+        );
+    }
+
+    Ok((cropped, width, height))
+}
+
+async fn write_reencoded_image_to_path(
+    image_base64: String,
+    path: PathBuf,
+) -> Result<PathBuf, String> {
+    let output_path = ensure_image_extension(path);
+    let worker_path = output_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let is_png_output = worker_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("png"))
+            .unwrap_or(true);
+        let raw_bytes = BASE64_STANDARD
+            .decode(&image_base64)
+            .map_err(|error| format!("Decode base64 failed: {error}"))?;
+        let output_bytes = match reencode_image_for_path(&raw_bytes, &worker_path) {
+            Ok(bytes) => bytes,
+            Err(error) if is_png_output => {
+                eprintln!(
+                    "[screenshot] re-encode failed for {}, falling back to original PNG bytes: {}",
+                    worker_path.to_string_lossy(),
+                    error
+                );
+                raw_bytes
+            }
+            Err(error) => return Err(error),
+        };
+        fs::write(&worker_path, &output_bytes)
+            .map_err(|error| format!("Write file failed: {error}"))?;
+        Ok::<PathBuf, String>(worker_path)
+    })
+    .await
+    .map_err(|error| format!("Write image task failed: {error}"))?
 }
 
 const DEFAULT_IMAGE_SAVE_NAME_PREFIX: &str = "Ysn_";
@@ -319,6 +560,66 @@ fn get_matching_screenshot_rgba(session_id: Option<&str>) -> Result<ScreenshotRg
     }
 
     Ok(cached.frame)
+}
+
+fn screenshot_command_log_session_id() -> String {
+    get_screenshot_rgba()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|cached| cached.session_id.clone()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+async fn run_screenshot_blocking<T, F>(
+    session_id: String,
+    phase: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let started_at = Instant::now();
+    let start_phase = format!("{phase}_start");
+    log_screenshot_baseline(
+        &session_id,
+        &start_phase,
+        &started_at,
+        "thread=blocking-worker",
+    );
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(Ok(value)) => {
+            let end_phase = format!("{phase}_end");
+            log_screenshot_baseline(
+                &session_id,
+                &end_phase,
+                &started_at,
+                "thread=blocking-worker status=ok",
+            );
+            Ok(value)
+        }
+        Ok(Err(error)) => {
+            let end_phase = format!("{phase}_end");
+            log_screenshot_baseline(
+                &session_id,
+                &end_phase,
+                &started_at,
+                &format!("thread=blocking-worker status=error reason={error}"),
+            );
+            Err(error)
+        }
+        Err(error) => {
+            let message = format!("{phase} blocking task failed: {error}");
+            let end_phase = format!("{phase}_end");
+            log_screenshot_baseline(
+                &session_id,
+                &end_phase,
+                &started_at,
+                &format!("thread=blocking-worker status=join-error reason={error}"),
+            );
+            Err(message)
+        }
+    }
 }
 
 fn get_latest_screenshot_payload_store() -> &'static Mutex<Option<serde_json::Value>> {
@@ -854,15 +1155,16 @@ fn get_or_encode_screenshot_png() -> Result<Vec<u8>, String> {
             return Ok(bytes.clone());
         }
     }
-    if let Ok(guard) = get_screenshot_rgba().lock() {
-        if let Some(ref rgba) = *guard {
-            let rgba = &rgba.frame;
-            let png = encode_rgba_png(&rgba.bytes, rgba.width, rgba.height)?;
-            if let Ok(mut image_guard) = get_screenshot_image().lock() {
-                *image_guard = Some(png.clone());
-            }
-            return Ok(png);
+    let cached_rgba = get_screenshot_rgba()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|cached| cached.frame.clone()));
+    if let Some(rgba) = cached_rgba {
+        let png = encode_rgba_png(&rgba.bytes, rgba.width, rgba.height)?;
+        if let Ok(mut image_guard) = get_screenshot_image().lock() {
+            *image_guard = Some(png.clone());
         }
+        return Ok(png);
     }
     let mut path = app_data_dir();
     path.push("fullscreen_temp.png");
@@ -1607,11 +1909,22 @@ pub async fn start_screenshot_impl(
         *guard = None;
     }
 
-    match crate::screenshot_shared_buffer::post_rgba_frame_to_webview(
-        screenshot_win.as_ref().clone(),
-        session_id.clone(),
-        &rgba_image,
-    ) {
+    let direct_post_webview = screenshot_win.as_ref().clone();
+    let direct_post_session_id = session_id.clone();
+    let direct_post_rgba = rgba_image.clone();
+    let direct_post_result = match tokio::task::spawn_blocking(move || {
+        crate::screenshot_shared_buffer::post_rgba_frame_to_webview(
+            direct_post_webview,
+            direct_post_session_id,
+            &direct_post_rgba,
+        )
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("Direct SharedBuffer post task failed: {error}")),
+    };
+    match direct_post_result {
         Ok(posted) if posted.posted => log_screenshot_baseline(
             &session_id,
             "shared_buffer_direct_posted",
@@ -3467,36 +3780,63 @@ pub async fn cancel_screenshot(
 }
 
 #[tauri::command]
-pub fn get_fullscreen_image() -> Result<String, String> {
-    Ok(BASE64_STANDARD.encode(get_or_encode_screenshot_png()?))
+pub async fn get_fullscreen_image() -> Result<String, String> {
+    run_screenshot_blocking(
+        screenshot_command_log_session_id(),
+        "fullscreen_image_command",
+        || Ok(BASE64_STANDARD.encode(get_or_encode_screenshot_png()?)),
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn get_fullscreen_image_bytes() -> Result<tauri::ipc::Response, String> {
-    Ok(tauri::ipc::Response::new(get_or_encode_screenshot_png()?))
+pub async fn get_fullscreen_image_bytes() -> Result<tauri::ipc::Response, String> {
+    let bytes = run_screenshot_blocking(
+        screenshot_command_log_session_id(),
+        "fullscreen_image_bytes_command",
+        get_or_encode_screenshot_png,
+    )
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
-pub fn get_fullscreen_rgba_bytes(
+pub async fn get_fullscreen_rgba_bytes(
     session_id: Option<String>,
 ) -> Result<tauri::ipc::Response, String> {
-    let rgba = get_matching_screenshot_rgba(session_id.as_deref())?;
-    Ok(tauri::ipc::Response::new(rgba.bytes.clone()))
+    let log_session_id = session_id
+        .clone()
+        .unwrap_or_else(screenshot_command_log_session_id);
+    let bytes =
+        run_screenshot_blocking(log_session_id, "fullscreen_rgba_bytes_command", move || {
+            let rgba = get_matching_screenshot_rgba(session_id.as_deref())?;
+            Ok(rgba.bytes.clone())
+        })
+        .await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
-pub fn post_fullscreen_rgba_shared_buffer(
+pub async fn post_fullscreen_rgba_shared_buffer(
     webview: tauri::Webview,
     session_id: Option<String>,
 ) -> Result<crate::screenshot_shared_buffer::ScreenshotSharedBufferPostResult, String> {
     let started_at = Instant::now();
     let session_id = session_id.unwrap_or_else(|| "unknown".to_string());
-    let rgba = get_matching_screenshot_rgba(Some(&session_id))?;
-    let result = crate::screenshot_shared_buffer::post_rgba_frame_to_webview(
-        webview,
+    let worker_session_id = session_id.clone();
+    let result = run_screenshot_blocking(
         session_id.clone(),
-        &rgba,
-    );
+        "fullscreen_shared_buffer_post_command",
+        move || {
+            let rgba = get_matching_screenshot_rgba(Some(&worker_session_id))?;
+            crate::screenshot_shared_buffer::post_rgba_frame_to_webview(
+                webview,
+                worker_session_id,
+                &rgba,
+            )
+        },
+    )
+    .await;
     match &result {
         Ok(posted) if posted.posted => log_screenshot_baseline(
             &session_id,
@@ -3620,19 +3960,17 @@ pub fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn save_image_to_file(image_base64: String) -> Result<String, String> {
-    let bytes = BASE64_STANDARD
-        .decode(&image_base64)
-        .map_err(|e| format!("Decode base64 failed: {}", e))?;
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter("PNG Image", &["png"])
+        .add_filter("JPEG Image", &["jpg", "jpeg"])
         .set_file_name(default_image_save_file_name());
     if let Some(default_dir) = default_image_save_directory() {
         dialog = dialog.set_directory(default_dir);
     }
     let file_path = dialog.save_file().await;
     if let Some(file_handle) = file_path {
-        let path = ensure_png_extension(file_handle.path().to_path_buf());
-        fs::write(&path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
+        let path =
+            write_reencoded_image_to_path(image_base64, file_handle.path().to_path_buf()).await?;
         if !path.exists() {
             return Err("No display detected".to_string());
         }
@@ -3650,13 +3988,14 @@ pub async fn choose_image_save_path(app: tauri::AppHandle) -> Result<Option<Stri
     unregister_capture_escape_shortcut(&app);
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter("PNG Image", &["png"])
+        .add_filter("JPEG Image", &["jpg", "jpeg"])
         .set_file_name(default_image_save_file_name());
     if let Some(default_dir) = default_image_save_directory() {
         dialog = dialog.set_directory(default_dir);
     }
     let file_path = dialog.save_file().await;
     let result = file_path.map(|file_handle| {
-        ensure_png_extension(file_handle.path().to_path_buf())
+        ensure_image_extension(file_handle.path().to_path_buf())
             .to_string_lossy()
             .to_string()
     });
@@ -3688,7 +4027,7 @@ pub async fn choose_image_save_directory(
 }
 
 #[tauri::command]
-pub fn write_image_to_file(
+pub async fn write_image_to_file(
     app: tauri::AppHandle,
     image_base64: String,
     path: String,
@@ -3699,12 +4038,7 @@ pub fn write_image_to_file(
         image_base64.len().saturating_mul(3) / 4,
         path
     );
-    let bytes = BASE64_STANDARD
-        .decode(&image_base64)
-        .map_err(|e| format!("Decode base64 failed: {}", e))?;
-    let path = PathBuf::from(path);
-    let path = ensure_png_extension(PathBuf::from(path));
-    fs::write(&path, &bytes).map_err(|e| format!("Write file failed: {}", e))?;
+    let path = write_reencoded_image_to_path(image_base64, PathBuf::from(path)).await?;
     remember_image_save_directory(&path);
     let saved_path = path.to_string_lossy().to_string();
     let toast_app = app.clone();
@@ -3714,6 +4048,56 @@ pub fn write_image_to_file(
     });
     println!(
         "[screenshot-baseline] session=save-as phase=file_write_end elapsed_ms={} path={}",
+        started_at.elapsed().as_millis(),
+        saved_path
+    );
+    Ok(saved_path)
+}
+
+#[tauri::command]
+pub async fn save_selection_from_cache(
+    app: tauri::AppHandle,
+    session_id: String,
+    rect: ScreenshotPhysicalRect,
+    path: String,
+) -> Result<String, String> {
+    if session_id.trim().is_empty() {
+        return Err("Screenshot session id is required for cached save".to_string());
+    }
+
+    let started_at = Instant::now();
+    let frame = get_matching_screenshot_rgba(Some(&session_id))?;
+    let output_path = ensure_image_extension(PathBuf::from(path));
+    let worker_path = output_path.clone();
+    println!(
+        "[screenshot-baseline] session={} phase=cache_save_start elapsed_ms=0 rect={},{},{},{} path={}",
+        session_id,
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        output_path.to_string_lossy()
+    );
+
+    let saved_path = tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
+        let (cropped, width, height) = crop_cached_rgba_selection(&frame, rect)?;
+        let bytes = encode_selection_bytes_for_path(&cropped, width, height, &worker_path)?;
+        fs::write(&worker_path, &bytes).map_err(|error| format!("Write file failed: {error}"))?;
+        Ok(worker_path)
+    })
+    .await
+    .map_err(|error| format!("Save cached selection task failed: {error}"))??;
+
+    remember_image_save_directory(&saved_path);
+    let saved_path = saved_path.to_string_lossy().to_string();
+    let toast_app = app.clone();
+    let toast_path = saved_path.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = show_save_feedback_toast(toast_app, toast_path);
+    });
+    println!(
+        "[screenshot-baseline] session={} phase=cache_save_end elapsed_ms={} path={}",
+        session_id,
         started_at.elapsed().as_millis(),
         saved_path
     );
@@ -5835,5 +6219,162 @@ mod native_selected_output_copy_command_tests {
         assert_eq!(response["ocrInvoked"], false);
         assert_eq!(response["translationInvoked"], false);
         assert_eq!(response["diagnostics"]["isValidBridge"], true);
+    }
+}
+
+#[cfg(test)]
+mod image_save_reencode_tests {
+    use super::*;
+
+    fn build_ui_like_rgba(width: u32, height: u32) -> Vec<u8> {
+        let mut rgba = vec![255_u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let offset = ((y * width + x) * 4) as usize;
+                let stripe = ((x / 18) + (y / 14)) % 5;
+                let (r, g, b) = match stripe {
+                    0 => (248, 250, 252),
+                    1 => (226, 232, 240),
+                    2 => (203, 213, 225),
+                    3 => (148, 163, 184),
+                    _ => (15, 23, 42),
+                };
+                rgba[offset] = r;
+                rgba[offset + 1] = g;
+                rgba[offset + 2] = b;
+                rgba[offset + 3] = 255;
+            }
+        }
+
+        for y in 16..height.saturating_sub(16) {
+            let offset = ((y * width + 20) * 4) as usize;
+            rgba[offset] = 37;
+            rgba[offset + 1] = 99;
+            rgba[offset + 2] = 235;
+        }
+
+        for x in 24..width.saturating_sub(24) {
+            let offset = ((28 * width + x) * 4) as usize;
+            rgba[offset] = 239;
+            rgba[offset + 1] = 68;
+            rgba[offset + 2] = 68;
+        }
+
+        rgba
+    }
+
+    #[test]
+    fn ensure_image_extension_preserves_supported_types() {
+        assert_eq!(
+            ensure_image_extension(PathBuf::from("C:/tmp/shot.png")),
+            PathBuf::from("C:/tmp/shot.png")
+        );
+        assert_eq!(
+            ensure_image_extension(PathBuf::from("C:/tmp/shot.jpg")),
+            PathBuf::from("C:/tmp/shot.jpg")
+        );
+        assert_eq!(
+            ensure_image_extension(PathBuf::from("C:/tmp/shot.jpeg")),
+            PathBuf::from("C:/tmp/shot.jpeg")
+        );
+        assert_eq!(
+            ensure_image_extension(PathBuf::from("C:/tmp/shot")),
+            PathBuf::from("C:/tmp/shot.png")
+        );
+    }
+
+    #[test]
+    fn reencodes_png_losslessly_for_opaque_sample() {
+        let width = 1661;
+        let height = 884;
+        let rgba = build_ui_like_rgba(width, height);
+        let baseline_png = encode_rgba_png(&rgba, width, height).expect("baseline png");
+        let optimized_png =
+            reencode_image_for_path(&baseline_png, std::path::Path::new("sample.png"))
+                .expect("optimized png");
+
+        let baseline_decoded = image::load_from_memory(&baseline_png)
+            .expect("decode baseline")
+            .to_rgba8();
+        let optimized_decoded = image::load_from_memory(&optimized_png)
+            .expect("decode optimized")
+            .to_rgba8();
+
+        assert_eq!(baseline_decoded, optimized_decoded);
+        assert!(optimized_png.len() < baseline_png.len());
+        assert!(optimized_png.len() < 500 * 1024);
+        println!(
+            "png_size_before={} png_size_after={}",
+            baseline_png.len(),
+            optimized_png.len()
+        );
+    }
+
+    #[test]
+    fn reencodes_jpeg_when_requested() {
+        let width = 1661;
+        let height = 884;
+        let rgba = build_ui_like_rgba(width, height);
+        let baseline_png = encode_rgba_png(&rgba, width, height).expect("baseline png");
+        let jpeg = reencode_image_for_path(&baseline_png, std::path::Path::new("sample.jpg"))
+            .expect("jpeg");
+
+        assert!(jpeg.starts_with(&[0xFF, 0xD8, 0xFF]));
+        println!("jpeg_size={}", jpeg.len());
+    }
+
+    #[test]
+    fn crops_cached_rgba_with_frame_local_coordinates() {
+        let frame = crate::screenshot_native::RgbaFrame::new(
+            3,
+            2,
+            vec![
+                1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255, 13, 14, 15, 255, 16, 17,
+                18, 255,
+            ],
+        )
+        .expect("valid frame");
+
+        let (cropped, width, height) = crop_cached_rgba_selection(
+            &frame,
+            ScreenshotPhysicalRect {
+                x: 1,
+                y: 0,
+                w: 2,
+                h: 2,
+            },
+        )
+        .expect("crop");
+
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(
+            cropped,
+            vec![4, 5, 6, 255, 7, 8, 9, 255, 13, 14, 15, 255, 16, 17, 18, 255,]
+        );
+    }
+
+    #[test]
+    fn cached_png_encoding_is_lossless_for_opaque_rgb() {
+        let width = 1661;
+        let height = 884;
+        let rgba = build_ui_like_rgba(width, height);
+        let encoded = encode_selection_bytes_for_path(
+            &rgba,
+            width,
+            height,
+            std::path::Path::new("cache.png"),
+        )
+        .expect("cache png");
+        let decoded = image::load_from_memory(&encoded)
+            .expect("decode cache png")
+            .to_rgb8();
+        let expected_rgb: Vec<u8> = rgba
+            .chunks_exact(crate::screenshot_native::RgbaFrame::BYTES_PER_PIXEL)
+            .flat_map(|pixel| pixel[..3].iter().copied())
+            .collect();
+
+        assert_eq!(decoded.as_raw(), &expected_rgb);
+        assert!(encoded.len() < 500 * 1024);
+        println!("cache_png_size={}", encoded.len());
     }
 }

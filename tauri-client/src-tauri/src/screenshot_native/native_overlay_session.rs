@@ -466,6 +466,32 @@ pub fn raise_cpu_native_overlay_session(
     reason: impl Into<String>,
 ) -> NativeOverlaySessionDiagnostics {
     let reason = reason.into();
+    let (session_id, command_sender) = {
+        let Ok(guard) = session_store().lock() else {
+            return NativeOverlaySessionDiagnostics {
+                state: NativeOverlaySessionState::Failed,
+                fallback_reason: Some("native overlay session store lock failed".to_string()),
+                ..NativeOverlaySessionDiagnostics::empty()
+            };
+        };
+        let Some(session) = guard.as_ref() else {
+            return NativeOverlaySessionDiagnostics::empty();
+        };
+        if !matches!(
+            session.state,
+            NativeOverlaySessionState::Created
+                | NativeOverlaySessionState::Rendered
+                | NativeOverlaySessionState::Visible
+        ) {
+            return session.diagnostics();
+        }
+        (session.session_id.clone(), session.command_sender.clone())
+    };
+    let command_result =
+        send_overlay_thread_command(&command_sender, |reply| NativeOverlayThreadCommand::Raise {
+            reason: reason.clone(),
+            reply,
+        });
     let Ok(mut guard) = session_store().lock() else {
         return NativeOverlaySessionDiagnostics {
             state: NativeOverlaySessionState::Failed,
@@ -473,23 +499,13 @@ pub fn raise_cpu_native_overlay_session(
             ..NativeOverlaySessionDiagnostics::empty()
         };
     };
-    let Some(session) = guard.as_mut() else {
+    let Some(session) = guard
+        .as_mut()
+        .filter(|session| session.session_id == session_id)
+    else {
         return NativeOverlaySessionDiagnostics::empty();
     };
-    if !matches!(
-        session.state,
-        NativeOverlaySessionState::Created
-            | NativeOverlaySessionState::Rendered
-            | NativeOverlaySessionState::Visible
-    ) {
-        return session.diagnostics();
-    }
-    match send_overlay_thread_command(&session.command_sender, |reply| {
-        NativeOverlayThreadCommand::Raise {
-            reason: reason.clone(),
-            reply,
-        }
-    }) {
+    match command_result {
         Ok(()) => {
             session.state = NativeOverlaySessionState::Visible;
             session.fallback_reason = None;
@@ -506,15 +522,18 @@ pub fn cancel_cpu_native_overlay_session(
     reason: impl Into<String>,
 ) -> NativeOverlaySessionDiagnostics {
     let reason = reason.into();
-    let Ok(mut guard) = session_store().lock() else {
-        return NativeOverlaySessionDiagnostics {
-            state: NativeOverlaySessionState::Failed,
-            fallback_reason: Some("native overlay session store lock failed".to_string()),
-            ..NativeOverlaySessionDiagnostics::empty()
+    let mut session = {
+        let Ok(mut guard) = session_store().lock() else {
+            return NativeOverlaySessionDiagnostics {
+                state: NativeOverlaySessionState::Failed,
+                fallback_reason: Some("native overlay session store lock failed".to_string()),
+                ..NativeOverlaySessionDiagnostics::empty()
+            };
         };
-    };
-    let Some(mut session) = guard.take() else {
-        return NativeOverlaySessionDiagnostics::empty();
+        let Some(session) = guard.take() else {
+            return NativeOverlaySessionDiagnostics::empty();
+        };
+        session
     };
     cancel_session_on_owner_thread(&mut session, reason);
     session.diagnostics()
@@ -525,23 +544,23 @@ pub fn cancel_cpu_native_overlay_session_if_matches(
     reason: impl Into<String>,
 ) -> Option<NativeOverlaySessionDiagnostics> {
     let reason = reason.into();
-    let Ok(mut guard) = session_store().lock() else {
-        return Some(NativeOverlaySessionDiagnostics {
-            state: NativeOverlaySessionState::Failed,
-            fallback_reason: Some("native overlay session store lock failed".to_string()),
-            ..NativeOverlaySessionDiagnostics::empty()
-        });
-    };
-    let Some(session) = guard.as_ref() else {
-        return None;
-    };
-    if let Some(expected_session_id) = session_id {
-        if session.session_id != expected_session_id {
+    let mut session = {
+        let Ok(mut guard) = session_store().lock() else {
+            return Some(NativeOverlaySessionDiagnostics {
+                state: NativeOverlaySessionState::Failed,
+                fallback_reason: Some("native overlay session store lock failed".to_string()),
+                ..NativeOverlaySessionDiagnostics::empty()
+            });
+        };
+        let Some(session) = guard.as_ref() else {
             return None;
+        };
+        if let Some(expected_session_id) = session_id {
+            if session.session_id != expected_session_id {
+                return None;
+            }
         }
-    }
-    let Some(mut session) = guard.take() else {
-        return None;
+        guard.take()?
     };
     cancel_session_on_owner_thread(&mut session, reason);
     Some(session.diagnostics())

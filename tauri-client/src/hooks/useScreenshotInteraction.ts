@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
-import type { Rect, Annotation, Point, AnnotationTool } from "../types/screenshot";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { Rect, Annotation, Point, AnnotationTool, ScreenshotPhysicalBounds } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { invoke } from "@tauri-apps/api/core";
 import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
@@ -7,6 +8,7 @@ import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { getDetectionCandidatesAt } from "../utils/detectionCandidates";
 import { getPhysicalSelection } from "../utils/screenshotImage";
 import { logScreenshotPerf } from "../utils/debugLog";
+import { getViewportDevicePixelRatio } from "../utils/screenshotViewport";
 
 const MIN_AUTO_ACTION_DRAG_PX = 8;
 
@@ -31,6 +33,7 @@ interface UseScreenshotInteractionProps {
   frameInteractiveRef: React.RefObject<boolean>;
   imageReadyRef: React.RefObject<boolean>;
   activeSessionIdRef?: React.RefObject<string | null>;
+  displayedPhysicalBoundsRef?: React.RefObject<ScreenshotPhysicalBounds | null>;
   isSelecting: boolean;
   setIsSelecting: (selected: boolean) => void;
   isSelectingRef: React.RefObject<boolean>;
@@ -126,6 +129,7 @@ export function useScreenshotInteraction({
   frameInteractiveRef,
   imageReadyRef,
   activeSessionIdRef,
+  displayedPhysicalBoundsRef,
   isSelecting,
   setIsSelecting,
   isSelectingRef,
@@ -223,6 +227,26 @@ export function useScreenshotInteraction({
   const internalLastMouseRef = useRef({ x: 0, y: 0 });
   const lastMouseRef = sharedLastMouseRef || internalLastMouseRef;
   const firstPointerDownSessionRef = useRef<string | null>(null);
+
+  const logFirstPointerDownMetrics = (phase: string, pointerX: number, pointerY: number) => {
+    const viewportWidth = Math.max(1, window.innerWidth);
+    const viewportHeight = Math.max(1, window.innerHeight);
+    const devicePixelRatio = getViewportDevicePixelRatio();
+    const physicalBounds = displayedPhysicalBoundsRef?.current || null;
+    const currentWindow = getCurrentWindow();
+    const sessionKey = activeSessionIdRef?.current || "interaction";
+
+    void Promise.all([
+      currentWindow.outerPosition().catch(() => null),
+      currentWindow.innerSize().catch(() => null),
+      currentWindow.scaleFactor().catch(() => null),
+    ]).then(([outerPosition, innerSize, scaleFactor]) => {
+      logInteractionBaseline(
+        phase,
+        `x=${Math.round(pointerX)} y=${Math.round(pointerY)} dpr=${devicePixelRatio.toFixed(3)} viewport=${viewportWidth}x${viewportHeight} physical_bounds=${physicalBounds ? `${physicalBounds.x},${physicalBounds.y},${physicalBounds.width},${physicalBounds.height}` : "none"} outer_position=${outerPosition ? `${outerPosition.x},${outerPosition.y}` : "unknown"} inner_size=${innerSize ? `${innerSize.width}x${innerSize.height}` : "unknown"} scale_factor=${scaleFactor ?? "unknown"} session=${sessionKey}`,
+      );
+    });
+  };
 
   const drawRafRef = useRef<number | null>(null);
   const drawRectRef = useRef<Rect | null>(null);
@@ -491,6 +515,7 @@ export function useScreenshotInteraction({
     if (firstPointerDownSessionRef.current !== activeSession) {
       firstPointerDownSessionRef.current = activeSession;
       logInteractionBaseline("first_pointer_down", `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} image_ready=${imageReadyRef.current}`);
+      logFirstPointerDownMetrics("first_pointer_down_metrics", e.clientX, e.clientY);
     }
     focusScreenshotWindow();
     captureCanvasPointer(e.currentTarget, e.pointerId);

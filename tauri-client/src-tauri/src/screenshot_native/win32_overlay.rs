@@ -355,23 +355,12 @@ pub fn set_win32_overlay_bitmap(
         return Err(Win32OverlayError::InvalidConfig("bitmap bytes"));
     }
     let bgra_bytes: Arc<[u8]> = Arc::from(rgba_to_bgra_dib_bytes(bytes));
+    let dimmed_bgra_bytes: Arc<[u8]> = Arc::from(dim_bgra_dib_bytes(&bgra_bytes));
     if let Ok(mut guard) = overlay_bitmap_store().lock() {
         guard.insert(
             handle.hwnd(),
             Win32OverlayBitmap {
-                dimmed_bgra_bytes: Arc::from(
-                    bgra_bytes
-                        .chunks_exact(4)
-                        .flat_map(|chunk| {
-                            [
-                                chunk[0].saturating_sub(chunk[0] / 2),
-                                chunk[1].saturating_sub(chunk[1] / 2),
-                                chunk[2].saturating_sub(chunk[2] / 2),
-                                chunk[3],
-                            ]
-                        })
-                        .collect::<Vec<u8>>(),
-                ),
+                dimmed_bgra_bytes,
                 bgra_bytes,
                 width,
                 height,
@@ -446,6 +435,20 @@ fn rgba_to_bgra_dib_bytes(rgba: &[u8]) -> Vec<u8> {
         bgra.push(pixel[3]);
     }
     bgra
+}
+
+#[cfg(target_os = "windows")]
+fn dim_bgra_dib_bytes(bgra: &[u8]) -> Vec<u8> {
+    bgra.chunks_exact(4)
+        .flat_map(|chunk| {
+            [
+                chunk[0].saturating_sub(chunk[0] / 2),
+                chunk[1].saturating_sub(chunk[1] / 2),
+                chunk[2].saturating_sub(chunk[2] / 2),
+                chunk[3],
+            ]
+        })
+        .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1013,6 +1016,14 @@ mod tests {
                 48,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn dimmed_overlay_pixels_preserve_alpha_and_reduce_rgb() {
+        assert_eq!(
+            dim_bgra_dib_bytes(&[100, 80, 60, 255, 1, 2, 3, 4]),
+            vec![50, 40, 30, 255, 1, 1, 2, 4]
         );
     }
 }

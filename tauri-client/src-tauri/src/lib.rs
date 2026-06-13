@@ -416,6 +416,7 @@ pub fn run() {
             choose_image_save_path,
             choose_image_save_directory,
             write_image_to_file,
+            save_selection_from_cache,
             log_screenshot_perf,
             quick_fullscreen_capture,
             capture_live_region,
