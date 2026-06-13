@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YSN 部署助手</title>
+<style>
+:root {
+  --bg: #F5F4EF;
+  --panel: #FFFFFF;
+  --sidebar: #EFEDE6;
+  --ink: #2A2622;
+  --muted: #7C7568;
+  --line: #E5E1D8;
+  --accent: #D97757;
+  --accent-ink: #BE5A3B;
+  --accent-soft: #F7E9E2;
+  --green: #4F9D69;
+  --green-soft: #E6F0E8;
+  --amber: #C98A2B;
+  --amber-soft: #F6ECD8;
+  --red: #C0563F;
+  --red-soft: #F6E3DD;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(42,38,34,.05), 0 6px 20px rgba(42,38,34,.06);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  display: flex;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 侧边导航 */
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 16px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px 8px; }
+.brand .logo {
+  width: 34px; height: 34px; border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), #E89B7E);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 18px; box-shadow: var(--shadow);
+}
+.brand .name { font-weight: 650; font-size: 15px; letter-spacing: .2px; }
+.brand .sub { font-size: 11px; color: var(--muted); }
+.nav { display: flex; flex-direction: column; gap: 4px; }
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 12px; border-radius: 10px;
+  color: var(--muted); cursor: pointer; font-weight: 530;
+  transition: background .15s, color .15s;
+  user-select: none;
+}
+.nav-item .ico { font-size: 16px; width: 18px; text-align: center; }
+.nav-item:hover { background: rgba(217,119,87,.08); color: var(--ink); }
+.nav-item.active { background: var(--panel); color: var(--accent-ink); box-shadow: var(--shadow); }
+.sidebar .spacer { flex: 1; }
+.root-card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 11px; padding: 11px 12px; font-size: 12px;
+}
+.root-card .lbl { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+.root-card .val { word-break: break-all; font-weight: 560; color: var(--ink); }
+.root-card.bad .val { color: var(--red); }
+
+/* 主区 */
+.main { flex: 1; overflow-y: auto; height: 100vh; }
+.page { display: none; padding: 30px 38px 48px; max-width: 980px; }
+.page.active { display: block; }
+.page-head { margin-bottom: 22px; }
+.page-head h1 { font-size: 22px; font-weight: 680; letter-spacing: .2px; }
+.page-head p { color: var(--muted); margin-top: 5px; }
+
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 18px 20px; margin-bottom: 18px;
+}
+.card h2 { font-size: 14px; font-weight: 640; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+
+/* 根目录栏 */
+.rootbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.rootbar .path { flex: 1; min-width: 220px; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12.5px; color: var(--ink); word-break: break-all; }
+.chips { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+.chip {
+  font-size: 11.5px; padding: 4px 10px; border-radius: 20px;
+  background: var(--green-soft); color: var(--green); border: 1px solid transparent;
+  cursor: pointer;
+}
+.chip.off { background: #EEE; color: var(--muted); }
+
+/* 按钮 */
+.btn {
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  padding: 8px 15px; border-radius: 9px; cursor: pointer; font-size: 13px;
+  font-weight: 560; transition: all .15s; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.primary:hover { background: var(--accent-ink); color: #fff; }
+.btn.ghost { background: transparent; }
+.btn.sm { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+.btn.danger:hover { border-color: var(--red); color: var(--red); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 拖拽区 */
+.dropzone {
+  border: 2px dashed #D6D0C4; border-radius: var(--radius);
+  padding: 38px 20px; text-align: center; color: var(--muted);
+  transition: all .18s; cursor: pointer; background: #FBFAF7;
+}
+.dropzone:hover { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink); transform: scale(1.005); }
+.dropzone .big { font-size: 30px; margin-bottom: 8px; }
+.dropzone .hint { font-size: 12px; margin-top: 6px; opacity: .8; }
+
+/* 暂存列表 */
+.items { display: flex; flex-direction: column; gap: 0; }
+.item {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 13px 4px; border-bottom: 1px solid var(--line);
+}
+.item:last-child { border-bottom: none; }
+.item .grow { flex: 1; min-width: 0; }
+.item .fname { font-weight: 580; font-size: 13.5px; }
+.item .ftarget { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; word-break: break-all; margin-top: 2px; }
+.item .acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.badge { font-size: 11px; padding: 3px 9px; border-radius: 7px; font-weight: 600; white-space: nowrap; }
+.badge.replace { background: var(--green-soft); color: var(--green); }
+.badge.new { background: var(--accent-soft); color: var(--accent-ink); }
+.badge.choose { background: var(--amber-soft); color: var(--amber); }
+.badge.unfound { background: var(--red-soft); color: var(--red); }
+.badge.skip { background: #EEE; color: var(--muted); }
+.matchlist { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.matchlist .mrow {
+  font-family: ui-monospace, monospace; font-size: 12px; color: var(--ink);
+  background: #FBFAF7; border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px;
+}
+.matchlist .mrow:hover { border-color: var(--accent); background: var(--accent-soft); }
+.empty { text-align: center; color: var(--muted); padding: 26px 0; font-size: 13px; }
+
+.footer-bar { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.footer-bar .stat { flex: 1; font-size: 12.5px; color: var(--muted); }
+
+/* 结果 */
+.result { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.result .r { font-size: 12.5px; padding: 7px 11px; border-radius: 8px; display: flex; gap: 8px; }
+.result .r.ok { background: var(--green-soft); color: var(--green); }
+.result .r.no { background: var(--red-soft); color: var(--red); }
+
+/* 构建卡片 */
+.build-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.build-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 17px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 4px;
+}
+.build-card h3 { font-size: 14px; font-weight: 640; }
+.build-card p { font-size: 12px; color: var(--muted); min-height: 32px; }
+.build-card .run { align-self: flex-start; margin-top: 6px; }
+
+/* 日志面板 */
+.logwrap { margin-top: 4px; }
+.logbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.logbar .state { font-size: 12.5px; color: var(--muted); flex: 1; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }
+.dot.idle { background: #C7C1B5; }
+.dot.run { background: var(--amber); animation: pulse 1s infinite; }
+.dot.ok { background: var(--green); }
+.dot.err { background: var(--red); }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: .35; } 100% { opacity: 1; } }
+.console {
+  background: #262220; color: #E9E5DD; border-radius: 12px; padding: 16px 18px;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace; font-size: 12.5px;
+  line-height: 1.7; height: 340px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+.console .l-stage { color: #E8A87C; font-weight: 600; }
+.console .l-ok { color: #8FCFA1; font-weight: 600; }
+.console .l-err { color: #E59A86; font-weight: 600; }
+.console .l-rule { color: #57514B; }
+.console .placeholder { color: #6B645C; }
+
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: var(--ink); color: #fff; padding: 11px 20px; border-radius: 10px;
+  font-size: 13px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: all .25s; z-index: 50;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">⚡</div>
+      <div>
+        <div class="name">YSN 部署助手</div>
+        <div class="sub">deploy &amp; build</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" data-page="deploy"><span class="ico">📦</span> 文件部署</div>
+      <div class="nav-item" data-page="build"><span class="ico">🛠️</span> 构建发布</div>
+    </nav>
+    <div class="spacer"></div>
+    <div class="root-card" id="rootCard">
+      <div class="lbl">当前项目目录</div>
+      <div class="val" id="rootVal">未选择</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- 文件部署 -->
+    <section class="page active" id="page-deploy">
+      <div class="page-head">
+        <h1>文件部署</h1>
+        <p>拖入你下载的文件 → 自动按文件名定位到项目里的位置 → 确认后替换（原文件自动备份）。</p>
+      </div>
+
+      <div class="card">
+        <h2>📁 项目根目录</h2>
+        <div class="rootbar">
+          <div class="path" id="rootPath">未选择</div>
+          <button class="btn sm" onclick="api_browseRoot()">切换目录</button>
+        </div>
+        <div class="chips" id="rootChips"></div>
+      </div>
+
+      <div class="card">
+        <div class="dropzone" id="dropzone">
+          <div class="big">⬇️</div>
+          <div><b>拖拽文件到这里</b>，或点击选择文件</div>
+          <div class="hint">支持 .ts / .tsx / .rs / .css 等；名为 Foo.tsx.txt 会自动还原为 Foo.tsx</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>待部署文件 <span id="itemCount" style="color:var(--muted);font-weight:500"></span></h2>
+        <div class="items" id="items"><div class="empty">还没有文件，先拖入或选择。</div></div>
+        <div class="footer-bar">
+          <div class="stat" id="deployStat"></div>
+          <button class="btn ghost sm danger" onclick="api_clear()">清空列表</button>
+          <button class="btn primary" id="applyBtn" onclick="api_apply()">全部应用</button>
+        </div>
+        <div class="result" id="result"></div>
+      </div>
+    </section>
+
+    <!-- 构建发布 -->
+    <section class="page" id="page-build">
+      <div class="page-head">
+        <h1>构建发布</h1>
+        <p>点一下就开始构建，下方控制台实时滚动显示中文阶段日志与原始输出。</p>
+      </div>
+
+      <div class="build-grid" id="buildGrid"></div>
+
+      <div class="card logwrap" style="margin-top:18px">
+        <div class="logbar">
+          <div class="state"><span class="dot idle" id="buildDot"></span><span id="buildState">空闲中</span></div>
+          <button class="btn sm" onclick="clearConsole()">清屏</button>
+          <button class="btn sm danger" id="stopBtn" onclick="api_stop()" disabled>停止构建</button>
+        </div>
+        <div class="console" id="console"><span class="placeholder">构建日志会显示在这里…</span></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+let API = null;
+let STATE = null;
+let pollTimer = null;
+let logSince = 0;
+let sawLog = false;
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* 导航切换 */
+document.querySelectorAll(".nav-item").forEach(el => {
+  el.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    el.classList.add("active");
+    const pg = el.getAttribute("data-page");
+    document.getElementById("page-" + pg).classList.add("active");
+  });
+});
+
+/* ---------- 状态渲染 ---------- */
+function applyState(s) {
+  if (!s) return;
+  STATE = s;
+  renderRoot();
+  renderItems();
+  renderBuilds();
+}
+
+function renderRoot() {
+  const root = STATE.root || "";
+  const ok = STATE.client_ok;
+  document.getElementById("rootPath").textContent = root || "未选择";
+  document.getElementById("rootVal").textContent = root || "未选择";
+  const rc = document.getElementById("rootCard");
+  rc.classList.toggle("bad", !!root && !ok);
+
+  const chips = document.getElementById("rootChips");
+  chips.innerHTML = "";
+  (STATE.candidates || []).forEach(c => {
+    const on = (STATE.detected || []).indexOf(c) >= 0;
+    const div = document.createElement("div");
+    div.className = "chip" + (on ? "" : " off");
+    div.textContent = (on ? "✓ " : "✕ ") + c;
+    if (on) div.onclick = () => api_setRoot(c);
+    chips.appendChild(div);
+  });
+  if (root && !ok) {
+    const warn = document.createElement("div");
+    warn.className = "chip off";
+    warn.textContent = "⚠ 此目录下未找到 tauri-client\\package.json";
+    chips.appendChild(warn);
+  }
+}
+
+function badge(action) {
+  const map = {
+    replace: ["replace", "替换"],
+    new: ["new", "新增"],
+    choose: ["choose", "需选择"],
+    unfound: ["unfound", "未找到"],
+    skip: ["skip", "已跳过"],
+  };
+  const m = map[action] || ["skip", action];
+  return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
+}
+
+function renderItems() {
+  const box = document.getElementById("items");
+  const items = STATE.items || [];
+  document.getElementById("itemCount").textContent = items.length ? "（" + items.length + "）" : "";
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">还没有文件，先拖入或选择。</div>';
+    updateDeployStat();
+    return;
+  }
+  box.innerHTML = "";
+  items.forEach(it => {
+    const row = document.createElement("div");
+    row.className = "item";
+    let html = '<div class="grow">';
+    html += '<div class="fname">' + esc(it.name) + "</div>";
+    if (it.target) {
+      html += '<div class="ftarget">→ ' + esc(it.target) + "</div>";
+    } else if (it.action === "unfound") {
+      html += '<div class="ftarget">项目里没有同名文件，可指定目录作为新增</div>';
+    } else if (it.action === "choose") {
+      html += '<div class="ftarget">找到 ' + it.matches.length + ' 处同名，请选一个</div>';
+    }
+    if (it.action === "choose") {
+      html += '<div class="matchlist">';
+      it.matches.forEach((m, i) => {
+        html += '<div class="mrow" data-id="' + it.id + '" data-abs="' + encodeURIComponent(it.matches_abs[i]) + '"><span>' + esc(m) + "</span><span>选此</span></div>";
+      });
+      html += "</div>";
+    }
+    html += "</div>";
+    html += '<div class="acts">' + badge(it.action);
+    if (it.action === "unfound") {
+      html += '<button class="btn sm" onclick="api_chooseDir(' + it.id + ')">指定目录</button>';
+    }
+    if (it.action !== "skip") {
+      html += '<button class="btn sm ghost" onclick="api_skip(' + it.id + ')">跳过</button>';
+    }
+    html += '<button class="btn sm ghost danger" onclick="api_remove(' + it.id + ')">移除</button>';
+    html += "</div>";
+    row.innerHTML = html;
+    box.appendChild(row);
+  });
+  box.querySelectorAll(".mrow").forEach(el => {
+    el.addEventListener("click", () => {
+      const id = el.getAttribute("data-id");
+      const abs = decodeURIComponent(el.getAttribute("data-abs"));
+      api_pickMatch(id, abs);
+    });
+  });
+  updateDeployStat();
+}
+
+function updateDeployStat() {
+  const items = (STATE && STATE.items) || [];
+  let ready = 0, need = 0;
+  items.forEach(it => {
+    if (it.action === "replace" || it.action === "new") ready++;
+    else if (it.action === "choose" || it.action === "unfound") need++;
+  });
+  const stat = document.getElementById("deployStat");
+  let txt = "就绪 " + ready + " 个";
+  if (need) txt += "，待处理 " + need + " 个";
+  stat.textContent = items.length ? txt : "";
+  document.getElementById("applyBtn").disabled = ready === 0;
+}
+
+function renderResult(data) {
+  const box = document.getElementById("result");
+  box.innerHTML = "";
+  (data.results || []).forEach(r => {
+    const div = document.createElement("div");
+    div.className = "r " + (r.ok ? "ok" : "no");
+    let t = (r.ok ? "✓ " : "✕ ") + r.name + " — " + r.msg;
+    if (r.target) t += "  (" + r.target + ")";
+    div.textContent = t;
+    box.appendChild(div);
+  });
+  if (data.backup) {
+    const div = document.createElement("div");
+    div.className = "r ok";
+    div.textContent = "💾 原文件已备份到：" + data.backup;
+    box.appendChild(div);
+  }
+}
+
+/* ---------- 构建页 ---------- */
+function renderBuilds() {
+  const grid = document.getElementById("buildGrid");
+  if (grid.dataset.done) return;
+  grid.innerHTML = "";
+  (STATE.builds || []).forEach(b => {
+    const card = document.createElement("div");
+    card.className = "build-card";
+    card.innerHTML = '<h3>' + esc(b.title) + "</h3><p>" + esc(b.desc) + "</p>";
+    const btn = document.createElement("button");
+    btn.className = "btn primary sm run";
+    btn.textContent = "▶ 运行";
+    btn.onclick = () => api_startBuild(b.key);
+    card.appendChild(btn);
+    grid.appendChild(card);
+  });
+  grid.dataset.done = "1";
+}
+
+function logLineClass(line) {
+  if (line.indexOf("【完成】") === 0 || line.indexOf("【产物】") === 0) return "l-ok";
+  if (line.indexOf("【失败】") === 0 || line.indexOf("【异常】") === 0 || line.indexOf("【已停止】") === 0) return "l-err";
+  if (line.indexOf("【") === 0) return "l-stage";
+  if (line.indexOf("─") === 0) return "l-rule";
+  return "";
+}
+
+function appendLog(lines) {
+  const con = document.getElementById("console");
+  if (!sawLog && lines.length) { con.innerHTML = ""; sawLog = true; }
+  lines.forEach(line => {
+    const span = document.createElement("span");
+    const cls = logLineClass(line);
+    if (cls) span.className = cls;
+    span.textContent = line + "\n";
+    con.appendChild(span);
+  });
+  con.scrollTop = con.scrollHeight;
+}
+
+function clearConsole() {
+  document.getElementById("console").innerHTML = '<span class="placeholder">构建日志会显示在这里…</span>';
+  sawLog = false;
+}
+
+function setBuildState(kind, text) {
+  document.getElementById("buildDot").className = "dot " + kind;
+  document.getElementById("buildState").textContent = text;
+  document.getElementById("stopBtn").disabled = (kind !== "run");
+}
+
+async function api_startBuild(key) {
+  document.querySelector('.nav-item[data-page="build"]').click();
+  const r = await API.start_build(key);
+  if (!r.ok) { toast(r.msg || "无法开始"); return; }
+  logSince = 0; sawLog = false;
+  document.getElementById("console").innerHTML = "";
+  setBuildState("run", "构建中…");
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pollBuild, 450);
+}
+
+async function pollBuild() {
+  const r = await API.poll_build(logSince);
+  if (r.lines && r.lines.length) { appendLog(r.lines); logSince = r.total; }
+  if (!r.running) {
+    clearInterval(pollTimer); pollTimer = null;
+    if (r.code === 0) setBuildState("ok", "构建完成 ✓");
+    else if (r.code === null) setBuildState("idle", "空闲中");
+    else setBuildState("err", "构建失败（退出码 " + r.code + "）");
+  }
+}
+
+async function api_stop() {
+  await API.stop_build();
+  toast("已发送停止信号");
+}
+
+/* ---------- 文件部署动作 ---------- */
+async function api_setRoot(path) { const r = await API.set_root(path); if (r.ok) { applyState(r.state); toast("已切换目录"); } else toast(r.msg || "失败"); }
+async function api_browseRoot() { const r = await API.browse_root(); if (r && r.ok) { applyState(r.state); toast("已切换目录"); } }
+async function api_pickFiles() { applyState(await API.add_files_via_dialog()); }
+async function api_pickMatch(id, abs) { applyState(await API.pick_match(id, abs)); }
+async function api_chooseDir(id) { applyState(await API.choose_target_dir(id)); }
+async function api_skip(id) { applyState(await API.skip_item(id)); }
+async function api_remove(id) { applyState(await API.remove_item(id)); }
+async function api_clear() { applyState(await API.clear_staged()); document.getElementById("result").innerHTML = ""; }
+async function api_apply() {
+  const r = await API.apply_all();
+  applyState(r.state);
+  renderResult(r);
+  const okN = (r.results || []).filter(x => x.ok).length;
+  toast(okN ? ("已应用 " + okN + " 个文件") : "没有可应用的文件");
+}
+
+/* ---------- 拖拽 ---------- */
+const dz = document.getElementById("dropzone");
+dz.addEventListener("click", api_pickFiles);
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("over"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("over"));
+dz.addEventListener("drop", async e => {
+  e.preventDefault();
+  dz.classList.remove("over");
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+  if (!files.length) return;
+  toast("读取 " + files.length + " 个文件…");
+  const payload = [];
+  for (const f of files) {
+    const b64 = await new Promise(res => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(",")[1] || "");
+      r.onerror = () => res("");
+      r.readAsDataURL(f);
+    });
+    payload.push({ name: f.name, b64: b64 });
+  }
+  applyState(await API.add_dropped(payload));
+});
+
+/* ---------- 启动 ---------- */
+async function init() {
+  API = window.pywebview.api;
+  applyState(await API.get_state());
+}
+window.addEventListener("pywebviewready", init);
+</script>
+</body>
+</html>

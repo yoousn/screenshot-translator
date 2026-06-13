@@ -31,6 +31,37 @@ def test_translate_text_empty_blocks():
     assert data["timings"]["blocks"] == 0
     assert data["timings"]["provider_misses"] == 0
 
+
+def test_translate_text_forwards_v6_technical_text_override():
+    cfg = load_server_config()
+    token = cfg["client_token"]
+    captured = {}
+    path = "C:\\Users\\ysn\\Desktop\\app.exe"
+
+    class FakeTranslator:
+        def translate_batch(self, texts, source_lang, target_lang, stats_ref, **kwargs):
+            captured["texts"] = texts
+            captured["force_translate_technical_text"] = kwargs.get("force_translate_technical_text")
+            return [f"应用程序路径：{texts[0]}"]
+
+    with patch("app.get_active_translator", return_value=FakeTranslator()):
+        response = client.post(
+            "/api/translate_text",
+            headers={"X-API-Key": token},
+            json={
+                "blocks": [{"text": path, "confidence": 0.99, "box": [[0, 0], [200, 0], [200, 20], [0, 20]]}],
+                "source_lang": "en",
+                "target_lang": "zh",
+                "force_translate_technical_text": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["translations"] == [f"应用程序路径：{path}"]
+    assert captured["texts"] == [path]
+    assert captured["force_translate_technical_text"] is True
+
+
 def test_translate_text_batch_failure_returns_aligned_blank_translations():
     cfg = load_server_config()
     token = cfg["client_token"]

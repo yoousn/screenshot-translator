@@ -22,7 +22,9 @@ export default function useOcrConfigController() {
       useLocalOcr: true,
       fallbackToRemoteOcr: false,
       localOcrTimeoutMs: parsed.localOcrTimeoutMs || 15000,
-      rapidOcrModelVersion: parsed.rapidOcrModelVersion === "v4" ? "v4" : "v5",
+      rapidOcrModelVersion: ["v6", "v5", "v4"].includes(parsed.rapidOcrModelVersion)
+        ? parsed.rapidOcrModelVersion
+        : "v6",
       rapidOcrMode: parsed.rapidOcrMode || "auto",
       rapidOcrWorkerEnabled: parsed.rapidOcrWorkerEnabled !== false,
     });
@@ -36,7 +38,7 @@ export default function useOcrConfigController() {
         ...patch,
         useLocalOcr: true,
         fallbackToRemoteOcr: false,
-        rapidOcrModelVersion: patch.rapidOcrModelVersion || config.rapidOcrModelVersion || "v5",
+        rapidOcrModelVersion: patch.rapidOcrModelVersion || config.rapidOcrModelVersion || "v6",
         rapidOcrMode: patch.rapidOcrMode || config.rapidOcrMode || "auto",
         rapidOcrWorkerEnabled:
           typeof patch.rapidOcrWorkerEnabled === "boolean"

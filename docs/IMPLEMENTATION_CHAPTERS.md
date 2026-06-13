@@ -4400,3 +4400,112 @@ Alt+A
 
 ### Next Recommended Chapter
 - Chapter 271 should wire the magnifier hook into `ScreenshotPage`, add the number-marker button to the annotation toolbar, and begin scroll-capture (P0-3) implementation.
+
+## Chapter 287: PP-OCRv6 Small Direct ONNXRuntime Mainline (2026-06-14)
+
+### Goals Completed
+- Added a product-owned PP-OCRv6 Small ONNXRuntime adapter inside the existing bundled runner process without renaming the worker, IPC, logs, or backend modules.
+- Made PP-OCRv6 Small the default model for new/invalid configuration while preserving strict manual model selection and the existing RapidOCR V5/V4 compatibility paths.
+- Added a hard V6 initialization contract: dictionary size `18708`, output classes `18710`, blank index `0`, classes `1..18708` mapped to the YAML dictionary, and class `18709` mapped to the single implicit space.
+- Required a fixed-input detection and recognition probe even when ONNX metadata uses dynamic dimensions.
+- Added V6 preprocessing, DB detection postprocess, perspective crop, RGB recognition normalization, strict CTC decoding, confidence output, and worker dispatch.
+- Updated the model-management UI to present “本地 OCR 引擎”, PP-OCRv6 Small as the default main model, and RapidOCR as the internal V5/V4 compatibility adapter.
+- Added a quantitative V6 fixture manifest and gate. Internal spaces remain part of normalized CER so deleting the implicit-space mapping fails immediately.
+
+### Added Files
+- `tauri-client/src-tauri/rapidocr/ppocr_v6/__init__.py`
+- `tauri-client/src-tauri/rapidocr/ppocr_v6/adapter.py`
+- `tauri-client/src-tauri/rapidocr/ppocr_v6/contract.py`
+- `tauri-client/src-tauri/rapidocr/ppocr_v6/detector.py`
+- `tauri-client/src-tauri/rapidocr/ppocr_v6/recognizer.py`
+- `tauri-client/scripts/check-ocr-v6-fixtures.ps1`
+- `tauri-client/scripts/ocr-v6-fixtures.json`
+- `tauri-client/src/ocr-models/modelLabels.ts`
+
+### Modified Files
+- `tauri-client/src-tauri/rapidocr/rapidocr_runner.py`
+- `tauri-client/src-tauri/rapidocr/requirements.txt`
+- `tauri-client/scripts/build-rapidocr-runner.ps1`
+- `tauri-client/src-tauri/src/rapid_ocr/runner.rs`
+- `tauri-client/src-tauri/src/rapid_ocr/mod.rs`
+- `tauri-client/src-tauri/src/tests.rs`
+- `tauri-client/src/ocr-models/index.ts`
+- `tauri-client/src/ocr-models/types.ts`
+- `tauri-client/src/utils/ocrConfigHelpers.ts`
+- `tauri-client/src/hooks/useOcrConfigController.tsx`
+- `tauri-client/src/components/app/DependencyStatusBar.tsx`
+- `tauri-client/src/components/config/RapidOcrPanel.tsx`
+- `tauri-client/src/pages/ModelManagement.tsx`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/i18n/en-US.ts`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not add automatic V6-to-V5 fallback or automatic model switching.
+- Did not claim to detect unsupported scripts from V6 output.
+- Did not add a V6 low-confidence user warning before V6-specific threshold calibration.
+- Did not rename the runner process, worker, IPC methods, backend modules, or logs.
+- Did not add V6 download hosting, release bundling, checksum manifest, updater, or rollback behavior.
+- Did not remove the RapidOCR V5/V4 compatibility paths.
+
+### Validation
+- Passed: source and bundled-runner V6 fixed-input probe reported dictionary `18708`, classes `18710`, blank `0`, implicit space `18709`, recognition probe shape `[1, 40, 18710]`, and detection probe shape `[1, 1, 32, 32]`.
+- Passed: V6 generated-clean fixture gate with CER `0` for `Open preview before saving`, `PATH=C:\Windows\System32 LocalModel.exe --help`, and two-line Chinese UI text.
+- Passed: bundled worker OCR returned `Open preview before saving` with spaces intact and no model fallback.
+- Passed: the user-provided real model-management screenshot produced 43 V6 text blocks, including `RapidOCR`, `ModelScope`, Chinese UI text, and a Windows path; total runner time was about `1.34s`.
+- Passed: bundled-runner build, V6 probe, V5 probe, V4 probe, and V5/V4 multilingual fixture smoke.
+- Passed: Python module compilation, `npx tsc --noEmit`, `npm run build`, `cargo fmt --check`, `cargo check`, and full `cargo test` (`267 passed`, `14 ignored`, `0 failed`).
+- Passed: `git diff --check` with existing LF-to-CRLF working-copy warnings only.
+
+### Known Risks
+- The local `ocrv6` model directory is not yet a release-managed or bundled asset. Distribution, checksum verification, update, and rollback remain a separate release chapter.
+- A durable, ground-truthed real-screenshot V6 manifest with normalized CER `<= 0.10` and case-sensitive critical tokens is still required before broader commercial readiness claims.
+- V6 low-quality thresholds remain intentionally uncalibrated; no user warning is shown yet.
+- The real screenshot smoke spent about `1.21s` in recognition. Batch sizing and large-screenshot recognition performance should be measured before release.
+- Existing explicit user selection is preserved; only missing or invalid model-version configuration defaults to V6.
+
+### Next Recommended Chapter
+- Add a durable V6 real-screenshot ground-truth fixture set, calibrate V6 confidence from those samples, and then design release-managed V6 model distribution without changing the current strict manual-selection behavior.
+
+## Chapter 288: V6 Technical-Text Translation Short-Circuit Removal (2026-06-14)
+
+### Goals Completed
+- Removed the client-side whole-block technical-text preservation short circuit for the actual PP-OCRv6 screenshot OCR translation path.
+- Added an explicit `force_translate_technical_text` request flag and forwarded it through the N100 `/api/translate_text` preprocessing path.
+- Kept default, V5, V4, and text-source fast-path behavior unchanged.
+- Kept sentence-level protected-term and technical-token translation policy intact.
+- Treated a non-empty provider response for an all-technical V6 block as a completed translation attempt even when token protection legitimately returns the original path unchanged.
+
+### Modified Files
+- `tauri-client/src/types/config.ts`
+- `tauri-client/src/utils/ocrTranslationRequest.ts`
+- `tauri-client/src/utils/translationMemory.ts`
+- `tauri-client/src/utils/localOcrTranslate.ts`
+- `tauri-client/scripts/check-ocr-processing.mjs`
+- `server/app.py`
+- `server/translator.py`
+- `server/tests/test_translator.py`
+- `server/tests/test_translate_text.py`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Explicit Non-Goals
+- Did not remove or weaken sentence-level protected-term guidance or token-preservation checks.
+- Did not change V5, V4, or text-source translation behavior.
+- Did not deploy the updated server code to N100.
+- Did not change OCR model routing, fallback, recognition, or rendering behavior.
+
+### Validation
+- Passed: V6 pure-path request bypasses client preservation, reaches the server/provider path, and does not surface as `preserved`.
+- Passed: default/V5/V4 technical-text behavior remains preserved.
+- Passed: mixed translated text retains the original path token.
+- Passed: `npm run check:ocr-processing`, `npx tsc --noEmit`, and `npm run build`.
+- Passed: server targeted tests (`25 passed`, `1 skipped`) and full server suite (`65 passed`, `1 skipped`).
+- Passed: Python compilation, `cargo fmt --check`, `cargo check`, full `cargo test`, and `git diff --check`.
+
+### Known Risks
+- N100 must be updated with the modified server code before production clients can use the new V6 request flag end to end.
+- Translation providers may legitimately return a pure path unchanged because the path is protected; the important behavioral guarantee is that V6 sends it through translation instead of locally or server-side short-circuiting it.
+
+### Next Recommended Chapter
+- Deploy the server update to N100, then run a live V6 screenshot acceptance pass for a pure path and a mixed prose-plus-command sample against the configured production translation provider.

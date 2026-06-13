@@ -8,8 +8,11 @@ import tempfile
 import time
 from pathlib import Path
 
+from ppocr_v6 import PPOCRv6Adapter
+
 
 _ENGINE_CACHE: dict[tuple[str, str, str], object] = {}
+_V6_ENGINE_CACHE: dict[str, PPOCRv6Adapter] = {}
 
 
 def _configure_stdout() -> None:
@@ -109,6 +112,26 @@ def _get_engine(lang: str, version: str, model_root: Path | None = None):
 def _build_engine(lang: str, version: str, model_root: Path | None = None):
     engine, _, _ = _get_engine(lang, version, model_root)
     return engine
+
+
+def _v6_cache_key(model_root: Path | None) -> str:
+    if model_root is None:
+        raise RuntimeError("PP-OCRv6 requires an explicit model root")
+    try:
+        return str(model_root.resolve())
+    except Exception:
+        return str(model_root)
+
+
+def _get_v6_adapter(model_root: Path | None) -> tuple[PPOCRv6Adapter, int, bool]:
+    cache_key = _v6_cache_key(model_root)
+    if cache_key in _V6_ENGINE_CACHE:
+        return _V6_ENGINE_CACHE[cache_key], 0, True
+    started = time.perf_counter()
+    adapter = PPOCRv6Adapter(Path(cache_key))
+    init_ms = int(round((time.perf_counter() - started) * 1000))
+    _V6_ENGINE_CACHE[cache_key] = adapter
+    return adapter, init_ms, False
 
 
 def _box_to_ints(box) -> list[list[int]]:
@@ -564,6 +587,10 @@ def run_ocr(
     *,
     small_text_retry: bool = True,
 ) -> dict:
+    if version.lower() == "v6":
+        adapter, _, _ = _get_v6_adapter(model_root)
+        return adapter.run(image_path)
+
     total_started = time.perf_counter()
     candidates: list[dict] = []
     det_cache = {}
@@ -659,6 +686,15 @@ def run_ocr(
 
 def run_probe(version: str, model_root: Path | None = None) -> dict:
     started = time.perf_counter()
+    if version.lower() == "v6":
+        adapter, init_ms, cached = _get_v6_adapter(model_root)
+        payload = adapter.probe()
+        payload["timings"] = {
+            "total_ms": int(round((time.perf_counter() - started) * 1000)),
+            "init_ms": init_ms,
+            "cached": cached,
+        }
+        return payload
     _build_engine("ch", version, model_root)
     return {
         "status": "success",
@@ -684,6 +720,13 @@ def run_warm_models(
     }
     selected_versions = versions or list(warm_plan.keys())
     for version in selected_versions:
+        if version == "v6":
+            try:
+                _get_v6_adapter(model_root)
+                warmed.append({"version": version, "lang": "v6"})
+            except Exception as exc:
+                errors.append({"version": version, "lang": "v6", "error": str(exc)})
+            continue
         selected_langs = langs or warm_plan.get(version, ["ch", "latin"])
         for lang in selected_langs:
             try:
@@ -709,6 +752,7 @@ def _worker_status() -> dict:
             {"lang": lang, "version": version, "modelRoot": model_root}
             for lang, version, model_root in _ENGINE_CACHE.keys()
         ],
+        "cachedV6Engines": [{"version": "v6", "modelRoot": model_root} for model_root in _V6_ENGINE_CACHE.keys()],
     }
 
 
@@ -744,7 +788,7 @@ def _serve_worker() -> int:
                     model_root = Path(params["modelRoot"]) if params.get("modelRoot") else None
                     result = run_ocr(
                         image_path,
-                        params.get("modelVersion", "v5"),
+                        params.get("modelVersion", "v6"),
                         params.get("mode", "auto"),
                         model_root,
                         small_text_retry=bool(params.get("smallTextRetry", True)),
@@ -766,7 +810,7 @@ def main() -> int:
     _configure_stdout()
     parser = argparse.ArgumentParser(description="RapidOCR JSON runner for YSN Screenshot Translator")
     parser.add_argument("--image")
-    parser.add_argument("--model-version", choices=["v4", "v5"], default="v5")
+    parser.add_argument("--model-version", choices=["v4", "v5", "v6"], default="v6")
     parser.add_argument("--mode", choices=["auto", "full", "latin"], default="auto")
     parser.add_argument("--model-root")
     parser.add_argument("--probe", action="store_true")

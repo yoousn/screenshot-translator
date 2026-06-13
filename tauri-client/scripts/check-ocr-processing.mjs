@@ -32,6 +32,7 @@ import {
   repairKnownBadTranslationTerms,
   selectPreferredSourceLanguage,
   hasLikelyNonEnglishLatinText,
+  shouldForceTranslateTechnicalTextForModel,
   shouldRequireTranslation,
   validateAndNormalizeTranslationResults,
 } from "../src/utils/ocrTranslationRequest.ts";
@@ -205,6 +206,13 @@ assert(payload.blocks.length === 2 && payload.blocks[0].text === "Add the missin
 assert(payload.quality_policy.preserveLineCount, "translation payload must include quality policy");
 assert(payload.system_instruction.includes("Target language: zh-CN"), "translation payload must include target instruction");
 assert(payload.system_instruction.includes("Screenshot context"), "translation payload must include screenshot context for disambiguation");
+assert(payload.force_translate_technical_text === false, "default translation payload must preserve V5/V4 behavior");
+const v6Payload = buildTranslationRequestPayload(sourceBlocks, "en", "zh-CN", { forceTranslateTechnicalText: true });
+assert(v6Payload.force_translate_technical_text === true, "V6 translation payload must request technical-text translation");
+assert(shouldForceTranslateTechnicalTextForModel("v6"), "V6 must force technical text into translation");
+assert(shouldForceTranslateTechnicalTextForModel(undefined), "missing model selection must follow the default V6 behavior");
+assert(!shouldForceTranslateTechnicalTextForModel("v5"), "V5 behavior must remain unchanged");
+assert(!shouldForceTranslateTechnicalTextForModel("v4"), "V4 behavior must remain unchanged");
 
 const retryBlocks = collectUntranslatedLatinRetryBlocks(sourceBlocks, ["Add the missing PATH", "保存"], "zh-CN", "auto");
 assert(retryBlocks.length === 1 && retryBlocks[0].index === 0, "retry collection should target only untranslated Latin blocks");
@@ -229,11 +237,30 @@ assert(isLikelyProtectedTechnicalText("COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md"), 
 assert(!isLikelyProtectedTechnicalText("Open preview"), "plain UI text should not be treated as a protected identifier");
 assert(shouldRequireTranslation("Open preview", "zh-CN"), "plain English UI text should require translation");
 assert(!shouldRequireTranslation("COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md", "zh-CN"), "technical filename should not require translation");
+const purePath = "C:\\Users\\ysn\\Desktop\\app.exe";
+assert(!shouldRequireTranslation(purePath, "zh-CN"), "default/V5/V4 technical path behavior must remain preserved");
+assert(shouldRequireTranslation(purePath, "zh-CN", { forceTranslateTechnicalText: true }), "V6 technical path must require translation");
 const quality = evaluateTranslationQuality(sourceBlocks, ["添加缺失的 PATH", "保存"], ["添加缺失的 PATH", "保存"], "zh-CN");
 assert(quality.translatableCount === 1 && quality.translatedCount === 1, "quality summary should count translated translatable lines");
 const preservedOnly = [block("COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md", 0.96, 0, 0, 280, 14)];
 const preservedResult = validateAndNormalizeTranslationResults(preservedOnly, ["COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md"], "zh-CN");
 assert(preservedResult.quality.translatableCount === 0 && preservedResult.quality.preservedCount === 1, "protected-only text should validate as preserved");
+const forcedPathResult = validateAndNormalizeTranslationResults(
+  [block(purePath, 0.99, 0, 0, 280, 14)],
+  [purePath],
+  "zh-CN",
+  undefined,
+  { forceTranslateTechnicalText: true },
+);
+assert(forcedPathResult.quality.translatableCount === 1 && forcedPathResult.quality.translatedCount === 1, "V6 pure path must validate as translated");
+assert(forcedPathResult.translations[0].includes(purePath), "sentence-level token protection must keep the path intact");
+const forcedPathPairs = buildTranslatePairs(
+  [block(purePath, 0.99, 0, 0, 280, 14)],
+  [purePath],
+  "zh-CN",
+  { forceTranslateTechnicalText: true },
+);
+assert(forcedPathPairs[0].status === "translated", "V6 provider-processed path must not surface as preserved or untranslated");
 let blockedUntranslated = false;
 try {
   validateAndNormalizeTranslationResults([block("Open preview", 0.96, 0, 0, 100, 14)], ["Open preview"], "zh-CN");
@@ -266,6 +293,14 @@ const glossaryHit = lookupLocalTranslation(block("Save", 0.99, 0, 0), "en", "zh-
 assert(glossaryHit?.source === "glossary" && glossaryHit.translation === "保存", "short UI glossary should translate Save locally");
 const preservedHit = lookupLocalTranslation(block("COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md", 0.99, 0, 0, 280, 14), "en", "zh-CN", "google");
 assert(preservedHit?.source === "preserved", "protected technical text should be satisfied locally");
+const forcedPathHit = lookupLocalTranslation(
+  block(purePath, 0.99, 0, 0, 280, 14),
+  "en",
+  "zh-CN",
+  "google",
+  { forceTranslateTechnicalText: true },
+);
+assert(forcedPathHit === null, "V6 technical path must bypass the client preserved-text short circuit");
 const memoryBacking = new Map<string, string>();
 (globalThis as any).window = {
   localStorage: {

@@ -1,6 +1,10 @@
 import type { OcrBlock } from "../types/screenshot";
 import { normalizeForCompare } from "../ocr-processing";
-import { shouldRequireTranslation, isChineseTargetLanguage } from "./ocrTranslationRequest";
+import {
+  shouldRequireTranslation,
+  isChineseTargetLanguage,
+  type TranslationRequirementOptions,
+} from "./ocrTranslationRequest";
 import translationGlossary from "./translationGlossary.json";
 
 const STORAGE_KEY = "ysn.translationMemory.v1";
@@ -130,8 +134,9 @@ export const lookupLocalTranslation = (
   sourceLang: string,
   targetLang: string,
   channel?: string,
+  options: TranslationRequirementOptions = {},
 ): LocalTranslationHit | null => (
-  lookupLocalTranslations([block], sourceLang, targetLang, channel)[0] || null
+  lookupLocalTranslations([block], sourceLang, targetLang, channel, options)[0] || null
 );
 
 export const lookupLocalTranslations = (
@@ -139,6 +144,7 @@ export const lookupLocalTranslations = (
   sourceLang: string,
   targetLang: string,
   channel?: string,
+  options: TranslationRequirementOptions = {},
 ): Array<LocalTranslationHit | null> => {
   const hits: Array<LocalTranslationHit | null> = [];
   let store: TranslationMemoryStore | null = null;
@@ -148,7 +154,7 @@ export const lookupLocalTranslations = (
 
   for (const block of blocks) {
     const text = block.text || "";
-    if (!shouldRequireTranslation(text, targetLang)) {
+    if (!shouldRequireTranslation(text, targetLang, options)) {
       hits.push({ translation: text, source: "preserved" });
       continue;
     }
@@ -191,6 +197,7 @@ export const storeTranslationMemory = (
   sourceLang: string,
   targetLang: string,
   channel?: string,
+  options: TranslationRequirementOptions = {},
 ) => {
   const now = Date.now();
   const store = readStore();
@@ -199,7 +206,7 @@ export const storeTranslationMemory = (
 
   blocks.forEach((block, index) => {
     const translatedText = translations[index]?.trim() || "";
-    if (!translatedText || !shouldRequireTranslation(block.text, targetLang)) return;
+    if (!translatedText || !shouldRequireTranslation(block.text, targetLang, options)) return;
     if (normalizeForCompare(translatedText) === normalizeForCompare(block.text)) return;
 
     const key = makeMemoryKey(block.text, sourceLang, targetLang, channel);

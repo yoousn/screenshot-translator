@@ -21,6 +21,7 @@ $runnerDir = Join-Path $resourceDir "rapidocr-runner"
 $runnerExe = Join-Path $runnerDir "rapidocr-runner.exe"
 $staleOneFileRunnerExe = Join-Path $resourceDir "rapidocr-runner.exe"
 $modelRoot = Join-Path $repoRoot "models\rapidocr"
+$v6ModelRoot = Join-Path $repoRoot "ocrv6"
 
 if (-not (Test-Path -LiteralPath $runnerScript)) {
   throw "RapidOCR runner script not found: $runnerScript"
@@ -117,6 +118,14 @@ if ($LASTEXITCODE -ne 0) {
 & $runnerExe --probe --model-version v4 --model-root $modelRoot
 if ($LASTEXITCODE -ne 0) {
   throw "Built rapidocr-runner.exe failed the V4 probe."
+}
+
+if (-not (Test-Path -LiteralPath $v6ModelRoot)) {
+  throw "PP-OCRv6 model root not found: $v6ModelRoot"
+}
+& $runnerExe --probe --model-version v6 --model-root $v6ModelRoot
+if ($LASTEXITCODE -ne 0) {
+  throw "Built rapidocr-runner.exe failed the V6 fixed-input contract probe."
 }
 
 $bundledModelDir = Join-Path $runnerDir "_internal\rapidocr\models"

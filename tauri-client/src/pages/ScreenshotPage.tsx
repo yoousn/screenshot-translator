@@ -21,6 +21,7 @@ import { useScreenshotLoader } from "../hooks/useScreenshotLoader";
 import { useScreenshotTextSource } from "../hooks/useScreenshotTextSource";
 import { useScreenshotActions } from "../hooks/useScreenshotActions";
 import { useScreenshotInteraction } from "../hooks/useScreenshotInteraction";
+import { useScreenshotMagnifier } from "../hooks/useScreenshotMagnifier";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
 import { getLogicalCanvasSize } from "../utils/screenshotViewport";
 
@@ -92,18 +93,46 @@ export default function ScreenshotPage() {
   const frameInteractiveRef = useRef(false);
   const imageReadyRef = useRef(false);
   const drawRef = useRef(draw);
+  const magnifierCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const magnifierHexRef = useRef<string>("");
+  const magnifierVisibleRef = useRef(false);
+  const [magnifier, setMagnifier] = useState<{ clientX: number; clientY: number; cx: number; cy: number; hex: string } | null>(null);
 
   // Break circular dependency
   const captureRegionBase64Ref = useRef<(action?: SelectedImageBridgeAction) => Promise<string>>(() => Promise.resolve(""));
 
-  hasSelectedRef.current = hasSelected;
-  rectRef.current = rect;
-  configRef.current = config;
-  isEditingRef.current = isEditing;
-  isSelectingRef.current = isSelecting;
-  screenshotModeRef.current = screenshotMode;
-  drawRef.current = draw;
-  actionToolbarSizeRef.current = actionToolbarSize;
+  useEffect(() => {
+    hasSelectedRef.current = hasSelected;
+  }, [hasSelected]);
+
+  useEffect(() => {
+    rectRef.current = rect;
+  }, [rect]);
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
+    isEditingRef.current = isEditing;
+  }, [isEditing]);
+
+  useEffect(() => {
+    isSelectingRef.current = isSelecting;
+  }, [isSelecting]);
+
+  useEffect(() => {
+    screenshotModeRef.current = screenshotMode;
+  }, [screenshotMode]);
+
+  useEffect(() => {
+    drawRef.current = draw;
+  }, [draw]);
+
+  useEffect(() => {
+    actionToolbarSizeRef.current = actionToolbarSize;
+  }, [actionToolbarSize]);
+
 
   const interactionStateRef = useRef({
     get hasSelected() { return hasSelectedRef.current; },
@@ -498,6 +527,88 @@ export default function ScreenshotPage() {
   };
   // Set the Ref to complete the circle
   captureRegionBase64Ref.current = captureRegionBase64;
+
+  // F1+F2: PixPin-style magnifier + HEX color picker
+  const { getPixelHex, drawMagnifier } = useScreenshotMagnifier(imageRef as any, canvasRef);
+
+  const updateMagnifier = (clientX: number, clientY: number) => {
+    if (
+      configRef.current.enableMagnifier === false ||
+      !frameInteractiveRef.current ||
+      !imageReadyRef.current ||
+      hasSelectedRef.current ||
+      isEditingRef.current
+    ) {
+      if (magnifierVisibleRef.current) setMagnifier(null);
+      magnifierHexRef.current = "";
+      return;
+    }
+    const cv = canvasRef.current;
+    if (!cv) {
+      if (magnifierVisibleRef.current) setMagnifier(null);
+      return;
+    }
+    const r = cv.getBoundingClientRect();
+    const cx = clientX - r.left;
+    const cy = clientY - r.top;
+    const info = getPixelHex(cx, cy);
+    if (!info) {
+      if (magnifierVisibleRef.current) setMagnifier(null);
+      magnifierHexRef.current = "";
+      return;
+    }
+    magnifierHexRef.current = info.hex;
+    setMagnifier({ clientX, clientY, cx, cy, hex: info.hex });
+  };
+
+  useEffect(() => {
+    magnifierVisibleRef.current = !!magnifier;
+    if (magnifier && magnifierCanvasRef.current) {
+      drawMagnifier(magnifierCanvasRef.current, magnifier.cx, magnifier.cy, 8, 120);
+    }
+  }, [magnifier, drawMagnifier]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!overlayVisibleRef.current || !frameInteractiveRef.current) return;
+      if ((e.key === "c" || e.key === "C") && magnifierVisibleRef.current && magnifierHexRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        const hex = magnifierHexRef.current;
+        navigator.clipboard?.writeText(hex).then(() => message.success("已复制颜色 " + hex)).catch(() => {});
+        return;
+      }
+      if (!hasSelectedRef.current || isEditingRef.current) return;
+      // 精确选区输入框开关：关闭时禁用方向键微调选区。
+      if (configRef.current.enablePreciseSelection === false) return;
+      const step = e.shiftKey ? 10 : 1;
+      let dx = 0;
+      let dy = 0;
+      if (e.key === "ArrowLeft") dx = -step;
+      else if (e.key === "ArrowRight") dx = step;
+      else if (e.key === "ArrowUp") dy = -step;
+      else if (e.key === "ArrowDown") dy = step;
+      else return;
+      e.preventDefault();
+      const cur = rectRef.current;
+      const cv = canvasRef.current;
+      const maxW = cv ? cv.width : Number.MAX_SAFE_INTEGER;
+      const maxH = cv ? cv.height : Number.MAX_SAFE_INTEGER;
+      let next: Rect;
+      if (e.altKey) {
+        next = { x: cur.x, y: cur.y, w: Math.max(1, cur.w + dx), h: Math.max(1, cur.h + dy) };
+      } else {
+        const nx = Math.min(Math.max(0, cur.x + dx), Math.max(0, maxW - cur.w));
+        const ny = Math.min(Math.max(0, cur.y + dy), Math.max(0, maxH - cur.h));
+        next = { x: nx, y: ny, w: cur.w, h: cur.h };
+      }
+      setCurrentRect(next, true);
+      drawRef.current(next.x, next.y, next.w, next.h);
+      syncActionToolbarPosition(next);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const syncActionToolbarPosition = (nextRect: Rect) => {
     if (!actionToolbarRef.current || !overlayVisibleRef.current || !hasSelectedRef.current) return;
@@ -1072,6 +1183,22 @@ export default function ScreenshotPage() {
         <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px", display: "none" }}>0, 0</div>
       )}
 
+      {magnifier && (
+        <div
+          style={{ position: "fixed", left: magnifier.clientX + 16, top: magnifier.clientY + 16, zIndex: 2147483647, pointerEvents: "none", background: "rgba(255,255,255,0.96)", borderRadius: 6, padding: 4, boxShadow: "0 2px 10px rgba(0,0,0,0.3)" }}
+        >
+          <canvas
+            ref={magnifierCanvasRef}
+            width={120}
+            height={120}
+            style={{ display: "block", width: 120, height: 120, imageRendering: "pixelated" }}
+          />
+          <div style={{ marginTop: 2, fontSize: 12, fontFamily: "monospace", textAlign: "center", color: "#222" }}>
+            {magnifier.hex} · 按 C 复制
+          </div>
+        </div>
+      )}
+
       {isTranslating && <TranslationLoadingOverlay rect={rect} />}
 
       {editingTextDraft && (
@@ -1087,9 +1214,10 @@ export default function ScreenshotPage() {
         ref={canvasRef}
         tabIndex={-1}
         onPointerDown={handleMouseDown}
-        onPointerMove={handleMouseMove}
-        onPointerUp={handleMouseUp}
+        onPointerMove={(e) => { handleMouseMove(e); updateMagnifier(e.clientX, e.clientY); }}
+        onPointerUp={(e) => { handleMouseUp(e); setMagnifier(null); }}
         onPointerCancel={handlePointerCancel}
+        onPointerLeave={() => { if (magnifierVisibleRef.current) setMagnifier(null); }}
         onDoubleClick={handleDoubleClick}
         style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible ? "auto" : "none" }}
       />
@@ -1147,6 +1275,8 @@ export default function ScreenshotPage() {
           onSetAnnotationTool={selectAnnotationTool}
           onSetAnnotationColor={setAnnotationColor}
           onSetAnnotationSize={setCurrentAnnotationSize}
+          markerShape={markerShape}
+          onSetMarkerShape={setMarkerShape}
           onTranslate={handleTranslate}
           onShowTranslateResult={handleShowTranslateResult}
           canShowTranslateResult={Boolean(translatePairs && translatePairs.length > 0)}

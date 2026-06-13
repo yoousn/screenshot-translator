@@ -265,6 +265,26 @@ def test_base_translator_preserves_technical_text_without_provider():
     assert stats["provider_misses"] == 1
 
 
+def test_base_translator_force_translates_technical_text_for_v6():
+    translator = CountingTranslator()
+    stats = {}
+    path = "C:\\Users\\ysn\\Desktop\\app.exe"
+
+    result = translator.translate_batch(
+        [path, f"Open {path} before saving"],
+        "en",
+        "zh",
+        stats,
+        force_translate_technical_text=True,
+    )
+
+    assert result == [f"translated:{path}", f"translated:Open {path} before saving"]
+    assert translator.provider_batches == [[path, f"Open {path} before saving"]]
+    assert path in result[1]
+    assert stats["preserved_hits"] == 0
+    assert stats["provider_misses"] == 2
+
+
 def test_base_translator_does_not_preserve_japanese_kanji_kana_text():
     translator = CountingTranslator()
     stats = {}

@@ -378,7 +378,8 @@ export function useScreenshotInteraction({
 
   const startPlainSelectionAt = (cx: number, cy: number) => {
     if (!frameInteractiveRef.current) return false;
-    if (hasSelectedRef.current || isSelectingRef.current || isDraggingRef.current || isResizingRef.current) return false;
+    // 框选优先级最高：即便已存在选区，只要不是在拖动/缩放已有选区，也允许从空白处重新开始框选。
+    if (isSelectingRef.current || isDraggingRef.current || isResizingRef.current) return false;
     if (isEditingRef.current || recordingPickerModeRef.current || scrollCaptureModeRef.current !== "idle") return false;
     pendingDetectionRef.current = null;
     mouseDownRef.current = { x: cx, y: cy };
@@ -612,13 +613,9 @@ export function useScreenshotInteraction({
       return;
     }
 
-    const detected = getDetectionRectAt(cx, cy);
-    if (detected) {
-      pendingDetectionRef.current = detected;
-      startPosRef.current = { x: cx, y: cy };
-      return;
-    }
-
+    // BUG2 修复：按下立即开始拉框，不再被窗口/控件识别抢占而进入 pending 状态。
+    // 若用户实际只是“点击未拖动”，handleMouseUp 中 dragDistance < MIN_AUTO_ACTION_DRAG_PX
+    // 分支会重新识别并选中悬停窗口，点击选窗的体验保持不变。
     startPlainSelectionAt(cx, cy);
   };
 
@@ -631,7 +628,6 @@ export function useScreenshotInteraction({
     resumePendingDownIfReady(e);
     if (
       primaryButtonDown
-      && !hasSelectedRef.current
       && !isSelectingRef.current
       && !isDraggingRef.current
       && !isResizingRef.current
@@ -664,6 +660,8 @@ export function useScreenshotInteraction({
         const next = annotationsRef.current.map((annotation, index) => index === selectedAnnotationIndexRef.current ? moveAnnotation(annotation, dx, dy, rectRef.current) : annotation);
         annotationsRef.current = next;
         setAnnotations(next);
+        // BUG1 修复：拖动标注时同步重绘，保证实时轨迹（与绘制分支保持一致）。
+        scheduleDraw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       }
       return;
     }
@@ -676,6 +674,8 @@ export function useScreenshotInteraction({
       const next = annotationsRef.current.map((annotation, index) => index === selectedAnnotationIndexRef.current ? resizeAnnotation(annotation, handle, dx, dy, rectRef.current) : annotation);
       annotationsRef.current = next;
       setAnnotations(next);
+      // BUG1 修复：缩放标注时同步重绘，保证实时轨迹。
+      scheduleDraw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       return;
     }
 
@@ -765,6 +765,8 @@ export function useScreenshotInteraction({
       const snapX: number[] = [];
       const snapY: number[] = [];
       for (const wr of windowRectsRef.current) {
+        // 不吸附整屏 display 矩形，避免靠近屏幕边缘时选框被异常拉拽。
+        if ((wr as { kind?: string }).kind === "display") continue;
         snapX.push(wr.x, wr.x + wr.w);
         snapY.push(wr.y, wr.y + wr.h);
       }
@@ -800,10 +802,17 @@ export function useScreenshotInteraction({
       e.currentTarget.style.cursor = handleInfo.cursor;
       return;
     }
+    // 光标修复：选区已完成且悬停在选区内部（可整体拖动）时显示 move；
+    // 拉选区阶段仍为 crosshair（行业标准）。
+    if (hasSelectedRef.current && isPointInSelection(rectRef.current, true, cx, cy)) {
+      e.currentTarget.style.cursor = "move";
+      return;
+    }
     const candidates = getDetectionCandidatesAt(cx, cy, windowRectsRef.current, analysisImageDataRef.current, configRef.current.enableVisualDetection === true, configRef.current.visualDetectionSensitivity || 3);
     setHoverCandidateList(candidates);
-    const detected = hoverRectRef.current;
-    e.currentTarget.style.cursor = detected ? "pointer" : "crosshair";
+    // BUG3 修复：框选阶段始终使用 crosshair（行业标准框选手势）。
+    // 窗口高亮预览仍保留（hoverRect 继续参与渲染），仅不再把光标改成 pointer。
+    e.currentTarget.style.cursor = "crosshair";
   };
 
   const handleMouseUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
@@ -849,9 +858,11 @@ export function useScreenshotInteraction({
 
     const valid = rectRef.current.w > 5 && rectRef.current.h > 5;
     const dragDistance = Math.max(selectionDragDistanceRef.current, Math.hypot(rectRef.current.w, rectRef.current.h));
-    if (wasSelecting && dragDistance < MIN_AUTO_ACTION_DRAG_PX && e) {
+    // 框选优先级最高：仅当“几乎未拖动的单击”(无有效框) 且窗口磁吸/检测开关开启时，才补位识别窗口；真实拖框永不被覆盖。
+    const autoDetectEnabled = configRef.current.enableVisualDetection === true || configRef.current.enableUiControlDetection === true;
+    if (wasSelecting && !valid && dragDistance < MIN_AUTO_ACTION_DRAG_PX && e && autoDetectEnabled) {
       const detected = getDetectionRectAt(e.clientX, e.clientY);
-      if (detected) {
+      if (detected && detected.kind !== "display" && detected.kind !== "taskbar") {
         selectDetectedRect(detected);
         return;
       }

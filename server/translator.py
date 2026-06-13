@@ -143,11 +143,16 @@ def is_likely_protected_technical_text(text: str) -> bool:
     return all(is_protected_technical_token(token) for token in tokens)
 
 
-def should_preserve_without_translation(text: str, target_lang: str) -> bool:
+def should_preserve_without_translation(
+    text: str,
+    target_lang: str,
+    *,
+    force_translate_technical_text: bool = False,
+) -> bool:
     normalized = " ".join((text or "").strip().split())
     if not normalized:
         return True
-    if is_likely_protected_technical_text(normalized):
+    if is_likely_protected_technical_text(normalized) and not force_translate_technical_text:
         return True
     if (
         target_lang in {"zh", "zh-CN"}
@@ -299,7 +304,15 @@ class BaseTranslator(abc.ABC):
         stats_ref.setdefault("provider_fallback_ms", 0)
         return stats_ref
 
-    def translate_batch(self, texts: list[str], source_lang: str, target_lang: str, stats_ref: dict = None) -> list[str]:
+    def translate_batch(
+        self,
+        texts: list[str],
+        source_lang: str,
+        target_lang: str,
+        stats_ref: dict = None,
+        *,
+        force_translate_technical_text: bool = False,
+    ) -> list[str]:
         if not texts:
             return []
 
@@ -315,7 +328,11 @@ class BaseTranslator(abc.ABC):
         version = "1.0"
 
         for idx, text in enumerate(texts):
-            if should_preserve_without_translation(text, target_lang):
+            if should_preserve_without_translation(
+                text,
+                target_lang,
+                force_translate_technical_text=force_translate_technical_text,
+            ):
                 results[idx] = text
                 if stats_ref is not None:
                     stats_ref["preserved_hits"] += 1

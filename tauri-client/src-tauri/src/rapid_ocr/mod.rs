@@ -97,22 +97,7 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
             model_root.display(),
             missing_models.join(", ")
         ));
-    } else if worker_enabled {
-        probe_ok = runner.is_ok() && missing_models.is_empty();
-        probe_timings = worker_status
-            .get("status")
-            .and_then(|status| status.get("timings"))
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!(null));
-        if let Some(error) = worker_status
-            .get("lastError")
-            .and_then(|value| value.as_str())
-        {
-            if !error.trim().is_empty() {
-                last_error = Some(error.to_string());
-            }
-        }
-    } else if runner.is_ok() {
+    } else if runner.is_ok() && (model_version == "v6" || !worker_enabled) {
         match run_rapidocr_probe(&app, &model_version) {
             Ok(output) if output.status == "success" => {
                 probe_ok = true;
@@ -127,6 +112,21 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
             }
             Err(error) => {
                 last_error = Some(error);
+            }
+        }
+    } else if worker_enabled {
+        probe_ok = runner.is_ok() && missing_models.is_empty();
+        probe_timings = worker_status
+            .get("status")
+            .and_then(|status| status.get("timings"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(null));
+        if let Some(error) = worker_status
+            .get("lastError")
+            .and_then(|value| value.as_str())
+        {
+            if !error.trim().is_empty() {
+                last_error = Some(error.to_string());
             }
         }
     } else if let Err(error) = &runner {
@@ -166,7 +166,7 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
         "defaultProfile": "balanced",
         "lastError": last_error,
         "probeTimings": probe_timings,
-        "supportedModelVersions": ["v5", "v4"],
+        "supportedModelVersions": ["v6", "v5", "v4"],
         "readinessSteps": [
             {
                 "id": "rapidocr-runner",
@@ -197,7 +197,7 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
                 "ready": models_ready,
                 "severity": if models_ready { "success" } else { "error" },
                 "label": "RapidOCR root models",
-                "description": "RapidOCR model files are present under the repository or app root models/rapidocr directory.",
+                "description": "The selected local OCR model files are present in the resolved model directory.",
                 "nextAction": if models_ready { "ready" } else { "restore-root-models" }
             }
         ]

@@ -3,6 +3,7 @@ import { Space, Tag } from "antd";
 import { ApiOutlined, CloudOutlined, VideoCameraOutlined } from "@ant-design/icons";
 import type { TranslationServiceMetadata } from "../../hooks/useServerStatus";
 import type { StartupDependencySnapshot } from "../../hooks/useStartupDependencyStatus";
+import { localOcrModelName } from "../../ocr-models";
 
 type TranslationStatus = "checking" | "online" | "offline";
 type StatusKind = "ready" | "checking" | "missing" | "unavailable";
@@ -111,10 +112,10 @@ export default function DependencyStatusBar({
       key: "ocr",
       label: "识字",
       detail: rapidOcr?.ready
-        ? `Rapid OCR ${(rapidOcr.rapidOcrModelVersion || "v5").toUpperCase()} 已可用`
+        ? `${localOcrModelName(rapidOcr.rapidOcrModelVersion || "v6")} 已可用`
         : rapidOcr?.missingModelFiles?.length
           ? `缺少 ${rapidOcr.missingModelFiles.length} 个模型文件`
-          : rapidOcr?.lastError || dependencyError || "RapidOCR 尚未通过检测",
+          : rapidOcr?.lastError || dependencyError || "本地 OCR 引擎尚未通过检测",
       kind: ocrKind,
       icon: <ApiOutlined />,
       onClick: onOpenModelManagement,

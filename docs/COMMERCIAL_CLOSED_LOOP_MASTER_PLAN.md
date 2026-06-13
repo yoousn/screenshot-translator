@@ -164,17 +164,16 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 - 文件夹按钮打开目录，复制按钮优先复制视频文件，失败则复制路径。
 - 关闭按钮准备态退出，录制态取消并清理临时文件，保存后关闭控制条。
 
-### P3：RapidOCR / ONNXRuntime 主线闭环
+### P3：本地 OCR / ONNXRuntime 主线闭环
 
-当前方向已按用户决策从自研 `YSN OCR Runtime` 切换为产品自有打包的 `RapidOCR / ONNXRuntime` 主线：
+当前方向已按用户决策从自研 `YSN OCR Runtime` 切换为产品自有打包的本地 OCR / ONNXRuntime 主线：
 
-- 默认使用 RapidOCR PP-OCRv5，保留 PP-OCRv4 作为高级可选模型版本。
-- 打包 `rapidocr-runner` 作为产品内置 sidecar，不依赖用户手动安装 PaddleOCR-json 或 Python 环境。
-- 自动源语言/脚本检测，不让普通用户手动选择源语言。
-- 多识别模型池：中文/英文/韩文/阿拉伯文/俄文/泰文等按质量评分 fallback。
+- 默认使用产品直接适配的 PP-OCRv6 Small；RapidOCR 继续作为内部兼容适配器，提供 V5 多语言和 V4 兼容模式。
+- 保留现有 `rapidocr-runner` 进程、IPC 和打包边界，在同一 sidecar 内增加产品直接拥有的 V6 ONNXRuntime adapter，不依赖用户手动安装 PaddleOCR-json 或 Python 环境。
+- 第一阶段模型严格手动选择，不自动切换或回退；长期多模型池仍按源脚本检测、识别置信度和重试评分路由。
 - 按脚本字符、置信度、噪声 block、fallback scoring 路由，避免单个假阳性 block 赢过真实多行文本。
-- 支持低置信度重试和未来 VLM OCR fallback。
-- OCR ready 只能在 RapidOCR runner、模型资产、postprocess、fixture smoke 和真实截图工作流全部通过后展示。
+- V6 低质量提示只能使用 V6 自身真实数据重新标定；标定完成前不展示用户级低质量提示。
+- OCR ready 只能在 runner、模型资产、V6 CTC 契约 probe、postprocess、fixture smoke 和真实截图工作流全部通过后展示。
 
 ### P4：翻译质量闭环
 
@@ -189,8 +188,8 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 
 - 页面定位为“识字模型 / 视频录制”配置中心。
 - 普通用户看到状态卡、主操作、问题恢复。
-- 高级用户可展开 RapidOCR 模型版本、runner 状态、FFmpeg、诊断信息。
-- 默认 OCR 主线是 RapidOCR PP-OCRv5 / ONNXRuntime；PaddleOCR-json 和旧自研 YSN OCR Runtime 不再作为主路径。
+- 高级用户可展开本地 OCR 模型版本、runner 状态、FFmpeg、诊断信息。
+- 默认 OCR 主线是 PP-OCRv6 Small / ONNXRuntime；RapidOCR V5/V4 是备用兼容模型，PaddleOCR-json 和旧自研 YSN OCR Runtime 不再作为主路径。
 - 视频区域保留 FFmpeg 检测、下载/选择、音频设备检测和默认保存目录说明。
 
 ### P6：发布、安装、升级闭环
@@ -209,17 +208,17 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 
 ## 3. OCR 模型策略
 
-### 3.1 为什么切到 RapidOCR 主线
+### 3.1 为什么使用产品自有本地 OCR 主线
 
 - 当前自研 OCR Runtime 在真实清晰截图上仍出现漏识别、小字错识别和英文长句不稳定，继续补底层 detector/recognizer 不是当前商业化最优路径。
-- RapidOCR 已经工程化封装 ONNXRuntime、PP-OCRv5/V4 detector/classifier/recognizer 和多语言识别模型，更适合作为当前产品主路径。
+- PP-OCRv6 Small 由产品直接接入 ONNXRuntime，作为当前默认主模型；RapidOCR 已工程化封装 V5/V4 和多语言识别模型，适合作为兼容备用路径。
 - 产品仍保留所有权：runner、模型资产、候选评分、后处理、翻译保护、配置面板和自测门禁都由项目集成和控制，而不是把用户暴露给外部 OCR exe。
 - 商业级重点转为：更好的脚本路由、候选评分、真实截图 fixture、翻译质量、覆盖层还原和发布体积控制。
 
 ### 3.2 推荐路线
 
-- 第一阶段：打包 RapidOCR runner，默认 PP-OCRv5，提供 PP-OCRv4 高级选择。
-- 第二阶段：建立固定生成式 fixture 和真实截图 fixture，覆盖中文、英文、小字技术文本、日文、韩文、阿拉伯文、混排 UI。
+- 第一阶段：在现有 runner 内直接接入 PP-OCRv6 Small，默认手动选择 V6；保留 RapidOCR V5 多语言和 V4 兼容模式，禁止自动回退。
+- 第二阶段：建立 V6 CTC 契约 probe、固定生成式 CER=0 fixture 和真实截图 CER/关键 token fixture；V5/V4 继续覆盖韩文、俄文、阿拉伯文、泰文等备用场景。
 - 第三阶段：把候选评分、噪声过滤、技术文本清理、RTL/LTR 位置策略纳入门禁。
 - 第四阶段：优化性能：常见中英文 UI 走快速路径，多脚本低置信度才进入完整 fallback。
 - 第五阶段：把 OCR fixture、翻译 smoke、覆盖层视觉回归和真实 Windows 手工验收串进发布门禁。
@@ -234,8 +233,8 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 
 | 项目 | 默认值 |
 |---|---|
-| 默认 OCR | RapidOCR PP-OCRv5 / ONNXRuntime 主线 |
-| 备用 OCR | RapidOCR PP-OCRv4 高级可选；低置信度 fallback 后续接入 VLM OCR |
+| 默认 OCR | PP-OCRv6 Small / ONNXRuntime，手动选择 |
+| 备用 OCR | RapidOCR V5 多语言、RapidOCR V4 兼容模式；当前不自动回退 |
 | 源语言 | 自动识别 |
 | 默认目标语言 | 简体中文 |
 | 录制 FPS | 30 FPS |
@@ -256,7 +255,7 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 
 - `Alt+A` 框选、复制、保存、OCR、翻译全部能用。
 - 录制从框选到准备态、开始、暂停、继续、停止保存、打开目录、复制、取消清理全部闭环。
-- OCR 默认使用内置 RapidOCR runner；runner 或模型缺失时清楚显示未就绪并给出恢复路径。
+- OCR 默认使用内置 runner 中的 PP-OCRv6 Small adapter；runner、模型或 V6 CTC 契约缺失时清楚显示未就绪并给出恢复路径。
 - 翻译对真实 GitHub 英文列表、技术文本、多语言 UI 文案达到接近 Snow Shot 的质量。
 
 ### 5.3 商业级验收

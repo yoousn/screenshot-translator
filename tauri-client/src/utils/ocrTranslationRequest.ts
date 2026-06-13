@@ -13,9 +13,16 @@ export type TranslationRequestPayload = {
   blocks: TranslationRequestBlock[];
   source_lang: TranslationSourceLanguage;
   target_lang: string;
+  force_translate_technical_text: boolean;
   system_instruction: string;
   quality_policy: ReturnType<typeof buildTranslationQualityPolicy>;
 };
+
+export type TranslationRequirementOptions = {
+  forceTranslateTechnicalText?: boolean;
+};
+
+export const shouldForceTranslateTechnicalTextForModel = (modelVersion?: string) => !modelVersion || modelVersion === "v6";
 
 export type RetryTranslationBlock = {
   block: OcrBlock;
@@ -125,10 +132,14 @@ export const isLikelyProtectedTechnicalText = (text: string) => {
   return tokens.every(isProtectedTechnicalToken);
 };
 
-export const shouldRequireTranslation = (text: string, targetLang: string) => {
+export const shouldRequireTranslation = (
+  text: string,
+  targetLang: string,
+  options: TranslationRequirementOptions = {},
+) => {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return false;
-  if (isLikelyProtectedTechnicalText(normalized)) return false;
+  if (isLikelyProtectedTechnicalText(normalized) && !options.forceTranslateTechnicalText) return false;
   if (isChineseTargetLanguage(targetLang) && hasChineseText(normalized) && !hasLatinText(normalized)) return false;
   return translatableScriptPattern.test(normalized);
 };
@@ -137,10 +148,12 @@ export const buildTranslationRequestPayload = (
   blocks: OcrBlock[],
   sourceLang: TranslationSourceLanguage,
   targetLang: string,
+  options: TranslationRequirementOptions = {},
 ): TranslationRequestPayload => ({
   blocks: blocks.map((block) => ({ text: block.text, confidence: block.confidence, box: block.box_coords })),
   source_lang: sourceLang,
   target_lang: targetLang,
+  force_translate_technical_text: Boolean(options.forceTranslateTechnicalText),
   system_instruction: buildTranslationSystemInstruction(targetLang, blocks.map((block) => block.text)),
   quality_policy: buildTranslationQualityPolicy(targetLang),
 });
@@ -150,13 +163,15 @@ export const collectUntranslatedLatinRetryBlocks = (
   translations: string[],
   targetLang: string,
   preferredSourceLang: TranslationSourceLanguage,
+  options: TranslationRequirementOptions = {},
 ): RetryTranslationBlock[] => {
   if (preferredSourceLang === "en" || !isChineseTargetLanguage(targetLang)) return [];
   return blocks
     .map((block, index) => ({ block, index }))
     .filter(({ block, index }) => {
       const translated = translations[index] || "";
-      return shouldRequireTranslation(block.text, targetLang)
+      if (isLikelyProtectedTechnicalText(block.text)) return false;
+      return shouldRequireTranslation(block.text, targetLang, options)
         && hasLatinText(block.text)
         && normalizeForCompare(translated) === normalizeForCompare(block.text);
     });
@@ -236,6 +251,7 @@ export const evaluateTranslationQuality = (
   rawTranslations: string[],
   normalizedTranslations: string[],
   targetLang: string,
+  options: TranslationRequirementOptions = {},
 ): TranslationQualitySummary => {
   const summary: TranslationQualitySummary = {
     total: blocks.length,
@@ -254,7 +270,9 @@ export const evaluateTranslationQuality = (
   blocks.forEach((block, index) => {
     const rawTranslated = rawTranslations[index]?.trim() || "";
     const normalizedTranslated = normalizedTranslations[index] || block.text;
-    const requiresTranslation = shouldRequireTranslation(block.text, targetLang);
+    const requiresTranslation = shouldRequireTranslation(block.text, targetLang, options);
+    const forcedTechnicalText = Boolean(options.forceTranslateTechnicalText)
+      && isLikelyProtectedTechnicalText(block.text);
     const unchanged = normalizeForCompare(normalizedTranslated) === normalizeForCompare(block.text);
 
     if (!rawTranslated) summary.missingCount += 1;
@@ -266,7 +284,9 @@ export const evaluateTranslationQuality = (
     }
     if (requiresTranslation) {
       summary.translatableCount += 1;
-      if (unchanged || !rawTranslated) {
+      if (forcedTechnicalText && rawTranslated) {
+        summary.translatedCount += 1;
+      } else if (unchanged || !rawTranslated) {
         summary.untranslatedCount += 1;
         summary.untranslatedIndexes.push(index);
       } else {
@@ -286,9 +306,10 @@ export const validateAndNormalizeTranslationResults = (
   translations: string[],
   targetLang: string,
   providerError?: string,
+  options: TranslationRequirementOptions = {},
 ) => {
   const normalizedTranslations = normalizeTranslationResults(blocks, translations);
-  const quality = evaluateTranslationQuality(blocks, translations, normalizedTranslations, targetLang);
+  const quality = evaluateTranslationQuality(blocks, translations, normalizedTranslations, targetLang, options);
   if (quality.translatableCount > 0 && quality.untranslatedCount === quality.translatableCount) {
     const errorSuffix = providerError ? `（服务端原因：${providerError}）` : "";
     throw new Error(`翻译服务没有返回可用译文：${quality.translatableCount} 行可翻译文本仍是原文或为空。请检查翻译服务地址、令牌和当前翻译通道后重试。${errorSuffix}`);
@@ -296,13 +317,22 @@ export const validateAndNormalizeTranslationResults = (
   return { translations: normalizedTranslations, quality };
 };
 
-export const buildTranslatePairs = (blocks: OcrBlock[], translations: string[], targetLang = "zh"): TranslatePair[] => {
+export const buildTranslatePairs = (
+  blocks: OcrBlock[],
+  translations: string[],
+  targetLang = "zh",
+  options: TranslationRequirementOptions = {},
+): TranslatePair[] => {
   const normalizedTranslations = normalizeTranslationResults(blocks, translations);
   return blocks.map((block, index) => {
     const translated = normalizedTranslations[index];
     const unchanged = normalizeForCompare(translated) === normalizeForCompare(block.text);
+    const forcedTechnicalText = Boolean(options.forceTranslateTechnicalText)
+      && isLikelyProtectedTechnicalText(block.text);
     const status = unchanged
-      ? (shouldRequireTranslation(block.text, targetLang) ? "untranslated" : "preserved")
+      ? (forcedTechnicalText
+          ? "translated"
+          : (shouldRequireTranslation(block.text, targetLang, options) ? "untranslated" : "preserved"))
       : "translated";
     return { o: block.text, t: translated, status };
   });

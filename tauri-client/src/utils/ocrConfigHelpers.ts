@@ -9,7 +9,7 @@ export interface LocalConfig {
   serverUrl?: string;
   lanServerUrl?: string;
   preferLanServer?: boolean;
-  rapidOcrModelVersion?: "v5" | "v4";
+  rapidOcrModelVersion?: "v6" | "v5" | "v4";
   rapidOcrMode?: "auto" | "full" | "latin";
   rapidOcrRunnerPath?: string;
   rapidOcrWorkerEnabled?: boolean;

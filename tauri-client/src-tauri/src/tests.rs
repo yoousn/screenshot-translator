@@ -61,6 +61,15 @@ mod tests {
     }
 
     #[test]
+    fn test_ppocr_v6_readiness_requires_onnx_and_embedded_dictionary_config() {
+        let files = rapid_ocr_required_model_files("v6");
+        assert_eq!(files.len(), 4);
+        assert!(files.contains(&"PP-Ocrv6_small_det.onnx"));
+        assert!(files.contains(&"PP-OCRv6_small_rec.yml"));
+        assert!(!files.contains(&"ppocr_keys_v1.txt"));
+    }
+
+    #[test]
     fn test_parse_hotkey_keeps_minus_as_main_key() {
         assert!(parse_hotkey("Alt+-").is_ok());
         assert!(parse_hotkey("Ctrl+Shift+-").is_ok());

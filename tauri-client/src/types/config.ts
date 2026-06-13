@@ -11,6 +11,7 @@ export interface Config {
   localOcrTimeoutMs?: number;
   translationTimeoutMs?: number;
   rapidOcrWorkerEnabled?: boolean;
+  rapidOcrModelVersion?: "v6" | "v5" | "v4";
   targetLang?: string;
   channel?: string;
   enableUiControlDetection?: boolean;

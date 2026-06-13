@@ -1,0 +1,50 @@
+{
+  "contract": {
+    "dictionarySize": 18708,
+    "classCount": 18710,
+    "blankIndex": 0,
+    "spaceIndex": 18709,
+    "spaceValue": " "
+  },
+  "fixtures": [
+    {
+      "name": "clean-english-spaces",
+      "kind": "generated-clean",
+      "lines": ["Open preview before saving"],
+      "fontName": "Segoe UI",
+      "fontSize": 32,
+      "width": 1000,
+      "height": 180,
+      "expectedText": "Open preview before saving",
+      "maxCer": 0.0,
+      "criticalTokens": ["Open", "preview", "before", "saving"],
+      "caseSensitiveTokens": ["Open"]
+    },
+    {
+      "name": "clean-technical",
+      "kind": "generated-clean",
+      "lines": ["PATH=C:\\Windows\\System32", "LocalModel.exe --help"],
+      "fontName": "Consolas",
+      "fontSize": 24,
+      "width": 1050,
+      "height": 230,
+      "expectedText": "PATH=C:\\Windows\\System32 LocalModel.exe --help",
+      "maxCer": 0.0,
+      "criticalTokens": ["PATH=C:\\Windows\\System32", "LocalModel.exe", "--help"],
+      "caseSensitiveTokens": ["PATH", "Windows", "LocalModel.exe"]
+    },
+    {
+      "name": "clean-chinese",
+      "kind": "generated-clean",
+      "lines": ["保存前打开预览", "复制翻译文本"],
+      "fontName": "Microsoft YaHei",
+      "fontSize": 32,
+      "width": 900,
+      "height": 230,
+      "expectedText": "保存前打开预览 复制翻译文本",
+      "maxCer": 0.0,
+      "criticalTokens": ["保存前打开预览", "复制翻译文本"],
+      "caseSensitiveTokens": []
+    }
+  ]
+}

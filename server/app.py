@@ -227,6 +227,7 @@ class TranslateTextRequest(BaseModel):
     source_lang: Optional[str] = "auto"
     target_lang: Optional[str] = "zh"
     render_mode: Optional[str] = "client"
+    force_translate_technical_text: bool = False
 
 @app.post("/api/translate_text")
 async def translate_text_endpoint(
@@ -275,7 +276,13 @@ async def translate_text_endpoint(
     }
     try:
         provider_started_at = time.perf_counter()
-        translations = translator.translate_batch(texts, req.source_lang, req.target_lang, stats_ref)
+        translations = translator.translate_batch(
+            texts,
+            req.source_lang,
+            req.target_lang,
+            stats_ref,
+            force_translate_technical_text=req.force_translate_technical_text,
+        )
         stats_ref["provider_ms"] += int((time.perf_counter() - provider_started_at) * 1000)
     except Exception as e:
         logger.warning("translate_text batch failed; returning aligned blank translations without slow per-item retry: %s", e)

@@ -147,12 +147,14 @@ pub fn run_rapidocr_sync(
 
 pub fn rapid_ocr_model_version() -> String {
     match config_value_string("rapidOcrModelVersion")
-        .unwrap_or_else(|| "v5".to_string())
+        .unwrap_or_else(|| "v6".to_string())
         .to_ascii_lowercase()
         .as_str()
     {
+        "v6" => "v6".to_string(),
+        "v5" => "v5".to_string(),
         "v4" => "v4".to_string(),
-        _ => "v5".to_string(),
+        _ => "v6".to_string(),
     }
 }
 
@@ -197,6 +199,19 @@ pub fn push_rapid_ocr_model_candidates_from_base(candidates: &mut Vec<PathBuf>, 
     );
 }
 
+pub fn push_ppocr_v6_model_candidates_from_base(candidates: &mut Vec<PathBuf>, base: &Path) {
+    push_unique_path(candidates, base.join("ocrv6"));
+    push_unique_path(candidates, base.join("resources").join("ocrv6"));
+    push_unique_path(
+        candidates,
+        base.join("resources")
+            .join("_up_")
+            .join("_up_")
+            .join("ocrv6"),
+    );
+    push_unique_path(candidates, base.join("_up_").join("_up_").join("ocrv6"));
+}
+
 pub fn rapid_ocr_model_root_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = config_value_string("rapidOcrModelRoot")
@@ -232,11 +247,50 @@ pub fn rapid_ocr_model_root_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
-pub fn rapid_ocr_model_root(app: &tauri::AppHandle) -> PathBuf {
+pub fn ppocr_v6_model_root_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = config_value_string("rapidOcrV6ModelRoot")
+        .or_else(|| std::env::var("YSN_PPOCRV6_MODEL_ROOT").ok())
+        .map(PathBuf::from)
+    {
+        push_unique_path(&mut candidates, path);
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            push_ppocr_v6_model_candidates_from_base(&mut candidates, exe_dir);
+            if let Some(parent) = exe_dir.parent() {
+                push_ppocr_v6_model_candidates_from_base(&mut candidates, parent);
+            }
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_ppocr_v6_model_candidates_from_base(&mut candidates, &resource_dir);
+    }
+    use tauri::path::BaseDirectory;
+    for resource_path in ["ocrv6", "../../ocrv6"] {
+        if let Ok(path) = app.path().resolve(resource_path, BaseDirectory::Resource) {
+            push_unique_path(&mut candidates, path);
+        }
+    }
+    push_unique_path(&mut candidates, repo_root_from_manifest().join("ocrv6"));
+    candidates
+}
+
+pub fn rapid_ocr_model_root_for_version(app: &tauri::AppHandle, model_version: &str) -> PathBuf {
+    if model_version == "v6" {
+        return ppocr_v6_model_root_candidates(app)
+            .into_iter()
+            .find(|path| path.is_dir())
+            .unwrap_or_else(|| repo_root_from_manifest().join("ocrv6"));
+    }
     rapid_ocr_model_root_candidates(app)
         .into_iter()
         .find(|path| path.is_dir())
         .unwrap_or_else(|| rapid_ocr_model_install_root(app))
+}
+
+pub fn rapid_ocr_model_root(app: &tauri::AppHandle) -> PathBuf {
+    rapid_ocr_model_root_for_version(app, &rapid_ocr_model_version())
 }
 
 pub fn rapid_ocr_model_install_root(app: &tauri::AppHandle) -> PathBuf {
@@ -265,8 +319,14 @@ pub fn rapid_ocr_model_install_root(app: &tauri::AppHandle) -> PathBuf {
 }
 
 pub fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> {
-    if model_version == "v4" {
-        vec![
+    match model_version {
+        "v6" => vec![
+            "PP-Ocrv6_small_det.onnx",
+            "PP-Ocrv6_small_det.yml",
+            "OCRv6_small_rec.onnx",
+            "PP-OCRv6_small_rec.yml",
+        ],
+        "v4" => vec![
             "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
             "ch_PP-OCRv4_det_mobile.onnx",
             "ch_PP-OCRv4_rec_mobile.onnx",
@@ -274,9 +334,8 @@ pub fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> 
             "korean_PP-OCRv4_rec_mobile.onnx",
             "arabic_PP-OCRv4_rec_mobile.onnx",
             "cyrillic_PP-OCRv3_rec_mobile.onnx",
-        ]
-    } else {
-        vec![
+        ],
+        _ => vec![
             "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
             "ch_PP-OCRv5_det_mobile.onnx",
             "ch_PP-OCRv5_rec_mobile.onnx",
@@ -285,7 +344,7 @@ pub fn rapid_ocr_required_model_files(model_version: &str) -> Vec<&'static str> 
             "arabic_PP-OCRv5_rec_mobile.onnx",
             "cyrillic_PP-OCRv5_rec_mobile.onnx",
             "th_PP-OCRv5_rec_mobile.onnx",
-        ]
+        ],
     }
 }
 
@@ -494,7 +553,7 @@ pub fn run_rapidocr_probe(
     app: &tauri::AppHandle,
     model_version: &str,
 ) -> Result<RapidOcrRunnerOutput, String> {
-    let model_root = rapid_ocr_model_root(app);
+    let model_root = rapid_ocr_model_root_for_version(app, model_version);
     run_rapidocr_json(
         app,
         vec![

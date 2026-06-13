@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
 import type { FormInstance } from "antd";
@@ -177,7 +177,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       }
     } catch (error) {
       console.error(error);
-      message.error("加载设置失败，请检查本地配置文件是否损坏。");
+      message.error("加载设��失败，请检查本地配置文件是否损坏。");
     } finally {
       isLoadingSettingsRef.current = false;
     }
@@ -218,7 +218,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
     autoSaveTimerRef.current = window.setTimeout(() => {
       autoSaveTimerRef.current = null;
-      void saveSettingsValues(form.getFieldsValue(true) as SettingsFormValues, { showMessage: false, syncServer: false });
+      void saveSettingsValues(form.getFieldsValue(true) as SettingsFormValues, { showMessage: true, successMessage: "已自动保存", syncServer: false });
     }, 400);
   };
 

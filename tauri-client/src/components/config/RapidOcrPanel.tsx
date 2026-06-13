@@ -1,7 +1,13 @@
 import { Alert, Button, Card, Col, Descriptions, Row, Select, Space, Tag, Typography } from "antd";
 import { ApiOutlined, CheckCircleOutlined, FolderOpenOutlined, ReloadOutlined, ToolOutlined } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
-import type { RapidOcrModelVersion, RapidOcrSelfTestResult, RapidOcrStatus } from "../../ocr-models";
+import {
+  localOcrModelName,
+  localOcrModelOptions,
+  type RapidOcrModelVersion,
+  type RapidOcrSelfTestResult,
+  type RapidOcrStatus,
+} from "../../ocr-models";
 
 const { Text } = Typography;
 
@@ -15,11 +21,6 @@ type RapidOcrPanelProps = {
   onRefreshStatus: () => void;
   onRunSelfTest: () => void;
 };
-
-const modelOptions: Array<{ value: RapidOcrModelVersion; label: string }> = [
-  { value: "v5", label: "Rapid OCR V5（默认）" },
-  { value: "v4", label: "Rapid OCR V4（兼容）" },
-];
 
 function StatusTile({ title, ready, detail }: { title: string; ready: boolean; detail: string }) {
   return (
@@ -46,16 +47,16 @@ export default function RapidOcrPanel({
   onRunSelfTest,
 }: RapidOcrPanelProps) {
   const ready = Boolean(status?.ready);
-  const modelDir = status?.modelDir || "models\\rapidocr";
+  const modelDir = status?.modelDir || (modelVersion === "v6" ? "ocrv6" : "models\\rapidocr");
   const missingModels = status?.missingModelFiles || [];
   const hasMissingModels = missingModels.length > 0;
   const alertType = ready ? "success" : hasMissingModels ? "warning" : "info";
   const alertMessage = ready ? "识字模型可用" : hasMissingModels ? "识字模型文件缺失" : "识字模型需要检测";
   const alertDescription = ready
-    ? `当前使用 Rapid OCR ${(status?.rapidOcrModelVersion || modelVersion).toUpperCase()}，截图识字和截图翻译可用。`
+    ? `当前主模型：${localOcrModelName(status?.rapidOcrModelVersion || modelVersion)}（手动选择）。截图识字和截图翻译可用。`
     : hasMissingModels
-      ? `模型目录缺少 ${missingModels.length} 个文件。请把 RapidOCR 模型放到下方目录后重新检测。`
-      : status?.lastError || "点击重新检测或运行自测，确认 RapidOCR runner 和模型是否可用。";
+      ? `模型目录缺少 ${missingModels.length} 个文件。请把当前所选模型放到下方目录后重新检测。`
+      : status?.lastError || "点击重新检测或运行自测，确认本地 OCR runner 和模型是否可用。";
 
   const openModelDir = () => {
     invoke("open_path_in_file_manager", { path: modelDir }).catch(() => undefined);
@@ -64,7 +65,7 @@ export default function RapidOcrPanel({
   return (
     <Card
       bordered={false}
-      title={<span><ApiOutlined style={{ marginRight: 8 }} />识字模型</span>}
+      title={<span><ApiOutlined style={{ marginRight: 8 }} />本地 OCR 引擎</span>}
       extra={<Button size="small" icon={<ReloadOutlined />} loading={loadingStatus} onClick={onRefreshStatus}>重新检测</Button>}
       style={{ borderRadius: 18, boxShadow: "0 18px 48px rgba(15,23,42,0.06)" }}
     >
@@ -84,16 +85,16 @@ export default function RapidOcrPanel({
         <Row gutter={[12, 12]}>
           <Col xs={24} md={8}>
             <StatusTile
-              title="RapidOCR runner"
+              title="本地 OCR runner"
               ready={Boolean(status?.runnerReady)}
               detail={status?.runnerPath ? status.runnerKind || "已找到 runner" : "未找到 runner 时无法执行本地识字。"}
             />
           </Col>
           <Col xs={24} md={8}>
             <StatusTile
-              title="Rapid OCR V5 / V4"
+              title="当前主模型"
               ready={Boolean(status?.modelPacksReady)}
-              detail={hasMissingModels ? `缺少 ${missingModels.length} 个文件` : `当前模型：Rapid OCR ${modelVersion.toUpperCase()}`}
+              detail={hasMissingModels ? `缺少 ${missingModels.length} 个文件` : `当前模型：${localOcrModelName(modelVersion)}`}
             />
           </Col>
           <Col xs={24} md={8}>
@@ -107,7 +108,7 @@ export default function RapidOcrPanel({
 
         <Space wrap align="center">
           <Text strong>模型版本</Text>
-          <Select value={modelVersion} options={modelOptions} style={{ width: 220 }} onChange={(value) => onModelVersionChange(value)} />
+          <Select value={modelVersion} options={localOcrModelOptions} style={{ width: 260 }} onChange={(value) => onModelVersionChange(value)} />
           <Tag color={ready ? "green" : "orange"} icon={ready ? <CheckCircleOutlined /> : undefined}>
             {ready ? "已就绪" : "待处理"}
           </Tag>
@@ -116,7 +117,8 @@ export default function RapidOcrPanel({
 
         <Descriptions size="small" column={1} bordered>
           <Descriptions.Item label="模型目录">{modelDir}</Descriptions.Item>
-          <Descriptions.Item label="当前模型">Rapid OCR {modelVersion.toUpperCase()}</Descriptions.Item>
+          <Descriptions.Item label="当前模型">{localOcrModelName(modelVersion)}（手动选择）</Descriptions.Item>
+          <Descriptions.Item label="兼容适配器">RapidOCR 保留用于 V5 / V4 备用模型</Descriptions.Item>
           <Descriptions.Item label="缺失文件">{missingModels.length ? missingModels.join("、") : "无"}</Descriptions.Item>
         </Descriptions>
       </Space>

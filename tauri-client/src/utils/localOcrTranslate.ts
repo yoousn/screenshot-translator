@@ -7,6 +7,7 @@ import {
   collectUntranslatedLatinRetryBlocks,
   mergeRetryTranslations,
   selectPreferredSourceLanguage,
+  shouldForceTranslateTechnicalTextForModel,
   validateAndNormalizeTranslationResults,
   type TranslationSourceLanguage,
 } from "./ocrTranslationRequest";
@@ -28,6 +29,7 @@ export type LocalTranslateConfig = {
   channel?: string;
   localOcrTimeoutMs?: number;
   translationTimeoutMs?: number;
+  rapidOcrModelVersion?: "v6" | "v5" | "v4";
 };
 
 
@@ -222,7 +224,15 @@ const getPreferredTranslationMemoryChannel = (config: LocalTranslateConfig) => (
   || "auto"
 );
 
-const requestTextTranslations = async (serverUrl: string, token: string, blocks: OcrBlock[], sourceLang: TranslationSourceLanguage, targetLang: string, timeoutMs: number) => {
+const requestTextTranslations = async (
+  serverUrl: string,
+  token: string,
+  blocks: OcrBlock[],
+  sourceLang: TranslationSourceLanguage,
+  targetLang: string,
+  timeoutMs: number,
+  forceTranslateTechnicalText = false,
+) => {
   const normalizedServerUrl = normalizeTranslationServerUrl(serverUrl);
   const endpoint = `${normalizedServerUrl}/api/translate_text`;
   console.log("[requestTextTranslations] URL:", endpoint, "auth:", token ? "configured" : "missing");
@@ -232,7 +242,7 @@ const requestTextTranslations = async (serverUrl: string, token: string, blocks:
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": token },
-      body: JSON.stringify(buildTranslationRequestPayload(blocks, sourceLang, targetLang)),
+      body: JSON.stringify(buildTranslationRequestPayload(blocks, sourceLang, targetLang, { forceTranslateTechnicalText })),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`Text translation API failed: ${response.status}`);
@@ -257,14 +267,29 @@ const retryUntranslatedLatinBlocks = async (
   targetLang: string,
   preferredSourceLang: TranslationSourceLanguage,
   timeoutMs: number,
+  forceTranslateTechnicalText = false,
 ) => {
-  const retryBlocks = collectUntranslatedLatinRetryBlocks(blocks, translations, targetLang, preferredSourceLang);
+  const retryBlocks = collectUntranslatedLatinRetryBlocks(
+    blocks,
+    translations,
+    targetLang,
+    preferredSourceLang,
+    { forceTranslateTechnicalText },
+  );
 
   if (retryBlocks.length === 0) {
     return translations;
   }
 
-  const retryData = await requestTextTranslationsWithFallback(serverUrls, token, retryBlocks.map((item) => item.block), "en", targetLang, timeoutMs);
+  const retryData = await requestTextTranslationsWithFallback(
+    serverUrls,
+    token,
+    retryBlocks.map((item) => item.block),
+    "en",
+    targetLang,
+    timeoutMs,
+    forceTranslateTechnicalText,
+  );
   const retryTranslations = retryData.translations || [];
   return mergeRetryTranslations(translations, retryBlocks, retryTranslations);
 };
@@ -289,6 +314,7 @@ type TranslateOcrBlocksOptions = {
   flowStarted?: number;
   ocrMs?: number;
   source?: string;
+  forceTranslateTechnicalText?: boolean;
 };
 
 export const translateOcrBlocks = async (
@@ -302,6 +328,8 @@ export const translateOcrBlocks = async (
   const token = config.clientToken || "";
   const targetLang = config.targetLang || "zh";
   const translationTimeoutMs = config.translationTimeoutMs || DEFAULT_TRANSLATION_TIMEOUT_MS;
+  const forceTranslateTechnicalText = Boolean(options.forceTranslateTechnicalText);
+  const translationRequirementOptions = { forceTranslateTechnicalText };
   const memoryChannel = getPreferredTranslationMemoryChannel(config);
   const normalization = await buildOcrNormalizationReport(rawBlocks || []);
   const ocrBlocks = normalization.blocks;
@@ -313,7 +341,13 @@ export const translateOcrBlocks = async (
   const translations = new Array<string>(ocrBlocks.length).fill("");
   const requestItems: { block: OcrBlock; index: number }[] = [];
 
-  const localHits = lookupLocalTranslations(ocrBlocks, preferredSourceLang, targetLang, memoryChannel);
+  const localHits = lookupLocalTranslations(
+    ocrBlocks,
+    preferredSourceLang,
+    targetLang,
+    memoryChannel,
+    translationRequirementOptions,
+  );
   ocrBlocks.forEach((block, index) => {
     const localHit = localHits[index];
     if (localHit) {
@@ -341,6 +375,7 @@ export const translateOcrBlocks = async (
         preferredSourceLang,
         targetLang,
         translationTimeoutMs,
+        forceTranslateTechnicalText,
       );
       translationMs = Math.round(performance.now() - translationStarted);
       (transData.translations || []).forEach((translated, requestIndex) => {
@@ -365,20 +400,39 @@ export const translateOcrBlocks = async (
       targetLang,
       preferredSourceLang,
       Math.min(translationTimeoutMs, RETRY_TRANSLATION_TIMEOUT_MS),
+      forceTranslateTechnicalText,
     );
     translations.splice(0, translations.length, ...retriedTranslations);
   } catch (error) {
     throw new Error(normalizeLocalTranslateError(error));
   }
   const retryMs = Math.round(performance.now() - retryStarted);
-  const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(ocrBlocks, translations, targetLang, transData.provider_error);
-  translationMemoryStats.stored = storeTranslationMemory(ocrBlocks, normalizedTranslations, preferredSourceLang, targetLang, transData.channel || memoryChannel);
+  const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(
+    ocrBlocks,
+    translations,
+    targetLang,
+    transData.provider_error,
+    translationRequirementOptions,
+  );
+  translationMemoryStats.stored = storeTranslationMemory(
+    ocrBlocks,
+    normalizedTranslations,
+    preferredSourceLang,
+    targetLang,
+    transData.channel || memoryChannel,
+    translationRequirementOptions,
+  );
 
   const renderStarted = performance.now();
   const distributedRender = distributeTranslationsForRender(ocrBlocks, normalizedTranslations, normalization.renderBlocks || ocrBlocks);
   const resultBase64 = await renderTranslatedBlocks(base64, distributedRender.blocks, distributedRender.translations);
   const renderMs = Math.round(performance.now() - renderStarted);
-  const pairs: TranslatePair[] = buildTranslatePairs(ocrBlocks, normalizedTranslations, targetLang);
+  const pairs: TranslatePair[] = buildTranslatePairs(
+    ocrBlocks,
+    normalizedTranslations,
+    targetLang,
+    translationRequirementOptions,
+  );
   return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", usedServerUrl: transData.serverUrl || (requestGroups.length > 0 ? serverUrls[0] : "local-cache"), blocksCount: ocrBlocks.length, routePlan, normalization, translationQuality, translationMemoryStats, translationTimings: transData.timings, servicePrewarm: getLastTranslationServicePrewarm(), localTimings: { source: options.source || "rapidocr", ocrMs: options.ocrMs ?? 0, translationMs, retryMs, renderMs, totalMs: Math.round(performance.now() - flowStarted) } };
 };
 
@@ -396,7 +450,12 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
     throw new Error(normalizeLocalTranslateError(error));
   }
   const ocrMs = Math.round(performance.now() - ocrStarted);
-  return translateOcrBlocks(base64, rawBlocks, config, { flowStarted, ocrMs, source: "rapidocr" });
+  return translateOcrBlocks(base64, rawBlocks, config, {
+    flowStarted,
+    ocrMs,
+    source: "rapidocr",
+    forceTranslateTechnicalText: shouldForceTranslateTechnicalTextForModel(config.rapidOcrModelVersion),
+  });
 };
 
 const requestTextTranslationsWithFallback = async (
@@ -406,9 +465,18 @@ const requestTextTranslationsWithFallback = async (
   sourceLang: TranslationSourceLanguage,
   targetLang: string,
   timeoutMs: number,
+  forceTranslateTechnicalText = false,
 ) => {
   if (serverUrls.length <= 1) {
-    return await requestTextTranslations(serverUrls[0], token, blocks, sourceLang, targetLang, timeoutMs);
+    return await requestTextTranslations(
+      serverUrls[0],
+      token,
+      blocks,
+      sourceLang,
+      targetLang,
+      timeoutMs,
+      forceTranslateTechnicalText,
+    );
   }
 
   const errors: string[] = [];
@@ -420,7 +488,15 @@ const requestTextTranslationsWithFallback = async (
     const startCandidate = (serverUrl: string) => {
       if (settled) return;
       started += 1;
-      requestTextTranslations(serverUrl, token, blocks, sourceLang, targetLang, timeoutMs)
+      requestTextTranslations(
+        serverUrl,
+        token,
+        blocks,
+        sourceLang,
+        targetLang,
+        timeoutMs,
+        forceTranslateTechnicalText,
+      )
         .then((result) => {
           if (settled) return;
           settled = true;

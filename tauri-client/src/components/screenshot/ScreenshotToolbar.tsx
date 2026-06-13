@@ -16,7 +16,7 @@ import {
   UndoOutlined,
   VideoCameraOutlined,
 } from "@ant-design/icons";
-import type { AnnotationTool } from "../../types/screenshot";
+import type { AnnotationTool, MarkerShape } from "../../types/screenshot";
 
 interface ScreenshotToolbarProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -35,6 +35,8 @@ interface ScreenshotToolbarProps {
   onSetAnnotationTool: (tool: AnnotationTool) => void;
   onSetAnnotationColor: (color: string) => void;
   onSetAnnotationSize: (size: number) => void;
+  markerShape: MarkerShape;
+  onSetMarkerShape: (shape: MarkerShape) => void;
   onTranslate: () => void;
   onShowTranslateResult: () => void;
   canShowTranslateResult: boolean;
@@ -76,6 +78,8 @@ export default function ScreenshotToolbar({
   onSetAnnotationTool,
   onSetAnnotationColor,
   onSetAnnotationSize,
+  markerShape,
+  onSetMarkerShape,
   onTranslate,
   onShowTranslateResult,
   canShowTranslateResult,
@@ -100,6 +104,7 @@ export default function ScreenshotToolbar({
     { key: "brush", tip: text.toolbar.brush, icon: <EditOutlined style={{ fontSize: 18 }} /> },
     { key: "text", tip: text.toolbar.text, icon: <span style={{ fontWeight: 800, fontSize: 19 }}>T</span> },
     { key: "mosaic", tip: text.toolbar.mosaic, icon: <span style={{ fontSize: 20, lineHeight: 1 }}>▦</span> },
+    { key: "number", tip: "数字标注", icon: <span style={{ fontSize: 16, fontWeight: 700 }}>①</span> },
   ];
 
   const getToolHint = (tool: AnnotationTool | null) => {
@@ -203,6 +208,21 @@ export default function ScreenshotToolbar({
               <span>{text.toolbar.color}</span>
               <input type="color" value={annotationColor} onChange={(event) => onSetAnnotationColor(event.target.value)} style={{ width: 30, height: 26, padding: 0, border: "1px solid #d9d9d9", borderRadius: 5, background: "#fff" }} />
             </>
+          )}
+          {annotationTool === "number" && (
+            <Space size={4} style={{ marginLeft: 4 }}>
+              {(["circle", "square", "drop"] as MarkerShape[]).map((shape) => (
+                <Button
+                  key={shape}
+                  size="small"
+                  type={markerShape === shape ? "primary" : "default"}
+                  style={{ width: 30, height: 24, padding: 0, fontSize: 14 }}
+                  onClick={() => onSetMarkerShape(shape)}
+                >
+                  {shape === "circle" ? "①" : shape === "square" ? "▣" : "◈"}
+                </Button>
+              ))}
+            </Space>
           )}
           <span>{getToolHint(annotationTool)}</span>
         </div>

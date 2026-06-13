@@ -9,7 +9,7 @@ export type OcrRuntimeReadinessStep = {
   nextAction: string;
 };
 
-export type RapidOcrModelVersion = "v5" | "v4";
+export type RapidOcrModelVersion = "v6" | "v5" | "v4";
 
 export type RapidOcrStatus = {
   ready: boolean;
@@ -70,6 +70,7 @@ export type RapidOcrModelInstallResult = {
   warmResult?: Record<string, unknown>;
   probeResults?: Record<string, unknown>;
   missingModelFiles?: {
+    v6?: string[];
     v5?: string[];
     v4?: string[];
   };
