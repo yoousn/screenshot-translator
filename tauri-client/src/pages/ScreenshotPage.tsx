@@ -205,7 +205,9 @@ export default function ScreenshotPage() {
     draftAnnotationRef, editingTextDraftRef,
 
     pushAnnotationHistory, undoAnnotation, redoAnnotation, commitAnnotation,
-    cancelTextDraft, commitTextDraft, deleteSelectedAnnotation, resetAnnotations
+    cancelTextDraft, commitTextDraft, deleteSelectedAnnotation, resetAnnotations,
+
+    markerShape, setMarkerShape, markerShapeRef,
   } = useScreenshotAnnotation(() => {
     triggerRender();
   });
@@ -593,6 +595,7 @@ export default function ScreenshotPage() {
     annotationColorRef,
     annotationSizeRef,
     annotationSizesRef,
+    markerShapeRef,
     selectMoveTool: () => {
       setIsEditing(false);
       setAnnotationTool(null);

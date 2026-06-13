@@ -4353,3 +4353,50 @@ Alt+A
 ### Next Steps
 - Run the EXE-only build entry when ready; it will now restore missing Node dependencies automatically before icon synchronization and compilation.
 - Keep routine cache cleanup on the default mode; use `--deep` only when intentionally removing dependencies and release outputs.
+
+## Chapter 270 - Enterprise Screenshot Enhancement Sprint (2026-06-13)
+
+> Chapter status: completed for the enterprise annotation/performance/feature sprint. This chapter landed real-time annotation performance (P0-1), number marker tool (F9), dead code cleanup (F6), micro-animations (F7), feature toggle settings page (F8), and magnifier/color-picker hook (F1+F2). All changes pass TypeScript strict check and production Vite build with zero new errors.
+
+### Goals
+- Fix annotation input lag by injecting `scheduleDraw()` calls into `pointerdown` and `pointermove` annotation branches (P0-1).
+- Implement auto-incrementing number markers with circle/square/drop shapes, re-indexing on undo/delete (F9).
+- Remove dead `AnnotationLayer.tsx` and uninstall `konva` / `react-konva` dependencies (F6).
+- Add spring-based CSS micro-animations for toolbar pop-in and button hover (F7).
+- Create self-contained `FeatureSwitches.tsx` settings page with direct config load/save (F8).
+- Implement `useScreenshotMagnifier.ts` hook with PixPin-style square magnifier and 1x1 HEX color picker (F1+F2).
+- Wire `markerShapeRef` from `useScreenshotAnnotation` through `ScreenshotPage` to `useScreenshotInteraction`.
+- Route the Feature Switches page into `App.tsx` navigation.
+
+### Added Files
+- `tauri-client/src/pages/FeatureSwitches.tsx` — Self-contained feature toggle page with Ant Design Switch rows, direct `invoke("get_config")` / `invoke("save_config")` pattern, and `autoStart` special handling.
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts` — Square magnifier drawing and raw HEX color sampling, using efficient 1x1 `drawImage` sampling to prevent 4K performance degradation.
+
+### Modified Files
+- `tauri-client/src/hooks/useScreenshotInteraction.ts` — Injected `scheduleDraw()` into annotation `pointerdown`/`pointermove` branches; added `markerShapeRef` prop and number-marker click-to-place handler.
+- `tauri-client/src/hooks/useScreenshotAnnotation.ts` — Added `markerShape` state, re-indexing logic on deletion, and `markerShapeRef` export.
+- `tauri-client/src/types/screenshot.ts` — Extended `AnnotationTool` with `"number"`, added `MarkerShape`, `markerShape`, and `markerIndex` to `Annotation`.
+- `tauri-client/src/types/config.ts` — Added feature flags: `enableMagnifier`, `enableColorPicker`, `enablePreciseSelection`, `enableLiveAnnotation`, `autoStart`.
+- `tauri-client/src/utils/annotationGeometry.ts` — Number marker factory, hit detection, re-indexing, and drag support.
+- `tauri-client/src/utils/renderAnnotations.ts` — Canvas rendering for number markers (circle/square/drop shapes with dynamic index labels).
+- `tauri-client/src/index.css` — Spring easing variables and micro-animation CSS classes (`pop-in-toolbar`, `btn-press`).
+- `tauri-client/src/pages/ScreenshotPage.tsx` — Destructured `markerShapeRef` from annotation hook and passed to interaction hook.
+- `tauri-client/src/App.tsx` — Added `FeatureSwitches` import, `ThunderboltOutlined` icon, navigation menu item, and route case.
+
+### Deleted Files
+- `tauri-client/src/pages/AnnotationLayer.tsx` — Dead React-Konva code.
+- `konva` and `react-konva` npm dependencies removed via `npm uninstall`.
+
+### Validation
+- Passed: `npx tsc --noEmit` — zero TypeScript errors.
+- Passed: `npx vite build` — production bundle built successfully (1304 kB JS, 26 kB CSS).
+- Passed: `npm uninstall konva react-konva` — clean dependency removal.
+
+### Known Risks
+- `useScreenshotMagnifier` hook is implemented but not yet wired into `ScreenshotPage` render loop; requires `enableMagnifier` feature flag integration.
+- Scroll-capture stitching (P0-3) remains unimplemented.
+- Number marker toolbar UI button not yet added to the annotation toolbar; markers are logic-ready but need a trigger button.
+- Large `index` chunk Vite warning is pre-existing (Ant Design + React bundled together).
+
+### Next Recommended Chapter
+- Chapter 271 should wire the magnifier hook into `ScreenshotPage`, add the number-marker button to the annotation toolbar, and begin scroll-capture (P0-3) implementation.

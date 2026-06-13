@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import type { Annotation, AnnotationTool, EditingTextDraft } from "../types/screenshot";
-import { makeTextAnnotation } from "../utils/annotationGeometry";
+import type { Annotation, AnnotationTool, EditingTextDraft, MarkerShape } from "../types/screenshot";
+import { makeTextAnnotation, reindexNumberMarkers } from "../utils/annotationGeometry";
 
 export const DEFAULT_ANNOTATION_COLOR = "#ff4d4f";
 export const DEFAULT_ANNOTATION_TOOL: AnnotationTool = "rect";
-export const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circle: 4, mosaic: 16, arrow: 4, text: 4, brush: 4 };
+export const DEFAULT_ANNOTATION_SIZES: Record<AnnotationTool, number> = { rect: 4, circle: 4, mosaic: 16, arrow: 4, text: 4, brush: 4, number: 16 };
 
 export function useScreenshotAnnotation(onRenderNeeded: () => void) {
   const [annotationTool, setAnnotationToolState] = useState<AnnotationTool | null>(null);
@@ -16,6 +16,12 @@ export function useScreenshotAnnotation(onRenderNeeded: () => void) {
   const [annotationHistory, setAnnotationHistory] = useState<Annotation[][]>([]);
   const [redoAnnotations, setRedoAnnotations] = useState<Annotation[][]>([]);
   const [draftAnnotation, setDraftAnnotation] = useState<Annotation | null>(null);
+
+  // F9: Marker shape state for number annotations
+  const [markerShape, setMarkerShapeState] = useState<MarkerShape>("circle");
+  const markerShapeRef = useRef<MarkerShape>("circle");
+  markerShapeRef.current = markerShape;
+  const setMarkerShape = useCallback((shape: MarkerShape) => { setMarkerShapeState(shape); markerShapeRef.current = shape; }, []);
 
   const annotationToolRef = useRef<AnnotationTool>(DEFAULT_ANNOTATION_TOOL);
   const annotationColorRef = useRef(DEFAULT_ANNOTATION_COLOR);
@@ -136,7 +142,7 @@ export function useScreenshotAnnotation(onRenderNeeded: () => void) {
     if (selectedIndex === null) return;
     const current = annotationsRef.current;
     if (!current[selectedIndex]) return;
-    replaceAnnotations(current.filter((_, index) => index !== selectedIndex));
+    replaceAnnotations(reindexNumberMarkers(current.filter((_, index) => index !== selectedIndex)));
     setSelectedAnnotationIndex(null);
   }, [replaceAnnotations]);
 
@@ -201,5 +207,9 @@ export function useScreenshotAnnotation(onRenderNeeded: () => void) {
     applyAnnotations,
     replaceAnnotations,
     resetAnnotations,
+
+    markerShape,
+    setMarkerShape,
+    markerShapeRef,
   };
 }

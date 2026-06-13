@@ -1,7 +1,8 @@
 export type Rect = { x: number; y: number; w: number; h: number; kind?: "window" | "control" | "taskbar" | "display" | "visual" };
-export type AnnotationTool = "rect" | "circle" | "mosaic" | "arrow" | "text" | "brush";
+export type AnnotationTool = "rect" | "circle" | "mosaic" | "arrow" | "text" | "brush" | "number";
+export type MarkerShape = "circle" | "square" | "drop";
 export type Point = { x: number; y: number };
-export type Annotation = { type: AnnotationTool; rect: Rect; points?: Point[]; text?: string; color?: string; size?: number };
+export type Annotation = { type: AnnotationTool; rect: Rect; points?: Point[]; text?: string; color?: string; size?: number; markerShape?: MarkerShape; markerIndex?: number };
 export type EditingTextDraft = { x: number; y: number; value: string; targetIndex: number | null } | null;
 export type TranslatePair = { o: string; t: string; status?: "translated" | "preserved" | "untranslated" };
 

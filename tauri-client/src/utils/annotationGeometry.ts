@@ -1,4 +1,4 @@
-import type { Annotation, AnnotationTool, Point, Rect } from "../types/screenshot";
+import type { Annotation, AnnotationTool, MarkerShape, Point, Rect } from "../types/screenshot";
 
 export type AnnotationResizeHandle = "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
 export type AnnotationHit = { index: number; action: "move" | "resize"; handle?: AnnotationResizeHandle; cursor: string };
@@ -41,8 +41,41 @@ export const makeTextAnnotation = (point: Point, text: string, color: string, ba
     size: fontSize,
   };
 };
+export const markerDiameter = (baseSize: number) => Math.max(24, baseSize + 14);
 
-export const isDraggableAnnotation = (annotation: Annotation) => annotation.type === "rect" || annotation.type === "circle" || annotation.type === "text";
+export const makeNumberAnnotation = (
+  point: Point,
+  color: string,
+  baseSize: number,
+  shape: MarkerShape,
+  index: number,
+): Annotation => {
+  const d = markerDiameter(baseSize);
+  return {
+    type: "number",
+    rect: { x: point.x - d / 2, y: point.y - d / 2, w: d, h: d },
+    color, size: baseSize, markerShape: shape, markerIndex: index,
+  };
+};
+
+// Reindex number markers by array order after delete/undo
+export const reindexNumberMarkers = (annotations: Annotation[]): Annotation[] => {
+  let n = 0;
+  return annotations.map((a) => (a.type === "number" ? { ...a, markerIndex: ++n } : a));
+};
+
+// Optional: reindex by position (top-to-bottom, left-to-right) after drag
+export const reindexNumberMarkersByPosition = (annotations: Annotation[]): Annotation[] => {
+  const order = annotations
+    .map((a, i) => ({ a, i }))
+    .filter((x) => x.a.type === "number")
+    .sort((p, q) => (p.a.rect.y - q.a.rect.y) || (p.a.rect.x - q.a.rect.x));
+  const indexMap = new Map<number, number>();
+  order.forEach((x, k) => indexMap.set(x.i, k + 1));
+  return annotations.map((a, i) => (a.type === "number" ? { ...a, markerIndex: indexMap.get(i) } : a));
+};
+
+export const isDraggableAnnotation = (annotation: Annotation) => annotation.type === "rect" || annotation.type === "circle" || annotation.type === "text" || annotation.type === "number";
 
 
 const resizeCursors: Record<AnnotationResizeHandle, string> = {
@@ -105,6 +138,10 @@ export const hitAnnotationDetailed = (annotations: Annotation[], point: Point, f
       const inside = annotation.type === "circle" ? isInsideEllipse(rect, point) : isInsideRect(rect, point);
       if (inside) return { index, action: "move", cursor: "move" };
       continue;
+    }
+
+    if (annotation.type === "number" && isInsideRect(rect, point)) {
+      return { index, action: "move", cursor: "move" };
     }
 
     if (annotation.type === "text" && isInsideRect(rect, point)) {

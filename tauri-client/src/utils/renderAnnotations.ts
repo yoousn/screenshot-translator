@@ -110,6 +110,35 @@ export const drawAnnotation = (
     return;
   }
 
+  if (annotation.type === "number") {
+    const d = annotation.rect.w || (size + 14);
+    const ncx = annotation.rect.x + d / 2;
+    const ncy = annotation.rect.y + d / 2;
+    const r = d / 2;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (annotation.markerShape === "square") {
+      ctx.rect(annotation.rect.x, annotation.rect.y, d, d);
+      ctx.fill();
+    } else if (annotation.markerShape === "drop") {
+      ctx.moveTo(ncx, annotation.rect.y + d);
+      ctx.quadraticCurveTo(annotation.rect.x, ncy, ncx, annotation.rect.y);
+      ctx.quadraticCurveTo(annotation.rect.x + d, ncy, ncx, annotation.rect.y + d);
+      ctx.fill();
+    } else {
+      ctx.arc(ncx, ncy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `bold ${Math.round(d * 0.58)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(annotation.markerIndex ?? "?"), ncx, ncy + 1);
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+    return;
+  }
+
   if (w <= 0 || h <= 0) return;
 
   if (annotation.type === "mosaic") {
@@ -206,6 +235,22 @@ export const renderExportAnnotations = ({
       ctx.strokeRect(ax, ay, width, fontSize + 12);
       ctx.fillStyle = color;
       ctx.fillText(annotation.text, ax + 7, ay + fontSize + 2);
+    } else if (annotation.type === "number") {
+      const d = Math.max(20, Math.round(aw || (annotation.size || 16) * Math.max(scaleX, scaleY) + 14));
+      const cx = ax + d / 2;
+      const cy = ay + d / 2;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      if (annotation.markerShape === "square") { ctx.rect(ax, ay, d, d); }
+      else { ctx.arc(cx, cy, d / 2, 0, Math.PI * 2); }
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${Math.round(d * 0.58)}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(annotation.markerIndex ?? "?"), cx, cy + 1);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
     } else if (annotation.type === "mosaic") {
       drawMosaic(ctx, { ...annotation, rect: { x: ax, y: ay, w: aw, h: ah }, points: annotation.points?.map(mapPoint), size: scaleStroke(annotation) }, fallbackSize);
     } else {

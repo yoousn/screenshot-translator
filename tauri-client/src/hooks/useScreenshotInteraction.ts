@@ -1,9 +1,9 @@
 import React, { useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { Rect, Annotation, Point, AnnotationTool, ScreenshotPhysicalBounds } from "../types/screenshot";
+import type { Rect, Annotation, Point, AnnotationTool, MarkerShape, ScreenshotPhysicalBounds } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { invoke } from "@tauri-apps/api/core";
-import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
+import { clamp, hitAnnotationDetailed, isDraggableAnnotation, makeLineAnnotation, makeNumberAnnotation, moveAnnotation, normalizedRectFromPoints, resizeAnnotation, type AnnotationResizeHandle } from "../utils/annotationGeometry";
 import { getHandleAt, isPointInSelection } from "../utils/selectionGeometry";
 import { getDetectionCandidatesAt } from "../utils/detectionCandidates";
 import { getPhysicalSelection } from "../utils/screenshotImage";
@@ -67,6 +67,7 @@ interface UseScreenshotInteractionProps {
   annotationColorRef: React.RefObject<string>;
   annotationSizeRef: React.RefObject<number>;
   annotationSizesRef: React.RefObject<Record<AnnotationTool, number>>;
+  markerShapeRef: React.RefObject<MarkerShape>;
   selectMoveTool: () => void;
 
   // Window Rects
@@ -162,6 +163,7 @@ export function useScreenshotInteraction({
   annotationColorRef,
   annotationSizeRef,
   annotationSizesRef,
+  markerShapeRef,
   selectMoveTool,
 
   windowRectsRef,
@@ -579,6 +581,12 @@ export function useScreenshotInteraction({
         openTextEditor({ x: cx, y: cy }, null);
         return;
       }
+      // F9: number marker - single click to place
+      if (tool === "number") {
+        const index = annotationsRef.current.filter((a) => a.type === "number").length + 1;
+        commitAnnotation(makeNumberAnnotation({ x: cx, y: cy }, annotationColorRef.current, annotationSizeRef.current, markerShapeRef.current, index));
+        return;
+      }
       if (!tool) return;
       isDrawingAnnotationRef.current = true;
       annotationStartRef.current = { x: cx, y: cy };
@@ -587,6 +595,8 @@ export function useScreenshotInteraction({
           ? { type: tool, rect: { x: cx, y: cy, w: 0, h: 0 }, points: [{ x: cx, y: cy }], color: annotationColorRef.current, size: annotationSizeRef.current }
           : { type: tool, rect: { x: cx, y: cy, w: 0, h: 0 }, color: annotationColorRef.current, size: annotationSizeRef.current }
       );
+      // P0-1: pointerdown 钀界瑪绔嬪嵆鐢诲嚭璧风偣
+      scheduleDraw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       return;
     }
     const handleInfo = getHandleAt(rectRef.current, hasSelectedRef.current, cx, cy, true);
@@ -688,6 +698,8 @@ export function useScreenshotInteraction({
             size: annotationSizeRef.current,
           });
         }
+        // P0-1: 姣忔鏇存柊 draft 鍚庤Е鍙戝悎甯ч噸缁橈紝璁?draft 璺熸墜瀹炴椂鍑虹幇
+        scheduleDraw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       }
       return;
     }

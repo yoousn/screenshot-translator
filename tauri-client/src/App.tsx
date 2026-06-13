@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ConfigProvider, App as AntdApp } from "antd";
 import {
@@ -8,6 +8,7 @@ import {
   HistoryOutlined,
   InfoCircleOutlined,
   SettingOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
@@ -15,6 +16,7 @@ import History from "./pages/History";
 import About from "./pages/About";
 import OcrConfig from "./pages/OcrConfig";
 import ModelManagement from "./pages/ModelManagement";
+import FeatureSwitches from "./pages/FeatureSwitches";
 import AppLayout from "./components/app/AppLayout";
 import useServerStatus from "./hooks/useServerStatus";
 import useStartupDependencyStatus from "./hooks/useStartupDependencyStatus";
@@ -69,6 +71,7 @@ function AppContent() {
     { key: "settings", icon: <SettingOutlined />, label: text.nav.settings },
     { key: "model-management", icon: <CloudDownloadOutlined />, label: text.nav.modelManagement },
     { key: "ocr-config", icon: <FileTextOutlined />, label: text.nav.ocrConfig },
+    { key: "feature-switches", icon: <ThunderboltOutlined />, label: "功能开关" },
     { key: "history", icon: <HistoryOutlined />, label: text.nav.history },
     { key: "about", icon: <InfoCircleOutlined />, label: text.nav.about },
   ];
@@ -83,6 +86,8 @@ function AppContent() {
         return <ModelManagement />;
       case "ocr-config":
         return <OcrConfig />;
+      case "feature-switches":
+        return <FeatureSwitches />;
       case "history":
         return <History />;
       case "about":
