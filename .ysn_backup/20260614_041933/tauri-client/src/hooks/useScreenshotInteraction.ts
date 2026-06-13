@@ -33,7 +33,6 @@ interface UseScreenshotInteractionProps {
   frameInteractiveRef: React.RefObject<boolean>;
   imageReadyRef: React.RefObject<boolean>;
   activeSessionIdRef?: React.RefObject<string | null>;
-  preShowDownOriginRef?: React.MutableRefObject<{ x: number; y: number; sessionId: string | null; source?: string; eventSeq?: number } | null>;
   displayedPhysicalBoundsRef?: React.RefObject<ScreenshotPhysicalBounds | null>;
   isSelecting: boolean;
   setIsSelecting: (selected: boolean) => void;
@@ -131,7 +130,6 @@ export function useScreenshotInteraction({
   frameInteractiveRef,
   imageReadyRef,
   activeSessionIdRef,
-  preShowDownOriginRef,
   displayedPhysicalBoundsRef,
   isSelecting,
   setIsSelecting,
@@ -377,15 +375,6 @@ export function useScreenshotInteraction({
       activePointerIdRef.current = null;
     }
   };
-
-  const hasActivePointerGesture = () => (
-    isSelectingRef.current
-    || isDraggingRef.current
-    || isResizingRef.current !== null
-    || isDrawingAnnotationRef.current
-    || isDraggingAnnotationRef.current
-    || isResizingAnnotationRef.current
-  );
 
   const startPlainSelectionAt = (cx: number, cy: number) => {
     if (!frameInteractiveRef.current) return false;
@@ -637,23 +626,6 @@ export function useScreenshotInteraction({
     if (!frameInteractiveRef.current) return;
     const primaryButtonDown = (e.buttons & 1) === 1;
     resumePendingDownIfReady(e);
-    if (!primaryButtonDown) {
-      if (pendingDownRef.current) {
-        pendingDownRef.current = null;
-        cancelPendingDownResume();
-      }
-      if (activePointerIdRef.current === e.pointerId && !hasActivePointerGesture()) {
-        releaseCanvasPointer(e.currentTarget, e.pointerId);
-      }
-      if (hasActivePointerGesture()) {
-        logInteractionBaseline(
-          "lost_pointer_up_finalized",
-          `x=${Math.round(cx)} y=${Math.round(cy)} pointer=${e.pointerId}`
-        );
-        handleMouseUp(e);
-        return;
-      }
-    }
     if (
       primaryButtonDown
       && !isSelectingRef.current
@@ -671,43 +643,7 @@ export function useScreenshotInteraction({
           );
         }
       }
-      // BUG B 修复：选区起点必须用手势真实的按下点，而不是补帧时光标已经移动到的位置。
-      // 场景：overlay 在拖拽中途才变为可交互、首个 pointerdown 没能形成 pendingDown 时，
-      // 旧逻辑直接用当前光标(往往已接近松开/点击点)作锄点，导致选区起点偶发从松开/点击处开始。
-      // 优先采用真实按下点(pendingDownRef)，并立即按当前光标拉到正确尺寸，避免零尺寸框闪烁与跳变。
-      const activeSession = activeSessionIdRef?.current || null;
-      const preShowOrigin =
-        preShowDownOriginRef?.current
-        && (!preShowDownOriginRef.current.sessionId || preShowDownOriginRef.current.sessionId === activeSession)
-          ? preShowDownOriginRef.current
-          : null;
-      const pendingOrigin = pendingDownRef.current;
-      const anchorOrigin = pendingOrigin || preShowOrigin;
-      const selectionAnchorX = anchorOrigin ? anchorOrigin.x : cx;
-      const selectionAnchorY = anchorOrigin ? anchorOrigin.y : cy;
-      if (pendingOrigin) {
-        pendingDownRef.current = null;
-        cancelPendingDownResume();
-      }
-      if (!pendingOrigin && preShowOrigin && preShowDownOriginRef) {
-        preShowDownOriginRef.current = null;
-        logInteractionBaseline(
-          "pre_show_down_origin_used",
-          `source=${preShowOrigin.source || "pre-capture"} event_seq=${preShowOrigin.eventSeq || 0} x=${Math.round(preShowOrigin.x)} y=${Math.round(preShowOrigin.y)}`
-        );
-      }
-      const fallbackSelectionStarted = startPlainSelectionAt(selectionAnchorX, selectionAnchorY);
-      if (fallbackSelectionStarted && (selectionAnchorX !== cx || selectionAnchorY !== cy)) {
-        const grownRect = {
-          x: Math.min(selectionAnchorX, cx),
-          y: Math.min(selectionAnchorY, cy),
-          w: Math.abs(selectionAnchorX - cx),
-          h: Math.abs(selectionAnchorY - cy),
-        };
-        updateCurrentRect(grownRect, false);
-        selectionDragDistanceRef.current = Math.hypot(grownRect.w, grownRect.h);
-        scheduleDraw(grownRect.x, grownRect.y, grownRect.w, grownRect.h);
-      }
+      startPlainSelectionAt(cx, cy);
     }
     if (mouseTrackerRef.current) {
       mouseTrackerRef.current.style.left = `${cx + 16}px`;

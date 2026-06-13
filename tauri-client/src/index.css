@@ -140,23 +140,23 @@ html, body, #root {
   width: 100%;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 12px 0 24px;
   box-sizing: border-box;
 }
 
 .about-hero-panel {
-  width: min(100%, 640px);
+  width: min(100%, 960px);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 44px;
+  padding: 32px 40px;
   text-align: center;
   border: 1px solid rgba(148, 163, 184, 0.20);
-  border-radius: 24px;
+  border-radius: 22px;
   background: rgba(255, 255, 255, 0.84);
-  box-shadow: 0 20px 56px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.07);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
@@ -173,7 +173,7 @@ html, body, #root {
 .about-hero-title.ant-typography {
   margin: 0;
   color: #0f172a;
-  font-size: 32px;
+  font-size: 30px;
   font-weight: 850;
   letter-spacing: -0.03em;
   line-height: 1.15;
@@ -197,13 +197,14 @@ html, body, #root {
 .about-meta-list {
   width: 100%;
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  margin-top: 26px;
+  margin-top: 24px;
 }
 
 .about-meta-item {
   display: grid;
-  grid-template-columns: 20px 56px 1fr;
+  grid-template-columns: 20px 44px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-height: 40px;
@@ -222,7 +223,13 @@ html, body, #root {
 }
 
 .about-actions {
-  margin-top: 24px;
+  margin-top: 22px;
+}
+
+@media (max-width: 920px) {
+  .about-meta-list {
+    grid-template-columns: 1fr;
+  }
 }
 
 .save-toast-shell {

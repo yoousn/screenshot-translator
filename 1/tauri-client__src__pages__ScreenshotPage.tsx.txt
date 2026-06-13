@@ -22,7 +22,6 @@ import { useScreenshotTextSource } from "../hooks/useScreenshotTextSource";
 import { useScreenshotActions } from "../hooks/useScreenshotActions";
 import { useScreenshotInteraction } from "../hooks/useScreenshotInteraction";
 import { useScreenshotMagnifier } from "../hooks/useScreenshotMagnifier";
-import { useConfigHotReload } from "../hooks/useConfigHotReload";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
 import { getLogicalCanvasSize } from "../utils/screenshotViewport";
 
@@ -62,7 +61,6 @@ export default function ScreenshotPage() {
   const liveToolbarFrameRef = useRef<number | null>(null);
   const liveToolbarRectRef = useRef<Rect | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
-  const preShowDownOriginRef = useRef<{ x: number; y: number; sessionId: string | null; source?: string; eventSeq?: number } | null>(null);
   const autoAcceptanceSmokeStartedRef = useRef(false);
   const lastScreenshotPayloadSignatureRef = useRef<string | null>(null);
   const lastScreenshotShellSignatureRef = useRef<string | null>(null);
@@ -397,18 +395,11 @@ export default function ScreenshotPage() {
     draw: (...args) => drawRef.current(...args),
     textSourceSnapshotPromiseRef,
     pendingConfirmTimerRef,
-    preShowDownOriginRef,
   });
 
   const canInteractWithOverlay = overlayVisible;
   frameInteractiveRef.current = canInteractWithOverlay;
   imageReadyRef.current = Boolean(imageRef.current);
-
-  // Apply config changes to the next screenshot transaction. Reloading while an
-  // overlay is active could otherwise replace configRef halfway through OCR or translation.
-  useConfigHotReload(loadConfig, {
-    shouldDefer: () => overlayVisibleRef.current || isOCRingRef.current || isTranslatingRef.current,
-  });
 
   // 7. useScreenshotOcr (Initialized before actions to avoid temporal dead zone)
   const {
@@ -676,7 +667,6 @@ export default function ScreenshotPage() {
     frameInteractiveRef,
     imageReadyRef,
     activeSessionIdRef: displayedSessionIdRef,
-    preShowDownOriginRef,
     displayedPhysicalBoundsRef,
     isSelecting,
     setIsSelecting,

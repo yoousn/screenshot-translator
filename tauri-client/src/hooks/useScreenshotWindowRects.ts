@@ -4,6 +4,21 @@ import type { Rect } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { getDetectionCandidatesAt, rectSignature } from "../utils/detectionCandidates";
 
+const WINDOW_RECT_STALE_FALLBACK_MS = 2500;
+
+const hasPreciseWindowRect = (rects: Rect[]) => rects.some((rect) => rect.kind !== "display");
+const isReusablePreciseRect = (rect: Rect) => rect.kind !== "display" && rect.kind !== "taskbar";
+
+const dedupeRects = (rects: Rect[]) => {
+  const seen = new Set<string>();
+  return rects.filter((rect) => {
+    const key = `${rect.kind || "unknown"}:${rectSignature(rect)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 interface UseScreenshotWindowRectsProps {
   configRef: React.MutableRefObject<Config>;
   lastMouseRef: React.MutableRefObject<{ x: number; y: number }>;
@@ -35,6 +50,8 @@ export function useScreenshotWindowRects({
   const hoverCandidatesSignatureRef = useRef("");
   const lastRectQueryRef = useRef(0);
   const rectQueryPendingRef = useRef(false);
+  const lastPreciseRectsRef = useRef<Rect[]>([]);
+  const lastPreciseRectsAtRef = useRef(0);
 
   const setHoverCandidate = (candidate: Rect | null) => {
     hoverRectRef.current = candidate;
@@ -62,9 +79,24 @@ export function useScreenshotWindowRects({
     rectQueryPendingRef.current = true;
     try {
       const includeControls = Boolean(configRef.current.enableUiControlDetection);
-      const nextRects = JSON.parse(await invoke<string>("get_window_rects", { includeControls }));
-      windowRectsRef.current = nextRects;
-      setWindowRects(nextRects);
+      const nextRects = JSON.parse(await invoke<string>("get_window_rects", { includeControls })) as Rect[];
+      const hasPreciseRects = hasPreciseWindowRect(nextRects);
+      const reusablePreciseRects = nextRects.filter(isReusablePreciseRect);
+      if (reusablePreciseRects.length > 0) {
+        lastPreciseRectsRef.current = reusablePreciseRects;
+        lastPreciseRectsAtRef.current = performance.now();
+      }
+
+      const recentPreciseRects =
+        !hasPreciseRects
+        && lastPreciseRectsRef.current.length > 0
+        && performance.now() - lastPreciseRectsAtRef.current <= WINDOW_RECT_STALE_FALLBACK_MS;
+      const resolvedRects = recentPreciseRects
+        ? dedupeRects([...lastPreciseRectsRef.current, ...nextRects.filter((rect) => rect.kind === "display")])
+        : nextRects;
+
+      windowRectsRef.current = resolvedRects;
+      setWindowRects(resolvedRects);
       
       const { hasSelected, isSelecting, isDragging, isResizing } = interactionStateRef.current;
       if (!hasSelected && !isSelecting && !isDragging && !isResizing) {
@@ -82,7 +114,17 @@ export function useScreenshotWindowRects({
       }
       triggerRender();
     } catch {
-      setWindowRects([]);
+      const canReusePreciseRects =
+        lastPreciseRectsRef.current.length > 0
+        && performance.now() - lastPreciseRectsAtRef.current <= WINDOW_RECT_STALE_FALLBACK_MS;
+      if (canReusePreciseRects) {
+        windowRectsRef.current = lastPreciseRectsRef.current;
+        setWindowRects(lastPreciseRectsRef.current);
+        triggerRender();
+      } else {
+        windowRectsRef.current = [];
+        setWindowRects([]);
+      }
     } finally {
       rectQueryPendingRef.current = false;
     }
@@ -98,6 +140,8 @@ export function useScreenshotWindowRects({
     hoverCandidatesSignatureRef.current = "";
     lastRectQueryRef.current = 0;
     rectQueryPendingRef.current = false;
+    lastPreciseRectsRef.current = [];
+    lastPreciseRectsAtRef.current = 0;
   };
 
   return {

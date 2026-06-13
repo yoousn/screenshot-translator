@@ -5,8 +5,8 @@ use super::selection_state::{SelectionState, SelectionTransition};
 #[cfg(target_os = "windows")]
 use super::win32_input::{
     screenshot_input_event_from_win32_message, Win32KeyState, MK_LBUTTON, VK_CONTROL, VK_LWIN,
-    VK_MENU, VK_RWIN, VK_SHIFT, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_SYSKEYDOWN,
+    VK_MENU, VK_RWIN, VK_SHIFT, WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SYSKEYDOWN,
 };
 use super::win32_overlay::{Win32OverlayHandle, Win32OverlaySelectionRect};
 #[cfg(target_os = "windows")]
@@ -248,20 +248,24 @@ pub(crate) fn apply_win32_overlay_input(
             state.mouse_captured = false;
             dispatch.release_capture = true;
         }
-        WM_KEYDOWN | WM_SYSKEYDOWN | WM_KILLFOCUS => {}
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_KILLFOCUS | WM_CANCELMODE | WM_CAPTURECHANGED => {}
         _ => return Win32OverlayInputDispatch::ignored(),
     }
 
     let transition = state.selection_state.handle_event(event);
     dispatch.selection = selection_update_from_transition(transition);
-    if matches!(transition, SelectionTransition::Cancelled) || matches!(message, WM_KILLFOCUS) {
+    if matches!(transition, SelectionTransition::Cancelled)
+        || matches!(message, WM_KILLFOCUS | WM_CANCELMODE | WM_CAPTURECHANGED)
+    {
         state.native_input_started = true;
     }
     apply_input_snapshot_transition(state, transition);
     if state.native_input_started {
         state.event_seq = state.event_seq.saturating_add(1);
     }
-    if state.selection_state.is_terminal() || matches!(message, WM_KILLFOCUS) {
+    if state.selection_state.is_terminal()
+        || matches!(message, WM_KILLFOCUS | WM_CANCELMODE | WM_CAPTURECHANGED)
+    {
         state.mouse_captured = false;
         dispatch.release_capture = true;
     }

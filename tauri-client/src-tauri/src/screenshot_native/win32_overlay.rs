@@ -1,6 +1,7 @@
 #[cfg(target_os = "windows")]
 use super::win32_input::{
-    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SYSKEYDOWN,
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_SYSKEYDOWN,
 };
 #[cfg(target_os = "windows")]
 use super::win32_overlay_input::{
@@ -610,7 +611,7 @@ unsafe extern "system" fn win32_overlay_wnd_proc(
         }
         WM_NCHITTEST => return native_overlay_hit_test_result(),
         WM_LBUTTONDOWN | WM_MOUSEMOVE | WM_LBUTTONUP | WM_KEYDOWN | WM_SYSKEYDOWN
-        | WM_KILLFOCUS => {
+        | WM_KILLFOCUS | WM_CANCELMODE | WM_CAPTURECHANGED => {
             if dispatch_win32_overlay_input(hwnd, message, w_param, l_param) {
                 return 0;
             }

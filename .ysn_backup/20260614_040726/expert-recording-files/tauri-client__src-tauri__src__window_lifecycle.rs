@@ -3,7 +3,6 @@ use crate::recording_overlay::*;
 use crate::win32;
 #[cfg(target_os = "windows")]
 use crate::window_targets::window_title;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::Manager;
@@ -13,16 +12,12 @@ const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
 #[cfg(target_os = "windows")]
 const SW_SHOW: i32 = 5;
 #[cfg(target_os = "windows")]
-const SW_SHOWNOACTIVATE: i32 = 4;
-#[cfg(target_os = "windows")]
 const HWND_TOPMOST: isize = -1;
 #[cfg(target_os = "windows")]
 const SWP_NOSIZE: u32 = 0x0001;
 #[cfg(target_os = "windows")]
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
-#[cfg(target_os = "windows")]
-const SWP_FRAMECHANGED: u32 = 0x0020;
 #[cfg(target_os = "windows")]
 const SWP_SHOWWINDOW: u32 = 0x0040;
 #[cfg(target_os = "windows")]
@@ -33,14 +28,6 @@ const HWND_NOTOPMOST: isize = -2;
 const HIDDEN_MAIN_PARK_X: i32 = -32000;
 #[cfg(target_os = "windows")]
 const HIDDEN_MAIN_PARK_Y: i32 = -32000;
-#[cfg(target_os = "windows")]
-const GWL_EXSTYLE: i32 = -20;
-#[cfg(target_os = "windows")]
-const WS_EX_TOOLWINDOW: isize = 0x00000080;
-#[cfg(target_os = "windows")]
-const WS_EX_APPWINDOW: isize = 0x00040000;
-#[cfg(target_os = "windows")]
-const WS_EX_NOACTIVATE: isize = 0x08000000;
 
 #[derive(Debug, Clone, Copy)]
 struct MainWindowScreenshotState {
@@ -52,110 +39,20 @@ static MAIN_WINDOW_SCREENSHOT_STATE: OnceLock<Mutex<Option<MainWindowScreenshotS
     OnceLock::new();
 static HIDDEN_MAIN_WINDOW_POSITION: OnceLock<Mutex<Option<tauri::PhysicalPosition<i32>>>> =
     OnceLock::new();
-#[cfg(target_os = "windows")]
-static PRE_SCREENSHOT_FOREGROUND_HWND: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
-static SUPPRESS_NEXT_SCREENSHOT_RESTORE: AtomicBool = AtomicBool::new(false);
 
 fn get_main_window_screenshot_state() -> &'static Mutex<Option<MainWindowScreenshotState>> {
     MAIN_WINDOW_SCREENSHOT_STATE.get_or_init(|| Mutex::new(None))
-}
-
-pub fn suppress_next_screenshot_restore() {
-    SUPPRESS_NEXT_SCREENSHOT_RESTORE.store(true, Ordering::SeqCst);
-}
-
-fn should_suppress_screenshot_restore() -> bool {
-    SUPPRESS_NEXT_SCREENSHOT_RESTORE.swap(false, Ordering::SeqCst)
 }
 
 fn get_hidden_main_window_position() -> &'static Mutex<Option<tauri::PhysicalPosition<i32>>> {
     HIDDEN_MAIN_WINDOW_POSITION.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(target_os = "windows")]
-fn get_pre_screenshot_foreground_hwnd() -> &'static Mutex<Option<isize>> {
-    PRE_SCREENSHOT_FOREGROUND_HWND.get_or_init(|| Mutex::new(None))
-}
-
-#[cfg(target_os = "windows")]
-fn is_external_visible_window(hwnd: isize) -> bool {
-    if hwnd == 0 || unsafe { win32::IsWindowVisible(hwnd) } == 0 {
-        return false;
-    }
-    let mut pid: u32 = 0;
-    unsafe {
-        win32::GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
-    }
-    pid != 0 && pid != std::process::id()
-}
-
-#[cfg(target_os = "windows")]
-pub fn remember_pre_screenshot_foreground(reason: &str) {
-    let hwnd = unsafe { win32::GetForegroundWindow() };
-    let target = if is_external_visible_window(hwnd) {
-        Some(hwnd)
-    } else {
-        None
-    };
-    if let Ok(mut guard) = get_pre_screenshot_foreground_hwnd().lock() {
-        *guard = target;
-    }
-    println!(
-        "[window-trace] source=pre-screenshot-foreground action=remember target={} valid={} reason={}",
-        hwnd,
-        target.is_some(),
-        reason
-    );
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn remember_pre_screenshot_foreground(_reason: &str) {}
-
-#[cfg(target_os = "windows")]
-fn set_pre_screenshot_foreground(reason: &str, consume: bool) -> bool {
-    let target = get_pre_screenshot_foreground_hwnd()
-        .lock()
-        .ok()
-        .and_then(|mut guard| if consume { guard.take() } else { *guard });
-    let Some(target) = target else {
-        return false;
-    };
-    if !is_external_visible_window(target) {
-        println!(
-            "[window-trace] source=pre-screenshot-foreground action=skip-invalid target={} reason={}",
-            target, reason
-        );
-        return false;
-    }
-    let ok = unsafe { win32::SetForegroundWindow(target) };
-    println!(
-        "[window-trace] source=pre-screenshot-foreground action=set-foreground target={} ok={} consume={} reason={}",
-        target, ok, consume, reason
-    );
-    ok != 0
-}
-
-#[cfg(target_os = "windows")]
-fn clear_pre_screenshot_foreground() {
-    if let Ok(mut guard) = get_pre_screenshot_foreground_hwnd().lock() {
-        *guard = None;
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn clear_pre_screenshot_foreground() {}
-
 fn peek_main_window_screenshot_state() -> Option<MainWindowScreenshotState> {
     get_main_window_screenshot_state()
         .lock()
         .ok()
         .and_then(|guard| *guard)
-}
-
-pub fn current_screenshot_capture_needs_settle() -> bool {
-    peek_main_window_screenshot_state()
-        .map(|state| state.was_visible && !state.was_minimized)
-        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -196,368 +93,6 @@ pub fn disable_windows_transition<W: tauri::Runtime>(window: &tauri::WebviewWind
         }
     }
 }
-
-#[cfg(target_os = "windows")]
-fn screenshot_overlay_ex_style(current_ex_style: isize, no_activate: bool) -> isize {
-    let mut next = (current_ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW;
-    if no_activate {
-        next |= WS_EX_NOACTIVATE;
-    } else {
-        next &= !WS_EX_NOACTIVATE;
-    }
-    next
-}
-
-pub fn apply_screenshot_overlay_window_styles<W: tauri::Runtime>(
-    window: &tauri::WebviewWindow<W>,
-    no_activate: bool,
-) {
-    let _ = window.set_skip_taskbar(true);
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = window.hwnd() {
-        let hwnd = hwnd.0 as isize;
-        unsafe {
-            let current = win32::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            if current == 0 {
-                println!(
-                    "[window-trace] source=screenshot-overlay-style action=skip-empty-style hwnd={}",
-                    hwnd
-                );
-                return;
-            }
-            let next = screenshot_overlay_ex_style(current, no_activate);
-            if next != current {
-                let _ = win32::SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
-            }
-            let _ = win32::SetWindowPos(
-                hwnd,
-                0,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
-            println!(
-                "[window-trace] source=screenshot-overlay-style action=apply hwnd={} no_activate={} appwindow_removed={} toolwindow={} noactivate_style={}",
-                hwnd,
-                no_activate,
-                next & WS_EX_APPWINDOW == 0,
-                next & WS_EX_TOOLWINDOW != 0,
-                next & WS_EX_NOACTIVATE != 0
-            );
-        }
-    }
-}
-
-pub fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
-    let _ = window.set_skip_taskbar(true);
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = window.hwnd() {
-        let hwnd = hwnd.0 as isize;
-        if !screenshot_focus_on_ready_enabled() {
-            apply_screenshot_overlay_window_styles(window, true);
-            let _ = window.set_always_on_top(true);
-            unsafe {
-                let _ = win32::ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                let _ = win32::SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
-                );
-                // Bug A fix: even in no-activate mode, force the overlay above other
-                // topmost / foreground windows (browsers, always-on-top UI) so the
-                // selection input is not swallowed by a window sitting above us. We
-                // raise z-order through the foreground thread input queue WITHOUT
-                // stealing keyboard focus (no SetForegroundWindow/SetFocus here).
-                let foreground = win32::GetForegroundWindow();
-                let current_thread = win32::GetCurrentThreadId();
-                let foreground_thread = if foreground != 0 {
-                    win32::GetWindowThreadProcessId(foreground, std::ptr::null_mut())
-                } else {
-                    0
-                };
-                let attached = foreground_thread != 0
-                    && foreground_thread != current_thread
-                    && win32::AttachThreadInput(current_thread, foreground_thread, 1) != 0;
-                let _ = win32::BringWindowToTop(hwnd);
-                let _ = win32::SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
-                );
-                if attached {
-                    let _ = win32::AttachThreadInput(current_thread, foreground_thread, 0);
-                }
-                let _ = win32::DwmFlush();
-            }
-            println!(
-                "[window-trace] source=show-screenshot-overlay action=show-noactivate hwnd={}",
-                hwnd
-            );
-            return;
-        }
-        apply_screenshot_overlay_window_styles(window, false);
-        let _ = window.show();
-        let _ = window.set_always_on_top(true);
-        unsafe {
-            let _ = win32::SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-            );
-            let _ = win32::BringWindowToTop(hwnd);
-            let _ = win32::SetForegroundWindow(hwnd);
-            let _ = win32::SetActiveWindow(hwnd);
-            let _ = win32::SetFocus(hwnd);
-        }
-        println!(
-            "[window-trace] source=show-screenshot-overlay action=show-activate hwnd={} reason=YSN_SCREENSHOT_FOCUS_ON_READY",
-            hwnd
-        );
-        return;
-    }
-    let _ = window.show();
-    let _ = window.set_always_on_top(true);
-    let _ = window.set_focus();
-}
-
-pub fn activate_screenshot_overlay_window_for_interaction<W: tauri::Runtime>(
-    window: &tauri::WebviewWindow<W>,
-) {
-    apply_screenshot_overlay_window_styles(window, false);
-    let _ = window.show();
-    let _ = window.set_always_on_top(true);
-    #[cfg(target_os = "windows")]
-    if let Ok(hwnd) = window.hwnd() {
-        let hwnd = hwnd.0 as isize;
-        unsafe {
-            let foreground = win32::GetForegroundWindow();
-            let current_thread = win32::GetCurrentThreadId();
-            let foreground_thread = if foreground != 0 {
-                win32::GetWindowThreadProcessId(foreground, std::ptr::null_mut())
-            } else {
-                0
-            };
-            let attached = foreground_thread != 0
-                && foreground_thread != current_thread
-                && win32::AttachThreadInput(current_thread, foreground_thread, 1) != 0;
-            let _ = win32::SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-            );
-            let _ = win32::BringWindowToTop(hwnd);
-            let _ = win32::SetForegroundWindow(hwnd);
-            let _ = win32::SetActiveWindow(hwnd);
-            let _ = win32::SetFocus(hwnd);
-            if attached {
-                let _ = win32::AttachThreadInput(current_thread, foreground_thread, 0);
-            }
-        }
-        println!(
-            "[window-trace] source=screenshot-overlay-interaction action=activate hwnd={}",
-            hwnd
-        );
-    }
-    let _ = window.set_focus();
-}
-
-#[tauri::command]
-pub async fn activate_screenshot_overlay_for_interaction(
-    app: tauri::AppHandle,
-    label: Option<String>,
-) -> Result<(), String> {
-    let target_label = label.unwrap_or_else(|| "screenshot".to_string());
-    if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
-        return Ok(());
-    }
-    let Some(screenshot_win) = app.get_webview_window(&target_label) else {
-        return Err(format!(
-            "Screenshot overlay window not found: {}",
-            target_label
-        ));
-    };
-    activate_screenshot_overlay_window_for_interaction(&screenshot_win);
-    Ok(())
-}
-
-fn screenshot_focus_on_ready_enabled() -> bool {
-    std::env::var("YSN_SCREENSHOT_FOCUS_ON_READY")
-        .ok()
-        .as_deref()
-        == Some("1")
-}
-
-#[cfg(test)]
-mod screenshot_overlay_show_policy_tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn focus_on_ready_is_disabled_unless_explicitly_enabled() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        std::env::remove_var("YSN_SCREENSHOT_FOCUS_ON_READY");
-        assert!(!screenshot_focus_on_ready_enabled());
-
-        std::env::set_var("YSN_SCREENSHOT_FOCUS_ON_READY", "0");
-        assert!(!screenshot_focus_on_ready_enabled());
-
-        std::env::set_var("YSN_SCREENSHOT_FOCUS_ON_READY", "1");
-        assert!(screenshot_focus_on_ready_enabled());
-        std::env::remove_var("YSN_SCREENSHOT_FOCUS_ON_READY");
-    }
-
-    fn native_overlay_snapshot(
-        phase: crate::screenshot_native::Win32OverlayNativeInputPhase,
-        mouse_captured: bool,
-        completed: bool,
-        cancelled: bool,
-    ) -> crate::screenshot_native::NativeOverlaySelectionSnapshot {
-        crate::screenshot_native::NativeOverlaySelectionSnapshot {
-            hwnd: 42,
-            bounds: crate::screenshot_native::MonitorCaptureBounds::new(0, 0, 100, 100),
-            selection: Some(crate::screenshot_native::Win32OverlaySelectionRect {
-                left: 10,
-                top: 10,
-                right: 40,
-                bottom: 40,
-            }),
-            input_started: true,
-            mouse_captured,
-            completed,
-            cancelled,
-            phase,
-            event_seq: 1,
-        }
-    }
-
-    #[test]
-    fn native_first_frame_dismiss_waits_while_native_drag_is_active() {
-        let snapshot = native_overlay_snapshot(
-            crate::screenshot_native::Win32OverlayNativeInputPhase::Selecting,
-            true,
-            false,
-            false,
-        );
-
-        assert_eq!(
-            native_first_frame_dismiss_decision(Some(snapshot), None, 40, None, 72, 900),
-            NativeFirstFrameDismissDecision::WaitForNativeDrag
-        );
-    }
-
-    #[test]
-    fn native_first_frame_dismiss_graces_completed_selection_for_handoff() {
-        let snapshot = native_overlay_snapshot(
-            crate::screenshot_native::Win32OverlayNativeInputPhase::Completed,
-            false,
-            true,
-            false,
-        );
-
-        assert_eq!(
-            native_first_frame_dismiss_decision(Some(snapshot), None, 120, Some(20), 72, 900),
-            NativeFirstFrameDismissDecision::WaitForWebViewHandoff
-        );
-        assert_eq!(
-            native_first_frame_dismiss_decision(Some(snapshot), None, 180, Some(80), 72, 900),
-            NativeFirstFrameDismissDecision::DismissNow
-        );
-    }
-
-    #[test]
-    fn native_first_frame_dismiss_has_a_timeout_escape_hatch() {
-        let snapshot = native_overlay_snapshot(
-            crate::screenshot_native::Win32OverlayNativeInputPhase::Selecting,
-            true,
-            false,
-            false,
-        );
-
-        assert_eq!(
-            native_first_frame_dismiss_decision(Some(snapshot), None, 901, None, 72, 900),
-            NativeFirstFrameDismissDecision::ForceDismiss
-        );
-    }
-
-    #[test]
-    fn native_first_frame_dismiss_waits_for_precapture_drag_before_native_down() {
-        let pre_capture = crate::screenshot_commands::ScreenshotPointerPreCaptureActivity {
-            left_down: true,
-            completed: false,
-            has_drag: true,
-            drag_distance: 42.0,
-        };
-
-        assert_eq!(
-            native_first_frame_dismiss_decision(None, Some(pre_capture), 40, None, 72, 900),
-            NativeFirstFrameDismissDecision::WaitForNativeDrag
-        );
-    }
-
-    #[test]
-    fn native_first_frame_dismiss_graces_precapture_completion() {
-        let pre_capture = crate::screenshot_commands::ScreenshotPointerPreCaptureActivity {
-            left_down: false,
-            completed: true,
-            has_drag: true,
-            drag_distance: 80.0,
-        };
-
-        assert_eq!(
-            native_first_frame_dismiss_decision(None, Some(pre_capture), 120, Some(20), 72, 900),
-            NativeFirstFrameDismissDecision::WaitForWebViewHandoff
-        );
-        assert_eq!(
-            native_first_frame_dismiss_decision(None, Some(pre_capture), 180, Some(80), 72, 900),
-            NativeFirstFrameDismissDecision::DismissNow
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn screenshot_overlay_style_hides_taskbar_and_avoids_activation() {
-        let current = WS_EX_APPWINDOW;
-
-        let next = screenshot_overlay_ex_style(current, true);
-
-        assert_eq!(next & WS_EX_APPWINDOW, 0);
-        assert_ne!(next & WS_EX_TOOLWINDOW, 0);
-        assert_ne!(next & WS_EX_NOACTIVATE, 0);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn screenshot_overlay_focus_rollback_still_hides_taskbar() {
-        let current = WS_EX_APPWINDOW | WS_EX_NOACTIVATE;
-
-        let next = screenshot_overlay_ex_style(current, false);
-
-        assert_eq!(next & WS_EX_APPWINDOW, 0);
-        assert_ne!(next & WS_EX_TOOLWINDOW, 0);
-        assert_eq!(next & WS_EX_NOACTIVATE, 0);
-    }
-}
-
 pub fn activate_webview_window<W: tauri::Runtime>(window: &tauri::WebviewWindow<W>) {
     if window.label() == "main" {
         restore_parked_main_window_position(window, "activate-webview-window");
@@ -657,7 +192,7 @@ pub fn prepare_main_window_for_screenshot(app: &tauri::AppHandle) -> bool {
             "[window-trace] source=prepare-main-for-screenshot action=park-hidden-main label=main"
         );
         park_hidden_main_window_for_screenshot(&main, "prepare-main-for-screenshot");
-        false
+        true
     } else {
         false
     }
@@ -666,10 +201,12 @@ pub fn prepare_main_window_for_screenshot(app: &tauri::AppHandle) -> bool {
 pub async fn wait_for_hidden_main_capture_settle() {
     #[cfg(target_os = "windows")]
     {
-        unsafe {
-            let _ = win32::DwmFlush();
+        for _ in 0..3 {
+            unsafe {
+                let _ = win32::DwmFlush();
+            }
+            tokio::time::sleep(Duration::from_millis(120)).await;
         }
-        tokio::time::sleep(Duration::from_millis(16)).await;
         unsafe {
             let _ = win32::DwmFlush();
         }
@@ -686,7 +223,6 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
         .ok()
         .and_then(|mut guard| guard.take());
     let Some(state) = state else {
-        clear_pre_screenshot_foreground();
         return;
     };
     if !state.was_visible {
@@ -695,8 +231,6 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
             reason, state.was_visible, state.was_minimized
         );
         keep_main_window_hidden_after_screenshot(app, reason);
-        #[cfg(target_os = "windows")]
-        let _ = set_pre_screenshot_foreground(reason, true);
         return;
     }
     if state.was_minimized {
@@ -707,7 +241,6 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.minimize();
         }
-        clear_pre_screenshot_foreground();
         return;
     }
     if let Some(main) = app.get_webview_window("main") {
@@ -719,7 +252,6 @@ pub fn restore_main_window_after_screenshot(app: &tauri::AppHandle, reason: &str
         let _ = main.show();
         let _ = main.unminimize();
     }
-    clear_pre_screenshot_foreground();
 }
 
 pub fn restore_parked_main_window_position<W: tauri::Runtime>(
@@ -914,42 +446,32 @@ pub fn prepare_focus_for_screenshot_overlay_close(app: &tauri::AppHandle, reason
     let Some(state) = peek_main_window_screenshot_state() else {
         return;
     };
+    if state.was_visible {
+        return;
+    }
 
-    if !state.was_visible {
-        if let Some(main) = app.get_webview_window("main") {
-            println!(
-                "[window-trace] source=prepare-screenshot-close-focus action=park-main-before-overlay-close label=main reason={}",
-                reason
-            );
-            park_hidden_main_window_for_screenshot(&main, reason);
-        }
+    if let Some(main) = app.get_webview_window("main") {
+        println!(
+            "[window-trace] source=prepare-screenshot-close-focus action=park-main-before-overlay-close label=main reason={}",
+            reason
+        );
+        park_hidden_main_window_for_screenshot(&main, reason);
     }
 
     #[cfg(target_os = "windows")]
     unsafe {
-        if set_pre_screenshot_foreground(reason, false) {
+        let target = find_foreground_handoff_target();
+        if target != 0 {
+            let ok = win32::SetForegroundWindow(target);
             println!(
-                "[window-trace] source=prepare-screenshot-close-focus action=set-remembered-foreground reason={}",
-                reason
+                "[window-trace] source=prepare-screenshot-close-focus action=set-foreground target={} ok={} reason={}",
+                target, ok, reason
             );
         } else {
-            let target = if state.was_visible {
-                0
-            } else {
-                find_foreground_handoff_target()
-            };
-            if target != 0 {
-                let ok = win32::SetForegroundWindow(target);
-                println!(
-                    "[window-trace] source=prepare-screenshot-close-focus action=set-foreground target={} ok={} reason={}",
-                    target, ok, reason
-                );
-            } else {
-                println!(
-                    "[window-trace] source=prepare-screenshot-close-focus action=no-foreground-target reason={} was_visible={}",
-                    reason, state.was_visible
-                );
-            }
+            println!(
+                "[window-trace] source=prepare-screenshot-close-focus action=no-foreground-target reason={}",
+                reason
+            );
         }
         let _ = win32::SetActiveWindow(0);
         let _ = win32::SetFocus(0);
@@ -961,7 +483,6 @@ pub fn prepare_focus_for_screenshot_overlay_close(app: &tauri::AppHandle, reason
 pub async fn overlay_ready_to_show(
     app: tauri::AppHandle,
     label: Option<String>,
-    session_id: Option<String>,
 ) -> Result<(), String> {
     let target_label = label.unwrap_or_else(|| "screenshot".to_string());
     if target_label != "screenshot" && !target_label.starts_with("screenshot_") {
@@ -973,218 +494,10 @@ pub async fn overlay_ready_to_show(
             target_label
         ));
     };
-    if let Some(session_id) = session_id.as_deref() {
-        if crate::screenshot_commands::is_screenshot_session_cancelled(session_id) {
-            println!(
-                "[screenshot-baseline] session={} phase=overlay_show_skipped_cancelled elapsed_ms=0 label={}",
-                session_id, target_label
-            );
-            return Ok(());
-        }
-    }
-    let started_at = std::time::Instant::now();
-    show_screenshot_overlay_window(&screenshot_win);
-    let session_raise =
-        crate::screenshot_native::raise_cpu_native_overlay_session("webview-overlay-ready-topmost");
-    if session_raise.active || session_raise.visible {
-        println!(
-            "[screenshot-trace] native_first_frame_session_raised session={} state={} active={} visible={} hwnd={}",
-            session_id.as_deref().unwrap_or("unknown"),
-            session_raise.state.as_str(),
-            session_raise.active,
-            session_raise.visible,
-            session_raise.hwnd.unwrap_or(0)
-        );
-    }
-    schedule_native_first_frame_session_dismiss(session_id.clone());
-    println!(
-        "[screenshot-baseline] session={} phase=overlay_show_result elapsed_ms={} label={}",
-        session_id.unwrap_or_else(|| "unknown".to_string()),
-        started_at.elapsed().as_millis(),
-        target_label
-    );
+    activate_webview_window(&screenshot_win);
+    tokio::time::sleep(Duration::from_millis(35)).await;
+    activate_webview_window(&screenshot_win);
     Ok(())
-}
-
-fn native_first_frame_session_dismiss_delay_ms() -> u64 {
-    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION_DISMISS_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|value| value.clamp(16, 500))
-        .unwrap_or(64)
-}
-
-fn native_first_frame_session_handoff_grace_ms() -> u64 {
-    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION_HANDOFF_GRACE_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|value| value.clamp(16, 250))
-        .unwrap_or(72)
-}
-
-fn native_first_frame_session_max_dismiss_ms() -> u64 {
-    std::env::var("YSN_NATIVE_FIRST_FRAME_SESSION_MAX_DISMISS_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|value| value.clamp(96, 1500))
-        .unwrap_or(900)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeFirstFrameDismissDecision {
-    DismissNow,
-    WaitForNativeDrag,
-    WaitForWebViewHandoff,
-    ForceDismiss,
-}
-
-fn native_first_frame_dismiss_decision(
-    snapshot: Option<crate::screenshot_native::NativeOverlaySelectionSnapshot>,
-    pre_capture: Option<crate::screenshot_commands::ScreenshotPointerPreCaptureActivity>,
-    elapsed_ms: u64,
-    completed_age_ms: Option<u64>,
-    handoff_grace_ms: u64,
-    max_dismiss_ms: u64,
-) -> NativeFirstFrameDismissDecision {
-    if elapsed_ms >= max_dismiss_ms {
-        return NativeFirstFrameDismissDecision::ForceDismiss;
-    }
-    if pre_capture
-        .map(|activity| activity.left_down && activity.has_drag)
-        .unwrap_or(false)
-    {
-        return NativeFirstFrameDismissDecision::WaitForNativeDrag;
-    }
-    if pre_capture
-        .map(|activity| activity.completed && activity.has_drag)
-        .unwrap_or(false)
-    {
-        return match completed_age_ms {
-            Some(age_ms) if age_ms >= handoff_grace_ms => {
-                NativeFirstFrameDismissDecision::DismissNow
-            }
-            _ => NativeFirstFrameDismissDecision::WaitForWebViewHandoff,
-        };
-    }
-    let Some(snapshot) = snapshot else {
-        return NativeFirstFrameDismissDecision::DismissNow;
-    };
-    if snapshot.cancelled {
-        return NativeFirstFrameDismissDecision::DismissNow;
-    }
-    if snapshot.completed {
-        return match completed_age_ms {
-            Some(age_ms) if age_ms >= handoff_grace_ms => {
-                NativeFirstFrameDismissDecision::DismissNow
-            }
-            _ => NativeFirstFrameDismissDecision::WaitForWebViewHandoff,
-        };
-    }
-    if snapshot.mouse_captured
-        || matches!(
-            snapshot.phase,
-            crate::screenshot_native::Win32OverlayNativeInputPhase::Selecting
-        )
-    {
-        return NativeFirstFrameDismissDecision::WaitForNativeDrag;
-    }
-    NativeFirstFrameDismissDecision::DismissNow
-}
-
-fn schedule_native_first_frame_session_dismiss(session_id: Option<String>) {
-    let delay_ms = native_first_frame_session_dismiss_delay_ms();
-    let handoff_grace_ms = native_first_frame_session_handoff_grace_ms();
-    let max_dismiss_ms = native_first_frame_session_max_dismiss_ms();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        let wait_started_at = std::time::Instant::now();
-        let mut completed_since: Option<std::time::Instant> = None;
-        let mut last_logged_decision: Option<NativeFirstFrameDismissDecision> = None;
-        let mut dismiss_reason = "webview-overlay-ready";
-
-        loop {
-            let snapshot = crate::screenshot_native::cpu_native_overlay_selection_snapshot(
-                session_id.as_deref(),
-            );
-            let pre_capture =
-                crate::screenshot_commands::read_screenshot_pointer_pre_capture_activity(
-                    session_id.as_deref(),
-                );
-            let completed_now = snapshot.map(|snapshot| snapshot.completed).unwrap_or(false)
-                || pre_capture
-                    .map(|activity| activity.completed && activity.has_drag)
-                    .unwrap_or(false);
-            if completed_now && completed_since.is_none() {
-                completed_since = Some(std::time::Instant::now());
-            }
-            if !completed_now {
-                completed_since = None;
-            }
-            let elapsed_ms = wait_started_at
-                .elapsed()
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64;
-            let completed_age_ms = completed_since
-                .map(|instant| instant.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
-            let decision = native_first_frame_dismiss_decision(
-                snapshot,
-                pre_capture,
-                elapsed_ms,
-                completed_age_ms,
-                handoff_grace_ms,
-                max_dismiss_ms,
-            );
-            if last_logged_decision != Some(decision)
-                && !matches!(decision, NativeFirstFrameDismissDecision::DismissNow)
-            {
-                println!(
-                    "[screenshot-trace] native_first_frame_session_dismiss_wait session={} decision={:?} elapsed_ms={} delay_ms={} handoff_grace_ms={} max_ms={}",
-                    session_id.as_deref().unwrap_or("unknown"),
-                    decision,
-                    elapsed_ms,
-                    delay_ms,
-                    handoff_grace_ms,
-                    max_dismiss_ms
-                );
-                last_logged_decision = Some(decision);
-            }
-            match decision {
-                NativeFirstFrameDismissDecision::DismissNow => break,
-                NativeFirstFrameDismissDecision::ForceDismiss => {
-                    dismiss_reason = "webview-overlay-ready-timeout";
-                    break;
-                }
-                NativeFirstFrameDismissDecision::WaitForNativeDrag
-                | NativeFirstFrameDismissDecision::WaitForWebViewHandoff => {
-                    tokio::time::sleep(Duration::from_millis(16)).await;
-                }
-            }
-        }
-
-        let diagnostics = crate::screenshot_native::cancel_cpu_native_overlay_session_if_matches(
-            session_id.as_deref(),
-            dismiss_reason,
-        );
-        let Some(diagnostics) = diagnostics else {
-            return;
-        };
-        if diagnostics.active
-            || !matches!(
-                diagnostics.state,
-                crate::screenshot_native::NativeOverlaySessionState::Empty
-            )
-        {
-            println!(
-                "[screenshot-trace] native_first_frame_session_dismissed session={} delay_ms={} state={} active={} visible={} reason={}",
-                session_id.as_deref().unwrap_or("unknown"),
-                delay_ms,
-                diagnostics.state.as_str(),
-                diagnostics.active,
-                diagnostics.visible,
-                dismiss_reason
-            );
-        }
-    });
 }
 #[tauri::command]
 pub async fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -1216,7 +529,7 @@ pub async fn force_close_recording_controls(
         source_str, hide_main_for_cleanup
     );
 
-    // 1. force_close_recording_controls 閹笛嗩攽閸撳秷鐦栭弬?
+    // 1. force_close_recording_controls 执行前诊断
     dump_all_windows_state_internal(
         &app,
         format!("force_close_recording_controls-before({})", source_str),
@@ -1264,10 +577,10 @@ pub async fn force_close_recording_controls(
         });
     }
 
-    // 2. force_close_recording_controls 閹笛嗩攽閸?100ms 鐠囧﹥鏌?
-    // 瑜版洖鍩楅幒褍鍩楅弶锛勭搼鐞氼偅瀚㈤張澶屾畱缁愭褰涢崷?close() 閺冭绱漌indows 娴兼碍濡搁悞锔惧仯/濠碘偓濞茶娲栨禍銈囩舶 owner閿涘潰ain閿涘绱?
-    // 閸欘垵鍏樼€佃壈鍤?main 閸︺劌鍙ч梻顓炴倵鐞氼偊鍣搁弬鐗堢负濞茶鑻熼弰鍓с仛閸戣櫣娅ч懝鑼崶閸欙絻鈧?
-    // 閻㈠彉绨崗鎶芥４閺勵垰娆㈡潻?50ms 閹笛嗩攽閻ㄥ嫸绱濇潻娆撳櫡閸︺劎鐛ラ崣锝団€樼€圭偤鏀㈠В浣风閸氬骸鍟€鐞涖儰绔村▎锟犳閽?main閿涘本绉烽梽銈嗙暙閻ｆ瑧娅х粣妞尖偓?
+    // 2. force_close_recording_controls 执行后 100ms 诊断
+    // 录制控制条等被拥有的窗口在 close() 时，Windows 会把焦点/激活回交给 owner（main），
+    // 可能导致 main 在关闭后被重新激活并显示出白色窗口。
+    // 由于关闭是延迟 50ms 执行的，这里在窗口确实销毁之后再补一次隐藏 main，消除残留白窗。
     let app_clone = app.clone();
     let source_str_clone = source_str.clone();
     tauri::async_runtime::spawn(async move {
@@ -1447,7 +760,7 @@ pub fn set_webview_capture_excluded(
 /// Windows OS focus-fallback from activating any of them when a recording overlay closes.
 pub fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
     for (lbl, win) in app.webview_windows() {
-        // 閸?hide main 閸?screenshot 缁鍨粣妤€褰涢敍灞肩瑝 hide 濮濓絽婀崗鎶芥４娑擃厾娈?recording_control 閼奉亣闊?
+        // 只 hide main 和 screenshot 系列窗口，不 hide 正在关闭中的 recording_control 自身
         if lbl == "main" || lbl == "screenshot" || lbl.starts_with("screenshot_") {
             let is_visible = win.is_visible().unwrap_or(false);
             if is_visible {
@@ -1494,34 +807,25 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
                 );
                 hide_tauri_window_without_activation(window);
                 crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
-                if !should_suppress_screenshot_restore() {
-                    restore_main_window_after_screenshot(
-                        window.app_handle(),
-                        "screenshot-close-requested",
-                    );
-                }
+                restore_main_window_after_screenshot(
+                    window.app_handle(),
+                    "screenshot-close-requested",
+                );
                 api.prevent_close();
             }
             tauri::WindowEvent::Destroyed => {
                 crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
-                if !should_suppress_screenshot_restore() {
-                    restore_main_window_after_screenshot(
-                        window.app_handle(),
-                        "screenshot-destroyed",
-                    );
-                }
+                restore_main_window_after_screenshot(window.app_handle(), "screenshot-destroyed");
             }
             _ => {}
         }
     } else if label.starts_with("screenshot_") {
         if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {
             crate::CAPTURING.store(false, std::sync::atomic::Ordering::SeqCst);
-            if !should_suppress_screenshot_restore() {
-                restore_main_window_after_screenshot(
-                    window.app_handle(),
-                    "secondary-screenshot-closed",
-                );
-            }
+            restore_main_window_after_screenshot(
+                window.app_handle(),
+                "secondary-screenshot-closed",
+            );
         }
     } else if label == "recording_border" || label.starts_with("recording_border_") {
         if let tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed = event {

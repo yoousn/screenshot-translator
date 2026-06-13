@@ -44,6 +44,16 @@ export default function OcrResultWindow({
 }: OcrResultWindowProps) {
   const { text: dictionary } = useI18n();
   const labels = dictionary.ocrResult;
+  const pipelineDiagnostics = diagnostics?.pipelineDiagnostics;
+  const rawOcr = pipelineDiagnostics?.rawOcr;
+  const normalizedOcr = pipelineDiagnostics?.normalizedOcr;
+  const translationDecision = pipelineDiagnostics?.translationDecision;
+  const translationService = pipelineDiagnostics?.translationService;
+  const translationResult = pipelineDiagnostics?.translationResult;
+  const attemptSummary = (translationService?.attempts || [])
+    .slice(0, 3)
+    .map((attempt: any) => `${attempt.ok ? "OK" : "FAIL"} ${attempt.serverUrl}${attempt.error ? `: ${attempt.error}` : ""}`)
+    .join(" | ");
 
   return (
     <div
@@ -156,6 +166,28 @@ export default function OcrResultWindow({
               )}
               {diagnostics.usedServerUrl && (
                 <div style={{ gridColumn: "span 2", fontSize: 10, color: "#94a3b8", wordBreak: "break-all" }}>服务 URL: {diagnostics.usedServerUrl}</div>
+              )}
+              {pipelineDiagnostics && (
+                <>
+                  <div style={{ gridColumn: "span 2", color: diagnostics.status === "error" ? "#b91c1c" : "#475569" }}>
+                    阶段: {pipelineDiagnostics.stage}{pipelineDiagnostics.error ? ` | ${pipelineDiagnostics.error}` : ""}
+                  </div>
+                  <div>
+                    OCR: raw {rawOcr?.count ?? 0}, normalized {normalizedOcr?.count ?? 0}, avg {normalizedOcr?.avgConfidence ?? rawOcr?.avgConfidence ?? "-"}
+                  </div>
+                  <div>
+                    翻译判定: 需译 {translationDecision?.requiresTranslation ?? 0}, 保留 {translationDecision?.preservedByPolicy ?? 0}, 请求 {translationDecision?.queuedForService ?? 0}
+                  </div>
+                  <div>
+                    服务返回: {translationResult?.returnedTranslations ?? 0}, 空 {translationResult?.emptyTranslations ?? 0}, 原文 {translationResult?.unchangedTranslations ?? 0}
+                  </div>
+                  <div>
+                    服务请求: {translationService?.requestedBlocks ?? 0} 行, 去重后 {translationService?.dedupedBlocks ?? 0} 行
+                  </div>
+                  {attemptSummary && (
+                    <div style={{ gridColumn: "span 2", fontSize: 10, color: "#94a3b8", wordBreak: "break-all" }}>候选服务: {attemptSummary}</div>
+                  )}
+                </>
               )}
             </div>
           </details>

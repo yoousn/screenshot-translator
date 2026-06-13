@@ -7,7 +7,13 @@ import type { Rect, TranslatePair, OcrBlock } from "../types/screenshot";
 import { openOcrResultWindow } from "../utils/ocrResultWindow";
 import { FLOATING_PANEL_MARGIN, FLOATING_PANEL_GAP, OCR_WINDOW_SIZE } from "../utils/screenshotLayout";
 import { buildOcrNormalizationReport } from "../ocr-processing";
-import { prewarmTranslationServices, translateOcrBlocks, translateWithLocalOcr } from "../utils/localOcrTranslate";
+import {
+  getLocalTranslateDiagnosticsFromError,
+  prewarmTranslationServices,
+  translateOcrBlocks,
+  translateWithLocalOcr,
+} from "../utils/localOcrTranslate";
+import { shouldForceTranslateTechnicalTextForModel } from "../utils/ocrTranslationRequest";
 import { loadPngImage } from "../utils/screenshotImage";
 
 type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
@@ -187,6 +193,14 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
     const operationGeneration = startOperation();
     const startTime = performance.now();
     let base64 = "";
+    let captureMs = 0;
+    let textSourceDiagnostics: Awaited<ReturnType<typeof getTextSourceBlocksForCurrentSelection>> | null = null;
+    const persistTranslationDiagnostics = (payload: any) => {
+      setLastTranslationDiagnostics(payload);
+      invoke("set_last_translation_diagnostics", { payload }).catch((err) => {
+        console.warn("Failed to set last translation diagnostics in Rust backend", err);
+      });
+    };
     prewarmLocalOcrWorker("translate-action");
     prewarmTranslationServices(configRef.current, { reason: "translate-action" })
       .catch((error) => {
@@ -199,7 +213,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       const captureStarted = performance.now();
       base64 = await captureRegionBase64("translate");
       if (!isCurrentOperation(operationGeneration)) return;
-      const captureMs = Math.round(performance.now() - captureStarted);
+      captureMs = Math.round(performance.now() - captureStarted);
 
       let resultBase64 = "";
       let usedChannel = configRef.current.channel || configRef.current.targetLang || "auto";
@@ -208,11 +222,13 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       try {
         const localFlowStarted = performance.now();
         const textSource = await getTextSourceBlocksForCurrentSelection(80);
+        textSourceDiagnostics = textSource;
         const result = textSource.usable
           ? await translateOcrBlocks(base64, textSource.blocks, configRef.current, {
               flowStarted: localFlowStarted,
               ocrMs: textSource.elapsedMs,
               source: "text-source",
+              forceTranslateTechnicalText: shouldForceTranslateTechnicalTextForModel(configRef.current.rapidOcrModelVersion),
             })
           : await translateWithLocalOcr(base64, configRef.current);
         if (!isCurrentOperation(operationGeneration)) return;
@@ -237,11 +253,9 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
           } : null,
           localTimings: result.localTimings,
           serverTimings: result.translationTimings,
+          pipelineDiagnostics: result.diagnostics,
         };
-        setLastTranslationDiagnostics(diagPayload);
-        invoke("set_last_translation_diagnostics", { payload: diagPayload }).catch((err) => {
-          console.warn("Failed to set last translation diagnostics in Rust backend", err);
-        });
+        persistTranslationDiagnostics(diagPayload);
 
         console.info("[Local Translate Flow] timings", {
           captureMs,
@@ -304,6 +318,26 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       if (!isCurrentOperation(operationGeneration)) return;
       console.error("Local Translation Error:", e);
       const msg = normalizeScreenshotTranslateError(e);
+      const failureDiagnostics = {
+        timestamp: new Date().toLocaleString(),
+        status: "error",
+        totalMs: Math.round(performance.now() - startTime),
+        captureMs,
+        error: msg,
+        textSource: textSourceDiagnostics ? {
+          usable: textSourceDiagnostics.usable,
+          status: textSourceDiagnostics.status,
+          elapsedMs: textSourceDiagnostics.elapsedMs,
+          rawCount: textSourceDiagnostics.rawCount,
+          matchedRawCount: textSourceDiagnostics.matchedRawCount,
+          rejectedRawCount: textSourceDiagnostics.rejectedRawCount,
+          rejectedAggregateCount: textSourceDiagnostics.rejectedAggregateCount,
+          maxElementCoverage: textSourceDiagnostics.maxElementCoverage,
+          maxSelectionCoverage: textSourceDiagnostics.maxSelectionCoverage,
+        } : null,
+        pipelineDiagnostics: getLocalTranslateDiagnosticsFromError(e),
+      };
+      persistTranslationDiagnostics(failureDiagnostics);
       message.error({ content: `\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u5931\u8d25\uff1a${msg}`, key: "translate", duration: 3 });
       setIsTranslatingSync(false);
       setTranslatedResult(null);

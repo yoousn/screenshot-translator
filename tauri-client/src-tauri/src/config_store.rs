@@ -2,8 +2,14 @@ use crate::*;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
+use tauri::Emitter;
 
 static CONFIG_CACHE: OnceLock<RwLock<Option<serde_json::Value>>> = OnceLock::new();
+
+/// 事件名：配置写入成功后广播给所有 webview 窗口。
+/// 监听方收到后应重新 `get_config` 刷新内存中的 configRef/状态，
+/// 使功能开关、模型版本等无需重启即可生效。
+pub const CONFIG_CHANGED_EVENT: &str = "config-changed";
 
 fn config_cache() -> &'static RwLock<Option<serde_json::Value>> {
     CONFIG_CACHE.get_or_init(|| RwLock::new(None))
@@ -51,19 +57,46 @@ pub fn get_config() -> Result<String, String> {
     Ok(content)
 }
 
-#[tauri::command]
-pub fn save_config(config_str: String) -> Result<(), String> {
+/// 写入配置到磁盘并刷新内存缓存。纯逻辑，不触发事件广播。
+/// 供需要写配置但不便（或不应）广播的内部路径调用。
+fn write_config_to_disk(config_str: &str) -> Result<(), String> {
     let mut path = app_data_dir();
     if !path.exists() {
         fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     }
     path.push("config.json");
-    fs::write(path, &config_str).map_err(|e| e.to_string())?;
-    update_config_cache_from_str(&config_str);
+    fs::write(path, config_str).map_err(|e| e.to_string())?;
+    update_config_cache_from_str(config_str);
     Ok(())
 }
 
-pub fn set_config_value_if_changed(key: &str, value: serde_json::Value) -> Result<bool, String> {
+/// 广播配置变更事件给所有 webview 窗口。
+/// 监听方据此重新 `get_config` 刷新内存中的 configRef，
+/// 使功能开关、模型版本、翻译目标语等无需重启即可生效（工单②）。
+fn emit_config_changed(app: &tauri::AppHandle, config_str: &str) {
+    let payload = serde_json::json!({
+        // 顺带把新配置内容带上，监听方可直接使用而无需再发起一次 get_config 往返。
+        "config": config_str,
+    });
+    let _ = app.emit(CONFIG_CHANGED_EVENT, payload);
+}
+
+#[tauri::command]
+pub fn save_config(app: tauri::AppHandle, config_str: String) -> Result<(), String> {
+    write_config_to_disk(&config_str)?;
+    // 工单②：写入成功后广播，让截图后台窗口 / 主设置窗口等重载配置，
+    // 实现"功能开关保存即生效"，无需退出重进。
+    emit_config_changed(&app, &config_str);
+    Ok(())
+}
+
+/// 更新单个配置字段并在发生变化时写盘+广播。
+/// 由无法直接持有 AppHandle 的内部路径使用（例如截图流程里记住上次保存目录）。
+pub fn set_config_value_if_changed(
+    app: &tauri::AppHandle,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<bool, String> {
     let mut config = load_config_value()
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
@@ -73,7 +106,8 @@ pub fn set_config_value_if_changed(key: &str, value: serde_json::Value) -> Resul
     config.insert(key.to_string(), value);
     let config_str = serde_json::to_string_pretty(&serde_json::Value::Object(config))
         .map_err(|e| e.to_string())?;
-    save_config(config_str)?;
+    write_config_to_disk(&config_str)?;
+    emit_config_changed(app, &config_str);
     Ok(true)
 }
 

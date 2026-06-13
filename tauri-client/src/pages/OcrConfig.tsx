@@ -9,7 +9,7 @@ const { Text } = Typography;
 
 export default function OcrConfig() {
   const { config, setConfig, saveConfig } = useOcrConfigController();
-  const recording = useRecordingDependencyController({ autoCheck: true });
+  const recording = useRecordingDependencyController();
 
   const saveTargetLanguage = async (targetLang: string) => {
     setConfig({ ...config, targetLang });

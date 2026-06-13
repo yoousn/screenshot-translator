@@ -1,38 +1,54 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { AimOutlined, BorderOuterOutlined, ColumnWidthOutlined, EyeOutlined } from "@ant-design/icons";
 import { Switch, Typography, message } from "antd";
-import {
-  EyeOutlined,
-  AimOutlined,
-  ColumnWidthOutlined,
-  EditOutlined,
-  PoweroffOutlined,
-  AppstoreOutlined,
-  BorderOuterOutlined,
-} from "@ant-design/icons";
 import type { Config } from "../types/config";
 
 const { Text } = Typography;
 
 type FeatureSwitchRow = {
-  key: keyof Config;
+  keys: Array<keyof Config>;
   label: string;
   desc: string;
   icon: ReactNode;
   defaultVal: boolean;
+  activeWhen?: "all" | "any";
 };
 
 const ROWS: FeatureSwitchRow[] = [
-  { key: "enableMagnifier", label: "放大镜 / 取色器", desc: "截图时显示像素放大镜与 HEX 取色", icon: <EyeOutlined />, defaultVal: true },
-  { key: "enableVisualDetection", label: "智能窗口磁吸", desc: "拖动时自动识别整窗/大区域并吸附", icon: <AimOutlined />, defaultVal: false },
-  { key: "enableUiControlDetection", label: "UI 控件检测", desc: "识别按钮、输入框等控件边界并吸附", icon: <AppstoreOutlined />, defaultVal: false },
-  { key: "edgeSnapEnabled", label: "窗口边缘吸附", desc: "拖动框选时自动贴近附近窗口边缘", icon: <BorderOuterOutlined />, defaultVal: true },
-  { key: "enablePreciseSelection", label: "精确选区调整", desc: "选区后可用方向键微调位置与宽高", icon: <ColumnWidthOutlined />, defaultVal: true },
-  { key: "enableLiveAnnotation", label: "实时标注", desc: "画笔边画边显示（恒开）", icon: <EditOutlined />, defaultVal: true },
-  { key: "autoStart", label: "开机自启", desc: "开机时自动启动软件", icon: <PoweroffOutlined />, defaultVal: false },
+  {
+    keys: ["enableMagnifier", "enableColorPicker"],
+    label: "放大镜 / 取色器",
+    desc: "截图时显示像素放大镜与 HEX 取色",
+    icon: <EyeOutlined />,
+    defaultVal: true,
+    activeWhen: "all",
+  },
+  {
+    keys: ["enableVisualDetection", "enableUiControlDetection"],
+    label: "智能区域识别",
+    desc: "识别整窗、大区域和按钮输入框等控件边界",
+    icon: <AimOutlined />,
+    defaultVal: false,
+    activeWhen: "any",
+  },
+  {
+    keys: ["edgeSnapEnabled"],
+    label: "拖拽边缘吸附",
+    desc: "拖动框选时自动贴近附近窗口或控件边缘",
+    icon: <BorderOuterOutlined />,
+    defaultVal: true,
+  },
+  {
+    keys: ["enablePreciseSelection"],
+    label: "精确选区调整",
+    desc: "选区后可用方向键微调位置与宽高",
+    icon: <ColumnWidthOutlined />,
+    defaultVal: true,
+  },
 ];
 
-const containerStyle: CSSProperties = { padding: "28px 32px", maxWidth: 720, margin: "0 auto" };
+const containerStyle: CSSProperties = { padding: "20px 0 28px", width: "min(100%, 960px)", margin: "0 auto" };
 const titleStyle: CSSProperties = { fontSize: 20, display: "block", marginBottom: 6, color: "#0f172a" };
 const subtitleStyle: CSSProperties = { display: "block", marginBottom: 20, fontSize: 13, color: "#94a3b8" };
 const listStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 12 };
@@ -46,7 +62,7 @@ const rowStyle: CSSProperties = {
   border: "1px solid rgba(226,232,240,0.9)",
   boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
 };
-const rowLeftStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 16 };
+const rowLeftStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 16, minWidth: 0 };
 const labelStyle: CSSProperties = { fontWeight: 600, fontSize: 15, color: "#1e293b" };
 const descStyle: CSSProperties = { fontSize: 12.5, color: "#64748b", marginTop: 3 };
 
@@ -81,17 +97,21 @@ export default function FeatureSwitches() {
     })();
   }, []);
 
-  const toggle = async (key: keyof Config, value: boolean) => {
-    setSaving(key);
+  const isRowChecked = (row: FeatureSwitchRow) => {
+    const values = row.keys.map((key) => (config as Record<string, unknown>)[key]);
+    const isEnabled = (value: unknown) => (value !== undefined ? !!value : row.defaultVal);
+    return row.activeWhen === "any" ? values.some(isEnabled) : values.every(isEnabled);
+  };
+
+  const toggle = async (row: FeatureSwitchRow, value: boolean) => {
+    const savingKey = row.keys.join("|");
+    setSaving(savingKey);
     const prev = config;
-    const next = { ...config, [key]: value };
+    const next = row.keys.reduce<Config>((acc, key) => ({ ...acc, [key]: value }), { ...config });
     setConfig(next);
     try {
       await invoke("save_config", { configStr: JSON.stringify(next, null, 4) });
-      if (key === "autoStart") {
-        await invoke("set_autostart_enabled", { enabled: value });
-      }
-      message.success(value ? "已开启·已保存" : "已关闭·已保存");
+      message.success(value ? "已开启 · 已保存" : "已关闭 · 已保存");
     } catch {
       setConfig(prev);
       message.error("保存失败，已撤销更改");
@@ -108,14 +128,14 @@ export default function FeatureSwitches() {
         功能开关
       </Text>
       <Text style={subtitleStyle}>
-        开启或关闭截图工具的各项能力，切换后自动保存并立即生效。
+        开启或关闭截图工具的可选能力，切换后会自动保存并在下一次截图中生效。
       </Text>
       <div style={listStyle}>
         {ROWS.map((row) => {
-          const val = (config as Record<string, unknown>)[row.key];
-          const checked = val !== undefined ? !!val : row.defaultVal;
+          const checked = isRowChecked(row);
+          const savingKey = row.keys.join("|");
           return (
-            <div key={row.key} style={rowStyle}>
+            <div key={savingKey} style={rowStyle}>
               <div style={rowLeftStyle}>
                 <span style={iconChipStyle(checked)}>{row.icon}</span>
                 <div>
@@ -125,8 +145,8 @@ export default function FeatureSwitches() {
               </div>
               <Switch
                 checked={checked}
-                loading={saving === row.key}
-                onChange={(v) => toggle(row.key, v)}
+                loading={saving === savingKey}
+                onChange={(value) => toggle(row, value)}
                 checkedChildren="开"
                 unCheckedChildren="关"
               />

@@ -5,9 +5,11 @@ import {
   buildTranslatePairs,
   buildTranslationRequestPayload,
   collectUntranslatedLatinRetryBlocks,
+  evaluateTranslationQuality,
   mergeRetryTranslations,
   selectPreferredSourceLanguage,
   shouldForceTranslateTechnicalTextForModel,
+  shouldRequireTranslation,
   validateAndNormalizeTranslationResults,
   type TranslationSourceLanguage,
 } from "./ocrTranslationRequest";
@@ -107,7 +109,75 @@ type TranslationServiceResponse = {
   cache_hits?: number;
   timings?: TranslationServiceTimings;
   provider_error?: string;
+  diagnosticAttempts?: TranslationAttemptDiagnostic[];
 };
+
+type TranslationAttemptDiagnostic = {
+  serverUrl: string;
+  ok: boolean;
+  error?: string;
+  translationsCount?: number;
+  emptyTranslations?: number;
+  unchangedTranslations?: number;
+  channel?: string;
+  providerError?: string;
+  timings?: TranslationServiceTimings;
+};
+
+export type LocalTranslateDiagnostics = {
+  stage: "ocr" | "normalization" | "translation-request" | "translation-validation" | "render" | "success";
+  source: string;
+  targetLang: string;
+  sourceLang?: TranslationSourceLanguage;
+  forceTranslateTechnicalText: boolean;
+  rawOcr: ReturnType<typeof buildOcrDiagnosticSummary>;
+  normalizedOcr?: ReturnType<typeof buildOcrDiagnosticSummary>;
+  normalization?: {
+    rawCount: number;
+    usefulCount: number;
+    virtualLineCount: number;
+    droppedCount: number;
+    routeMissingScripts: string[];
+  };
+  translationDecision?: ReturnType<typeof buildTranslationDecisionDiagnostics>;
+  translationMemoryStats?: ReturnType<typeof createTranslationMemoryStats>;
+  translationService?: {
+    requestedBlocks: number;
+    dedupedBlocks: number;
+    serverUrls: string[];
+    selectedServerUrl?: string;
+    channel?: string;
+    providerError?: string;
+    timings?: TranslationServiceTimings;
+    attempts?: TranslationAttemptDiagnostic[];
+  };
+  translationResult?: {
+    returnedTranslations: number;
+    emptyTranslations: number;
+    unchangedTranslations: number;
+    translatedTranslations: number;
+    samples: Array<{ index: number; source: string; translated: string; unchanged: boolean; empty: boolean }>;
+    quality?: ReturnType<typeof evaluateTranslationQuality>;
+  };
+  error?: string;
+};
+
+export class LocalTranslateDiagnosticError extends Error {
+  diagnostics: LocalTranslateDiagnostics;
+
+  constructor(message: string, diagnostics: LocalTranslateDiagnostics, cause?: unknown) {
+    super(message);
+    this.name = "LocalTranslateDiagnosticError";
+    this.diagnostics = diagnostics;
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
+export const getLocalTranslateDiagnosticsFromError = (error: unknown): LocalTranslateDiagnostics | null => (
+  error instanceof LocalTranslateDiagnosticError ? error.diagnostics : null
+);
 
 const DEFAULT_TRANSLATION_TIMEOUT_MS = 9000;
 const RETRY_TRANSLATION_TIMEOUT_MS = 5000;
@@ -224,6 +294,164 @@ const getPreferredTranslationMemoryChannel = (config: LocalTranslateConfig) => (
   || "auto"
 );
 
+const truncateDiagnosticText = (text: string, maxLength = 96) => {
+  const normalized = (text || "").replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+};
+
+const roundDiagnosticNumber = (value: number | undefined | null, digits = 3) => {
+  if (!Number.isFinite(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(Number(value) * factor) / factor;
+};
+
+const getBlockBounds = (block: OcrBlock) => {
+  const xs = (block.box_coords || []).map((point) => point[0]).filter(Number.isFinite);
+  const ys = (block.box_coords || []).map((point) => point[1]).filter(Number.isFinite);
+  if (!xs.length || !ys.length) return null;
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return {
+    x: Math.round(minX),
+    y: Math.round(minY),
+    width: Math.round(maxX - minX),
+    height: Math.round(maxY - minY),
+  };
+};
+
+const buildOcrDiagnosticSummary = (blocks: OcrBlock[] = [], sampleLimit = 8) => {
+  const confidences = blocks
+    .map((block) => Number(block.confidence))
+    .filter(Number.isFinite);
+  const avgConfidence = confidences.length
+    ? confidences.reduce((sum, item) => sum + item, 0) / confidences.length
+    : null;
+
+  return {
+    count: blocks.length,
+    minConfidence: roundDiagnosticNumber(confidences.length ? Math.min(...confidences) : null),
+    avgConfidence: roundDiagnosticNumber(avgConfidence),
+    lowConfidenceBlocks: confidences.filter((item) => item < 0.6).length,
+    shortTextBlocks: blocks.filter((block) => (block.text || "").replace(/\s+/g, "").length <= 2).length,
+    samples: blocks.slice(0, sampleLimit).map((block, index) => ({
+      index,
+      text: truncateDiagnosticText(block.text),
+      confidence: roundDiagnosticNumber(block.confidence),
+      chars: (block.text || "").replace(/\s+/g, "").length,
+      bounds: getBlockBounds(block),
+    })),
+  };
+};
+
+const normalizeForDiagnosticCompare = (text: string) => (
+  (text || "").replace(/\s+/g, " ").trim().toLowerCase()
+);
+
+const buildTranslationDecisionDiagnostics = (
+  blocks: OcrBlock[],
+  translations: string[],
+  targetLang: string,
+  options: { forceTranslateTechnicalText?: boolean },
+  localHits: Array<{ source: string; translation: string } | null>,
+  sampleLimit = 10,
+) => {
+  const decisions = blocks.map((block, index) => {
+    const localHit = localHits[index];
+    const translated = translations[index]?.trim() || "";
+    const requiresTranslation = shouldRequireTranslation(block.text, targetLang, options);
+    return {
+      index,
+      text: truncateDiagnosticText(block.text),
+      confidence: roundDiagnosticNumber(block.confidence),
+      requiresTranslation,
+      localSource: localHit?.source || null,
+      queuedForService: requiresTranslation && !localHit,
+      hasTranslation: Boolean(translated),
+      unchanged: Boolean(translated) && normalizeForDiagnosticCompare(translated) === normalizeForDiagnosticCompare(block.text),
+    };
+  });
+
+  return {
+    total: blocks.length,
+    requiresTranslation: decisions.filter((item) => item.requiresTranslation).length,
+    preservedByPolicy: decisions.filter((item) => !item.requiresTranslation).length,
+    queuedForService: decisions.filter((item) => item.queuedForService).length,
+    localPreservedHits: localHits.filter((item) => item?.source === "preserved").length,
+    glossaryHits: localHits.filter((item) => item?.source === "glossary").length,
+    memoryHits: localHits.filter((item) => item?.source === "memory").length,
+    samples: decisions.slice(0, sampleLimit),
+  };
+};
+
+const buildTranslationResultDiagnostics = (
+  blocks: OcrBlock[],
+  translations: string[],
+  targetLang: string,
+  options: { forceTranslateTechnicalText?: boolean },
+  sampleLimit = 10,
+) => {
+  const normalizedTranslations = translations.map((item) => item?.trim() || "");
+  const quality = evaluateTranslationQuality(blocks, translations, normalizedTranslations, targetLang, options);
+  const samples = blocks.slice(0, sampleLimit).map((block, index) => {
+    const translated = translations[index]?.trim() || "";
+    const unchanged = Boolean(translated) && normalizeForDiagnosticCompare(translated) === normalizeForDiagnosticCompare(block.text);
+    return {
+      index,
+      source: truncateDiagnosticText(block.text),
+      translated: truncateDiagnosticText(translated),
+      unchanged,
+      empty: !translated,
+    };
+  });
+
+  return {
+    returnedTranslations: translations.length,
+    emptyTranslations: blocks.filter((_, index) => !(translations[index] || "").trim()).length,
+    unchangedTranslations: blocks.filter((block, index) => {
+      const translated = translations[index]?.trim() || "";
+      return Boolean(translated) && normalizeForDiagnosticCompare(translated) === normalizeForDiagnosticCompare(block.text);
+    }).length,
+    translatedTranslations: blocks.filter((block, index) => {
+      const translated = translations[index]?.trim() || "";
+      return Boolean(translated) && normalizeForDiagnosticCompare(translated) !== normalizeForDiagnosticCompare(block.text);
+    }).length,
+    samples,
+    quality,
+  };
+};
+
+const buildTranslationAttemptDiagnostic = (
+  serverUrl: string,
+  blocks: OcrBlock[],
+  result: TranslationServiceResponse,
+): TranslationAttemptDiagnostic => {
+  const translations = result.translations || [];
+  return {
+    serverUrl: result.serverUrl || serverUrl,
+    ok: true,
+    translationsCount: translations.length,
+    emptyTranslations: blocks.filter((_, index) => !(translations[index] || "").trim()).length,
+    unchangedTranslations: blocks.filter((block, index) => {
+      const translated = translations[index]?.trim() || "";
+      return Boolean(translated) && normalizeForDiagnosticCompare(translated) === normalizeForDiagnosticCompare(block.text);
+    }).length,
+    channel: result.channel,
+    providerError: result.provider_error,
+    timings: result.timings,
+  };
+};
+
+const buildTranslationFailureDiagnostic = (
+  serverUrl: string,
+  error: unknown,
+): TranslationAttemptDiagnostic => ({
+  serverUrl,
+  ok: false,
+  error: error instanceof Error ? error.message : String(error || ""),
+});
+
 const requestTextTranslations = async (
   serverUrl: string,
   token: string,
@@ -248,7 +476,11 @@ const requestTextTranslations = async (
     if (!response.ok) throw new Error(`Text translation API failed: ${response.status}`);
     const transData = await response.json();
     if (transData.status !== "success") throw new Error(transData.error || "Text translation failed");
-    return { ...(transData as TranslationServiceResponse), serverUrl: normalizedServerUrl };
+    const result = { ...(transData as TranslationServiceResponse), serverUrl: normalizedServerUrl };
+    return {
+      ...result,
+      diagnosticAttempts: [buildTranslationAttemptDiagnostic(normalizedServerUrl, blocks, result)],
+    };
   } catch (error: any) {
     if (error?.name === "AbortError") {
       throw new Error(`\u6587\u672c\u7ffb\u8bd1\u670d\u52a1\u8d85\u65f6\uff08${Math.round(timeoutMs / 1000)} \u79d2\uff09`);
@@ -331,12 +563,39 @@ export const translateOcrBlocks = async (
   const forceTranslateTechnicalText = Boolean(options.forceTranslateTechnicalText);
   const translationRequirementOptions = { forceTranslateTechnicalText };
   const memoryChannel = getPreferredTranslationMemoryChannel(config);
+  const source = options.source || "rapidocr";
+  const diagnostics: LocalTranslateDiagnostics = {
+    stage: "ocr",
+    source,
+    targetLang,
+    forceTranslateTechnicalText,
+    rawOcr: buildOcrDiagnosticSummary(rawBlocks || []),
+    translationService: {
+      requestedBlocks: 0,
+      dedupedBlocks: 0,
+      serverUrls,
+    },
+  };
   const normalization = await buildOcrNormalizationReport(rawBlocks || []);
   const ocrBlocks = normalization.blocks;
   const routePlan = normalization.routePlan;
-  if (!ocrBlocks.length) throw new Error("\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002");
+  diagnostics.stage = "normalization";
+  diagnostics.normalizedOcr = buildOcrDiagnosticSummary(ocrBlocks);
+  diagnostics.normalization = {
+    rawCount: normalization.rawCount,
+    usefulCount: normalization.usefulCount,
+    virtualLineCount: normalization.virtualLineCount,
+    droppedCount: normalization.droppedCount,
+    routeMissingScripts: normalization.routePlan?.missingScripts || [],
+  };
+  if (!ocrBlocks.length) {
+    const message = "\u672c\u5730\u622a\u56fe\u7ffb\u8bd1\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
+    diagnostics.error = message;
+    throw new LocalTranslateDiagnosticError(message, diagnostics);
+  }
 
   const preferredSourceLang = selectPreferredSourceLanguage(ocrBlocks, targetLang);
+  diagnostics.sourceLang = preferredSourceLang;
   const translationMemoryStats = createTranslationMemoryStats();
   const translations = new Array<string>(ocrBlocks.length).fill("");
   const requestItems: { block: OcrBlock; index: number }[] = [];
@@ -362,11 +621,25 @@ export const translateOcrBlocks = async (
   translationMemoryStats.requestedBlocks = requestItems.length;
   const requestGroups = dedupeTranslationRequestItems(requestItems);
   translationMemoryStats.deduplicatedBlocks = Math.max(0, requestItems.length - requestGroups.length);
+  diagnostics.translationMemoryStats = translationMemoryStats;
+  diagnostics.translationDecision = buildTranslationDecisionDiagnostics(
+    ocrBlocks,
+    translations,
+    targetLang,
+    translationRequirementOptions,
+    localHits,
+  );
+  diagnostics.translationService = {
+    requestedBlocks: requestItems.length,
+    dedupedBlocks: requestGroups.length,
+    serverUrls,
+  };
 
   let transData: TranslationServiceResponse = { channel: config.channel };
   let translationMs = 0;
   if (requestGroups.length > 0) {
     try {
+      diagnostics.stage = "translation-request";
       const translationStarted = performance.now();
       transData = await requestTextTranslationsWithFallback(
         serverUrls,
@@ -378,6 +651,14 @@ export const translateOcrBlocks = async (
         forceTranslateTechnicalText,
       );
       translationMs = Math.round(performance.now() - translationStarted);
+      diagnostics.translationService = {
+        ...(diagnostics.translationService || { requestedBlocks: requestItems.length, dedupedBlocks: requestGroups.length, serverUrls }),
+        selectedServerUrl: transData.serverUrl,
+        channel: transData.channel,
+        providerError: transData.provider_error,
+        timings: transData.timings,
+        attempts: transData.diagnosticAttempts,
+      };
       (transData.translations || []).forEach((translated, requestIndex) => {
         const group = requestGroups[requestIndex];
         if (!group) return;
@@ -385,9 +666,28 @@ export const translateOcrBlocks = async (
           translations[originalIndex] = translated;
         });
       });
+      diagnostics.translationResult = buildTranslationResultDiagnostics(
+        ocrBlocks,
+        translations,
+        targetLang,
+        translationRequirementOptions,
+      );
     } catch (error) {
-      throw new Error(normalizeLocalTranslateError(error));
+      const message = normalizeLocalTranslateError(error);
+      diagnostics.translationService = {
+        ...(diagnostics.translationService || { requestedBlocks: requestItems.length, dedupedBlocks: requestGroups.length, serverUrls }),
+        attempts: (error as Error & { diagnosticAttempts?: TranslationAttemptDiagnostic[] })?.diagnosticAttempts,
+      };
+      diagnostics.error = message;
+      throw new LocalTranslateDiagnosticError(message, diagnostics, error);
     }
+  } else {
+    diagnostics.translationResult = buildTranslationResultDiagnostics(
+      ocrBlocks,
+      translations,
+      targetLang,
+      translationRequirementOptions,
+    );
   }
 
   const retryStarted = performance.now();
@@ -404,16 +704,46 @@ export const translateOcrBlocks = async (
     );
     translations.splice(0, translations.length, ...retriedTranslations);
   } catch (error) {
-    throw new Error(normalizeLocalTranslateError(error));
+    const message = normalizeLocalTranslateError(error);
+    diagnostics.translationService = {
+      ...(diagnostics.translationService || { requestedBlocks: requestItems.length, dedupedBlocks: requestGroups.length, serverUrls }),
+      attempts: [
+        ...(diagnostics.translationService?.attempts || []),
+        ...((error as Error & { diagnosticAttempts?: TranslationAttemptDiagnostic[] })?.diagnosticAttempts || []),
+      ],
+    };
+    diagnostics.error = message;
+    throw new LocalTranslateDiagnosticError(message, diagnostics, error);
   }
   const retryMs = Math.round(performance.now() - retryStarted);
-  const { translations: normalizedTranslations, quality: translationQuality } = validateAndNormalizeTranslationResults(
+  diagnostics.translationResult = buildTranslationResultDiagnostics(
     ocrBlocks,
     translations,
     targetLang,
-    transData.provider_error,
     translationRequirementOptions,
   );
+  let normalizedTranslations: string[];
+  let translationQuality: ReturnType<typeof evaluateTranslationQuality>;
+  try {
+    diagnostics.stage = "translation-validation";
+    const validation = validateAndNormalizeTranslationResults(
+      ocrBlocks,
+      translations,
+      targetLang,
+      transData.provider_error,
+      translationRequirementOptions,
+    );
+    normalizedTranslations = validation.translations;
+    translationQuality = validation.quality;
+    diagnostics.translationResult = {
+      ...diagnostics.translationResult,
+      quality: translationQuality,
+    };
+  } catch (error) {
+    const message = normalizeLocalTranslateError(error);
+    diagnostics.error = message;
+    throw new LocalTranslateDiagnosticError(message, diagnostics, error);
+  }
   translationMemoryStats.stored = storeTranslationMemory(
     ocrBlocks,
     normalizedTranslations,
@@ -422,8 +752,10 @@ export const translateOcrBlocks = async (
     transData.channel || memoryChannel,
     translationRequirementOptions,
   );
+  diagnostics.translationMemoryStats = translationMemoryStats;
 
   const renderStarted = performance.now();
+  diagnostics.stage = "render";
   const distributedRender = distributeTranslationsForRender(ocrBlocks, normalizedTranslations, normalization.renderBlocks || ocrBlocks);
   const resultBase64 = await renderTranslatedBlocks(base64, distributedRender.blocks, distributedRender.translations);
   const renderMs = Math.round(performance.now() - renderStarted);
@@ -433,7 +765,8 @@ export const translateOcrBlocks = async (
     targetLang,
     translationRequirementOptions,
   );
-  return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", usedServerUrl: transData.serverUrl || (requestGroups.length > 0 ? serverUrls[0] : "local-cache"), blocksCount: ocrBlocks.length, routePlan, normalization, translationQuality, translationMemoryStats, translationTimings: transData.timings, servicePrewarm: getLastTranslationServicePrewarm(), localTimings: { source: options.source || "rapidocr", ocrMs: options.ocrMs ?? 0, translationMs, retryMs, renderMs, totalMs: Math.round(performance.now() - flowStarted) } };
+  diagnostics.stage = "success";
+  return { resultBase64, pairs, usedChannel: transData.channel || config.channel || config.targetLang || "auto", usedServerUrl: transData.serverUrl || (requestGroups.length > 0 ? serverUrls[0] : "local-cache"), blocksCount: ocrBlocks.length, routePlan, normalization, diagnostics, translationQuality, translationMemoryStats, translationTimings: transData.timings, servicePrewarm: getLastTranslationServicePrewarm(), localTimings: { source, ocrMs: options.ocrMs ?? 0, translationMs, retryMs, renderMs, totalMs: Math.round(performance.now() - flowStarted) } };
 };
 
 export const translateWithLocalOcr = async (base64: string, config: LocalTranslateConfig) => {
@@ -447,7 +780,15 @@ export const translateWithLocalOcr = async (base64: string, config: LocalTransla
       timeoutMs: config.localOcrTimeoutMs || 15000,
     });
   } catch (error) {
-    throw new Error(normalizeLocalTranslateError(error));
+    const message = normalizeLocalTranslateError(error);
+    throw new LocalTranslateDiagnosticError(message, {
+      stage: "ocr",
+      source: "rapidocr",
+      targetLang: config.targetLang || "zh",
+      forceTranslateTechnicalText: shouldForceTranslateTechnicalTextForModel(config.rapidOcrModelVersion),
+      rawOcr: buildOcrDiagnosticSummary([]),
+      error: message,
+    }, error);
   }
   const ocrMs = Math.round(performance.now() - ocrStarted);
   return translateOcrBlocks(base64, rawBlocks, config, {
@@ -468,18 +809,27 @@ const requestTextTranslationsWithFallback = async (
   forceTranslateTechnicalText = false,
 ) => {
   if (serverUrls.length <= 1) {
-    return await requestTextTranslations(
-      serverUrls[0],
-      token,
-      blocks,
-      sourceLang,
-      targetLang,
-      timeoutMs,
-      forceTranslateTechnicalText,
-    );
+    try {
+      return await requestTextTranslations(
+        serverUrls[0],
+        token,
+        blocks,
+        sourceLang,
+        targetLang,
+        timeoutMs,
+        forceTranslateTechnicalText,
+      );
+    } catch (error) {
+      const nextError = error instanceof Error ? error : new Error(String(error || ""));
+      (nextError as Error & { diagnosticAttempts?: TranslationAttemptDiagnostic[] }).diagnosticAttempts = [
+        buildTranslationFailureDiagnostic(serverUrls[0], nextError),
+      ];
+      throw nextError;
+    }
   }
 
   const errors: string[] = [];
+  const attempts: TranslationAttemptDiagnostic[] = [];
   let started = 0;
   let finished = 0;
   let settled = false;
@@ -500,16 +850,22 @@ const requestTextTranslationsWithFallback = async (
         .then((result) => {
           if (settled) return;
           settled = true;
-          resolve(result);
+          resolve({
+            ...result,
+            diagnosticAttempts: [...attempts, ...(result.diagnosticAttempts || [])],
+          });
         })
         .catch((error: any) => {
           errors.push(`${serverUrl}: ${error?.message || error}`);
+          attempts.push(buildTranslationFailureDiagnostic(serverUrl, error));
         })
         .finally(() => {
           finished += 1;
           if (!settled && started >= serverUrls.length && finished >= started) {
             settled = true;
-            reject(new Error(errors.join("; ")));
+            const error = new Error(errors.join("; "));
+            (error as Error & { diagnosticAttempts?: TranslationAttemptDiagnostic[] }).diagnosticAttempts = attempts;
+            reject(error);
           }
         });
     };

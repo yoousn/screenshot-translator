@@ -38,7 +38,7 @@ function formatElapsed(ms?: number) {
 
 export default function ModelManagement() {
   const { config, setConfig, saveConfig } = useOcrConfigController();
-  const rapidOcr = useRapidOcrController({ autoRefresh: true });
+  const rapidOcr = useRapidOcrController();
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState<RapidOcrModelInstallResult | null>(null);
   const [installProgress, setInstallProgress] = useState<RapidOcrModelInstallProgress | null>(null);
@@ -71,9 +71,21 @@ export default function ModelManagement() {
   }, []);
 
   const saveRapidOcrModelVersion = async (rapidOcrModelVersion: RapidOcrModelVersion) => {
+    const previousModelVersion = modelVersion;
     setConfig({ ...config, rapidOcrModelVersion });
-    await saveConfig({ rapidOcrModelVersion }, false);
-    await rapidOcr.refreshStatus();
+    const saved = await saveConfig({ rapidOcrModelVersion }, false);
+    if (!saved) {
+      setConfig({ ...config, rapidOcrModelVersion: previousModelVersion });
+      return;
+    }
+    const status = await rapidOcr.refreshStatus();
+    const activeModelVersion = status?.rapidOcrModelVersion || rapidOcrModelVersion;
+    const activeModelName = localOcrModelName(activeModelVersion);
+    if (status?.ready) {
+      message.success(`${activeModelName} 已保存并立即生效，下一次截图识字/翻译会使用该模型。`);
+    } else {
+      message.warning(`${activeModelName} 已保存，下一次截图会使用该模型；当前模型状态仍需检查或自测。`);
+    }
   };
 
   const openModelDir = async () => {

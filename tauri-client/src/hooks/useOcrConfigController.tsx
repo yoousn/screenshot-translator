@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
 import type { LocalConfig } from "../utils/ocrConfigHelpers";
 import { useI18n } from "../i18n";
+import { useConfigHotReload } from "./useConfigHotReload";
 
 export default function useOcrConfigController() {
   const { text } = useI18n();
@@ -30,6 +31,10 @@ export default function useOcrConfigController() {
     });
   };
 
+  // 工单②：监听配置变更广播，使主窗口各设置入口（模型管理 / OCR 配置等）
+  // 在其它窗口或页面改了配置后能自动同步，无需手动刷新或重启。
+  useConfigHotReload(loadConfig);
+
   const saveConfig = async (patch: Partial<LocalConfig> = {}, showMessage = true) => {
     setSaving(true);
     try {
@@ -48,8 +53,10 @@ export default function useOcrConfigController() {
       await invoke("save_config", { configStr: JSON.stringify(next) });
       setConfig(next);
       if (showMessage) message.success(labels.ocrConfigSaved);
+      return true;
     } catch (error: any) {
       message.error(labels.ocrConfigSaveFailed + (error?.message || error));
+      return false;
     } finally {
       setSaving(false);
     }

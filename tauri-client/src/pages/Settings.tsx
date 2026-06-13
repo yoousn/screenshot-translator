@@ -53,7 +53,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       onFinish={controller.onFinish}
       onValuesChange={controller.handleFormChange}
       requiredMark={false}
-      style={{ width: "min(100%, 840px)", margin: "0 auto", paddingBottom: 24 }}
+      style={{ width: "min(100%, 960px)", margin: "0 auto", paddingBottom: 24 }}
     >
       <SettingsPageHeader saving={controller.isSaving} />
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>

@@ -20,6 +20,12 @@ export default function TranslatePanel({ rect, pairs, onClose, diagnostics }: Tr
   const hasRightSpace = rightLeft + panelWidth <= window.innerWidth - 8;
   const hasLeftSpace = leftLeft >= 8;
   const left = hasRightSpace ? rightLeft : hasLeftSpace ? leftLeft : clamp(rightLeft, 8, Math.max(8, window.innerWidth - panelWidth - 8));
+  const pipelineDiagnostics = diagnostics?.pipelineDiagnostics;
+  const rawOcr = pipelineDiagnostics?.rawOcr;
+  const normalizedOcr = pipelineDiagnostics?.normalizedOcr;
+  const translationDecision = pipelineDiagnostics?.translationDecision;
+  const translationService = pipelineDiagnostics?.translationService;
+  const translationResult = pipelineDiagnostics?.translationResult;
 
   return (
     <div
@@ -77,6 +83,17 @@ export default function TranslatePanel({ rect, pairs, onClose, diagnostics }: Tr
               )}
               {diagnostics.localTimings?.renderMs > 0 && (
                 <div>渲染回填: {diagnostics.localTimings.renderMs}ms</div>
+              )}
+              {pipelineDiagnostics && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #f0f0f0", display: "flex", flexDirection: "column", gap: 3 }}>
+                  <div style={{ color: diagnostics.status === "error" ? "#cf1322" : "#595959" }}>
+                    阶段: {pipelineDiagnostics.stage}{pipelineDiagnostics.error ? ` | ${pipelineDiagnostics.error}` : ""}
+                  </div>
+                  <div>OCR: raw {rawOcr?.count ?? 0}, normalized {normalizedOcr?.count ?? 0}, avg {normalizedOcr?.avgConfidence ?? rawOcr?.avgConfidence ?? "-"}</div>
+                  <div>翻译判定: 需译 {translationDecision?.requiresTranslation ?? 0}, 保留 {translationDecision?.preservedByPolicy ?? 0}, 请求 {translationDecision?.queuedForService ?? 0}</div>
+                  <div>服务返回: {translationResult?.returnedTranslations ?? 0}, 空 {translationResult?.emptyTranslations ?? 0}, 原文 {translationResult?.unchangedTranslations ?? 0}</div>
+                  <div>服务请求: {translationService?.requestedBlocks ?? 0} 行, 去重后 {translationService?.dedupedBlocks ?? 0} 行</div>
+                </div>
               )}
             </div>
           </details>

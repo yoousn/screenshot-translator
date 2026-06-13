@@ -130,7 +130,16 @@ export default function AppLayout({
           </Space>
         </Header>
 
-        <Content style={{ padding: 24, background: "linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)", overflowY: "auto" }}>{children}</Content>
+        <Content
+          style={{
+            padding: 24,
+            background: "linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)",
+            overflow: "auto",
+            minWidth: 0,
+          }}
+        >
+          <div style={{ minWidth: 720, minHeight: "100%" }}>{children}</div>
+        </Content>
       </Layout>
     </Layout>
   );

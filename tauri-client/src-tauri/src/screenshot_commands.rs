@@ -422,7 +422,7 @@ fn default_image_save_directory() -> Option<PathBuf> {
     .or_else(dirs::desktop_dir)
 }
 
-fn remember_image_save_directory(path: &std::path::Path) {
+fn remember_image_save_directory(app: &tauri::AppHandle, path: &std::path::Path) {
     if !crate::config_store::config_value_bool("imageSaveRememberLastDir").unwrap_or(false) {
         return;
     }
@@ -436,6 +436,7 @@ fn remember_image_save_directory(path: &std::path::Path) {
         return;
     }
     let _ = crate::config_store::set_config_value_if_changed(
+        app,
         "imageSaveLastDir",
         serde_json::Value::String(next_dir),
     );
@@ -3959,7 +3960,10 @@ pub fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn save_image_to_file(image_base64: String) -> Result<String, String> {
+pub async fn save_image_to_file(
+    app: tauri::AppHandle,
+    image_base64: String,
+) -> Result<String, String> {
     let mut dialog = rfd::AsyncFileDialog::new()
         .add_filter("PNG Image", &["png"])
         .add_filter("JPEG Image", &["jpg", "jpeg"])
@@ -3974,7 +3978,7 @@ pub async fn save_image_to_file(image_base64: String) -> Result<String, String> 
         if !path.exists() {
             return Err("No display detected".to_string());
         }
-        remember_image_save_directory(&path);
+        remember_image_save_directory(&app, &path);
         Ok(path.to_string_lossy().to_string())
     } else {
         Err("Save cancelled by user".to_string())
@@ -4039,7 +4043,7 @@ pub async fn write_image_to_file(
         path
     );
     let path = write_reencoded_image_to_path(image_base64, PathBuf::from(path)).await?;
-    remember_image_save_directory(&path);
+    remember_image_save_directory(&app, &path);
     let saved_path = path.to_string_lossy().to_string();
     let toast_app = app.clone();
     let toast_path = saved_path.clone();
@@ -4088,7 +4092,7 @@ pub async fn save_selection_from_cache(
     .await
     .map_err(|error| format!("Save cached selection task failed: {error}"))??;
 
-    remember_image_save_directory(&saved_path);
+    remember_image_save_directory(&app, &saved_path);
     let saved_path = saved_path.to_string_lossy().to_string();
     let toast_app = app.clone();
     let toast_path = saved_path.clone();

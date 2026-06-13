@@ -16,6 +16,19 @@ interface DashboardStatsProps {
   };
 }
 
+const cardStyle: React.CSSProperties = {
+  height: "100%",
+  borderRadius: 14,
+};
+
+const valueStyle: React.CSSProperties = {
+  fontSize: 22,
+  lineHeight: 1.35,
+  fontWeight: 600,
+  whiteSpace: "normal",
+  wordBreak: "break-word",
+};
+
 export default function DashboardStats({
   hotkey,
   ocrModeLabel,
@@ -28,10 +41,10 @@ export default function DashboardStats({
 }: DashboardStatsProps) {
   return (
     <Row gutter={[16, 16]}>
-      <Col span={6}><Card bordered={false}><Statistic title={labels.hotkey} value={hotkey} /></Card></Col>
-      <Col span={6}><Card bordered={false}><Statistic title={labels.ocrMode} value={ocrModeLabel} /></Card></Col>
-      <Col span={6}><Card bordered={false}><Statistic title={labels.targetLang} value={targetLang} /></Card></Col>
-      <Col span={6}><Card bordered={false}><Statistic title={serverTitle} value={serverValue} suffix={<Tag color={serverStatusColor}>{serverStatusText}</Tag>} /></Card></Col>
+      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={labels.hotkey} value={hotkey} valueStyle={valueStyle} /></Card></Col>
+      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={labels.ocrMode} value={ocrModeLabel} valueStyle={valueStyle} /></Card></Col>
+      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={labels.targetLang} value={targetLang} valueStyle={valueStyle} /></Card></Col>
+      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={serverTitle} value={serverValue} valueStyle={valueStyle} suffix={<Tag color={serverStatusColor}>{serverStatusText}</Tag>} /></Card></Col>
     </Row>
   );
 }

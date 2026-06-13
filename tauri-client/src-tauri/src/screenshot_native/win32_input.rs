@@ -13,7 +13,9 @@ pub const WM_XBUTTONUP: u32 = 0x020C;
 pub const WM_MOUSEHWHEEL: u32 = 0x020E;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_SYSKEYDOWN: u32 = 0x0104;
+pub const WM_CANCELMODE: u32 = 0x001F;
 pub const WM_KILLFOCUS: u32 = 0x0008;
+pub const WM_CAPTURECHANGED: u32 = 0x0215;
 
 pub const MK_LBUTTON: u16 = 0x0001;
 pub const MK_RBUTTON: u16 = 0x0002;
@@ -147,7 +149,7 @@ pub fn screenshot_input_event_from_win32_message(
             modifiers,
         }),
         WM_KEYDOWN | WM_SYSKEYDOWN => key_event_from_virtual_key(low_word(wparam), key_state),
-        WM_KILLFOCUS => Some(ScreenshotInputEvent::LostFocus),
+        WM_KILLFOCUS | WM_CANCELMODE | WM_CAPTURECHANGED => Some(ScreenshotInputEvent::LostFocus),
         _ => None,
     }
 }

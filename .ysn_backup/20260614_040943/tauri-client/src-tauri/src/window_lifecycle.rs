@@ -269,34 +269,6 @@ pub fn show_screenshot_overlay_window<W: tauri::Runtime>(window: &tauri::Webview
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
                 );
-                // Bug A fix: even in no-activate mode, force the overlay above other
-                // topmost / foreground windows (browsers, always-on-top UI) so the
-                // selection input is not swallowed by a window sitting above us. We
-                // raise z-order through the foreground thread input queue WITHOUT
-                // stealing keyboard focus (no SetForegroundWindow/SetFocus here).
-                let foreground = win32::GetForegroundWindow();
-                let current_thread = win32::GetCurrentThreadId();
-                let foreground_thread = if foreground != 0 {
-                    win32::GetWindowThreadProcessId(foreground, std::ptr::null_mut())
-                } else {
-                    0
-                };
-                let attached = foreground_thread != 0
-                    && foreground_thread != current_thread
-                    && win32::AttachThreadInput(current_thread, foreground_thread, 1) != 0;
-                let _ = win32::BringWindowToTop(hwnd);
-                let _ = win32::SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE,
-                );
-                if attached {
-                    let _ = win32::AttachThreadInput(current_thread, foreground_thread, 0);
-                }
                 let _ = win32::DwmFlush();
             }
             println!(

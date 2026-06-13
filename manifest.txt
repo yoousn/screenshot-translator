@@ -1,0 +1,2 @@
+tauri-client__src__pages__ScreenshotPage.tsx.txt  <=  tauri-client\src\pages\ScreenshotPage.tsx
+tauri-client__src__hooks__useScreenshotActions.ts.txt  <=  tauri-client\src\hooks\useScreenshotActions.ts

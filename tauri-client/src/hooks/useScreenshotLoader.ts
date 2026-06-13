@@ -62,6 +62,7 @@ interface UseScreenshotLoaderProps {
   draw: (rx: number, ry: number, rw: number, rh: number) => void;
   textSourceSnapshotPromiseRef: React.MutableRefObject<Promise<any> | null>;
   pendingConfirmTimerRef: React.MutableRefObject<number | null>;
+  preShowDownOriginRef?: React.MutableRefObject<{ x: number; y: number; sessionId: string | null; source?: string; eventSeq?: number } | null>;
 }
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
@@ -115,6 +116,7 @@ export function useScreenshotLoader({
   draw,
   textSourceSnapshotPromiseRef,
   pendingConfirmTimerRef,
+  preShowDownOriginRef,
 }: UseScreenshotLoaderProps) {
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const [overlayVisible, setOverlayVisible] = useState(false);
@@ -336,6 +338,17 @@ export function useScreenshotLoader({
       setSelection(finalize && valid);
       return { next, valid };
     };
+    const rememberPreShowOrigin = (preCapture: any) => {
+      if (!preShowDownOriginRef) return;
+      const { width: maxW, height: maxH } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
+      preShowDownOriginRef.current = {
+        x: clampToViewport(Math.round(Number(preCapture.x) || 0), maxW - 1),
+        y: clampToViewport(Math.round(Number(preCapture.y) || 0), maxH - 1),
+        sessionId: String(sessionKey),
+        source: String(preCapture.source || "pre-capture"),
+        eventSeq: Number(preCapture.eventSeq) || 0,
+      };
+    };
 
     for (let index = 0; index < 24; index += 1) {
       if (sessionId !== captureIdRef.current) return;
@@ -369,6 +382,7 @@ export function useScreenshotLoader({
       const dragDistance = Number(preCapture.dragDistance) || 0;
       const leftDown = preCapture.leftDown === true;
       const completed = preCapture.completed === true;
+      rememberPreShowOrigin(preCapture);
       if (dragDistance < 3 && leftDown) {
         await wait(33);
         continue;
@@ -1021,6 +1035,7 @@ export function useScreenshotLoader({
     analysisImageDataRef.current = null;
     displayedSessionIdRef.current = null;
     displayedPhysicalBoundsRef.current = null;
+    if (preShowDownOriginRef) preShowDownOriginRef.current = null;
     clearDisplayCanvas();
     clearPendingSharedBuffers();
   }

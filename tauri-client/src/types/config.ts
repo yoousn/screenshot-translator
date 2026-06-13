@@ -26,10 +26,7 @@ export interface Config {
   imageSaveLastDir?: string;
   edgeSnapEnabled?: boolean;
   edgeSnapDistance?: number;
-  // F8: Feature switches
   enableMagnifier?: boolean;        // default true
   enableColorPicker?: boolean;      // default true
   enablePreciseSelection?: boolean; // default true
-  enableLiveAnnotation?: boolean;   // default true
-  autoStart?: boolean;              // default false
 }

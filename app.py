@@ -31,7 +31,7 @@ HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
 # 内嵌的构建目标（不再依赖 .bat），均在 根目录/tauri-client 下执行
 BUILD_TARGETS = {
     "dev": dict(title="日常自测 · 开发模式", desc="启动 Tauri 开发模式，热重载调试（会持续运行）", args=["run", "tauri", "dev"], out=""),
-    "exe": dict(title="构建 EXE · 不打安装包", desc="只编译可执行文件，速度最快", args=["run", "tauri", "build", "--", "--no-bundle"], out="tauri-client\\src-tauri\\target\\release"),
+    "exe": dict(title="构建 EXE · 不打安装包", desc="只编译可执行文件，速度最快，构建成功后自动启动", args=["run", "tauri", "build", "--", "--no-bundle"], out="tauri-client\\src-tauri\\target\\release", launch=True),
     "msi": dict(title="构建 MSI 安装包", desc="生成 Windows MSI 安装包", args=["run", "tauri", "build", "--", "--bundles", "msi"], out="tauri-client\\src-tauri\\target\\release\\bundle\\msi"),
     "nsis": dict(title="构建 NSIS 安装包", desc="生成 NSIS (.exe) 安装包", args=["run", "tauri", "build", "--", "--bundles", "nsis"], out="tauri-client\\src-tauri\\target\\release\\bundle\\nsis"),
     "full": dict(title="完整发布 · 双安装包", desc="同时生成 MSI 与 NSIS 两种安装包", args=["run", "tauri", "build", "--", "--bundles", "msi,nsis"], out="tauri-client\\src-tauri\\target\\release\\bundle"),
@@ -79,7 +79,7 @@ class App:
         self._buf = []
         self._code = None
         self._proc = None
-        self.window = None
+        self._window = None
         self.staged = {}
         self._next_id = 1
         self._stage_dir = tempfile.mkdtemp(prefix="ysn_stage_")
@@ -153,9 +153,9 @@ class App:
         return dict(ok=True, state=self.get_state())
 
     def browse_root(self):
-        if not self.window:
+        if not self._window:
             return dict(ok=False, msg="窗口未就绪")
-        res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if res:
             return self.set_root(res[0])
         return dict(ok=False, msg="未选择")
@@ -184,10 +184,10 @@ class App:
             it.target = None
 
     def add_files_via_dialog(self):
-        if not self.window:
+        if not self._window:
             return self.get_state()
         ftypes = ("代码文件 (*.tsx;*.ts;*.rs;*.css;*.js;*.jsx;*.json;*.html;*.txt;*.toml;*.md)", "所有文件 (*.*)")
-        res = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=ftypes)
+        res = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=ftypes)
         if res:
             for p in res:
                 self._add_source(p, os.path.basename(p))
@@ -216,9 +216,9 @@ class App:
 
     def choose_target_dir(self, item_id):
         it = self.staged.get(int(item_id))
-        if not it or not self.window:
+        if not it or not self._window:
             return self.get_state()
-        res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if res:
             tgt = os.path.join(res[0], it.name)
             it.target = tgt
@@ -329,12 +329,56 @@ class App:
         self._log("────────────────────────")
         if code == 0:
             self._log("【完成】" + t["title"] + " 成功")
-            if t.get("out"):
-                self._log("【产物】" + os.path.join(self.root, t["out"]))
+            out_abs = os.path.join(self.root, t["out"]) if t.get("out") else None
+            if out_abs:
+                self._log("【产物】" + out_abs)
+            if t.get("launch") and out_abs:
+                self._launch_artifact(out_abs)
         else:
             self._log("【失败】退出码 " + str(code))
         with self._lock:
             self._code = code
+
+    def _launch_artifact(self, out_abs):
+        """构建成功后从产物目录定位并启动 EXE（detached，不阻塞 GUI）。
+        优先从 tauri.conf.json 读 productName，避免硬编码应用名。"""
+        self._log("【启动】正在启动构建产物 …")
+        if not out_abs or not os.path.isdir(out_abs):
+            self._log("【启动失败】找不到产物目录：" + str(out_abs))
+            return
+        exe_name = "YsnTrans.exe"
+        conf = os.path.join(self.root, "tauri-client", "src-tauri", "tauri.conf.json")
+        try:
+            if os.path.isfile(conf):
+                with open(conf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                product = data.get("productName")
+                if product:
+                    exe_name = product + ".exe"
+        except Exception as e:
+            self._log("【启动警告】读取 tauri.conf.json 失败，使用默认名：" + str(e))
+        exe_path = os.path.join(out_abs, exe_name)
+        if not os.path.isfile(exe_path):
+            self._log("【启动失败】找不到 EXE：" + exe_path)
+            return
+        try:
+            if os.name == "nt":
+                DETACHED_PROCESS = 0x00000008
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", exe_path],
+                    cwd=out_abs,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+                    close_fds=True,
+                )
+            else:
+                subprocess.Popen([exe_path], cwd=out_abs, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._log("【已启动】" + exe_path)
+        except Exception as e:
+            self._log("【启动失败】" + str(e))
 
     def poll_build(self, since=0):
         with self._lock:
@@ -370,7 +414,7 @@ def main():
         sys.exit(1)
     api = App()
     win = webview.create_window("YSN 部署助手", url=HTML_PATH, js_api=api, width=1100, height=740, min_size=(920, 620))
-    api.window = win
+    api._window = win
     webview.start()
 
 
