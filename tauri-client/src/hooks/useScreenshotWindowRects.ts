@@ -82,7 +82,7 @@ export function useScreenshotWindowRects({
     const now = performance.now();
     if (!force && (rectQueryPendingRef.current || now - lastRectQueryRef.current < 50)) return;
     lastRectQueryRef.current = now;
-    rectQueryPendingRef.current = true;
+      rectQueryPendingRef.current = true;
     try {
       const includeControls = Boolean(configRef.current.enableUiControlDetection);
       const nextRects = await invoke<Rect[]>("get_window_rects", { includeControls });

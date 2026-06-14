@@ -4265,6 +4265,55 @@ Alt+A
 - `tauri-client/src-tauri/src/screenshot_native/native_overlay_session.rs`
 - `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
 - `tauri-client/src/hooks/useScreenshotLoader.ts`
+
+## Chapter 306: Screenshot Stutter Mitigation And Icon Refresh (2026-06-15)
+
+### Goals Completed
+- Moved the full-screen visual-detection `ImageData` readback out of the active drag path by deferring it until screenshot interaction has been quiet for the guard window.
+- Removed the forced retry cap that allowed the readback to run during continuous synthetic dragging.
+- Changed the magnifier HEX picker to read from cached `ImageData` when available and reuse the previous HEX text before the cache is ready, avoiding synchronous 1x1 canvas readback during pointer movement.
+- Removed the temporary screenshot stutter probe call sites after validation; no probe helper remains in the tracked source tree.
+- Replaced the app, tray/taskbar, Windows, macOS, iOS, Android, favicon, and custom candidate icons from the new source icon.
+- Converted the white source-image corners to transparent before icon generation and post-processed PNG corners so the checked icon sizes have `alpha=0` at all four corners.
+
+### Added Files
+- New ChatGPT Image source icon PNG under the icon design draft directory.
+
+### Modified Files
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/index.html`
+- `tauri-client/public/favicon.ico`
+- `tauri-client/src-tauri/icons/**`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None in the staged commit; the temporary helper was never committed to HEAD.
+
+### Explicit Non-Goals
+- Did not regenerate the 1.2.7 installer; the user asked to leave installer regeneration for the final release step.
+- Did not address the broader code-organization debt.
+- Did not modify unrelated parallel settings/main-window work or the deleted deployment-helper VBS file.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cd tauri-client; npx tauri build --no-bundle`; generated `tauri-client/src-tauri/target/release/YsnTrans.exe`.
+- Probe before cleanup: `tmp-runtime-logs\stutter-probe-optimized-no-pixel-readback-20260615-062045-out.log` completed all 16 drag cases with no `stutter-probe` threshold hits.
+- Probe before cleanup confirmed `pixel_sample_ms` no longer appeared, and `analysis_image_data_ready` did not run during the continuous drag matrix.
+- Formal release smoke after cleanup: `tmp-runtime-logs\release-final-auto-screenshot-post-favicon-20260615-063115-out.log` reached screenshot `image_ready` in 12ms and `first_paint` in 24ms on a 2560x1440 capture.
+- Icon pixel check passed for `icon.png`, `32x32.png`, `64x64.png`, `taskbar-32x32.png`, `taskbar-64x64.png`, `icon-candidate-v1-16x16.png`, and `icon-candidate-v1-32x32.png`: four corner alpha values were `0,0,0,0` and center alpha was `255`.
+- Checked: no lingering `YsnTrans` or `rapidocr-runner` process remained after smoke runs.
+
+### Known Risks
+- Computer Use desktop automation could not initialize because the bundled Windows `@oai/sky` package subpath was not exported; verification used the app's own smoke path and build logs instead of foreground mouse control.
+- Browser automation was not used for the desktop executable path because the relevant target is a Tauri app, not a local web route.
+- This chapter validates the current machine thoroughly, but the broader real-device matrix remains incomplete.
+
+### Next Recommended Chapter
+- Run the real-device matrix on at least one additional Windows display/DPI/device setup, then regenerate the 1.2.7 installer as the final release artifact step.
 - `docs/IMPLEMENTATION_CHAPTERS.md`
 
 ### Explicit Non-Goals

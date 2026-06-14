@@ -120,6 +120,7 @@ export default function ScreenshotPage() {
   const selectionCompletedAtRef = useRef(0);
   const selectionDragDistanceRef = useRef(0);
   const pendingConfirmTimerRef = useRef<number | null>(null);
+  const screenshotInteractionAtRef = useRef(0);
   
   const isOCRingRef = useRef(false);
   const isTranslatingRef = useRef(false);
@@ -177,6 +178,10 @@ export default function ScreenshotPage() {
   useEffect(() => {
     drawRef.current = draw;
   }, [draw]);
+
+  const markScreenshotInteraction = () => {
+    screenshotInteractionAtRef.current = performance.now();
+  };
 
   useEffect(() => {
     actionToolbarSizeRef.current = actionToolbarSize;
@@ -446,6 +451,7 @@ export default function ScreenshotPage() {
     draw: (...args) => drawRef.current(...args),
     textSourceSnapshotPromiseRef,
     pendingConfirmTimerRef,
+    interactionAtRef: screenshotInteractionAtRef,
     preShowDownOriginRef,
   });
 
@@ -589,7 +595,7 @@ export default function ScreenshotPage() {
   captureRegionBase64Ref.current = captureRegionBase64;
 
   // F1+F2: PixPin-style magnifier + HEX color picker
-  const { getPixelHex, drawMagnifier } = useScreenshotMagnifier(imageRef as any, canvasRef);
+  const { getPixelHex, drawMagnifier } = useScreenshotMagnifier(imageRef as any, canvasRef, analysisImageDataRef);
 
   const clearMagnifierHoverPreview = () => {
     hoverRectRef.current = null;
@@ -962,6 +968,7 @@ export default function ScreenshotPage() {
     button: number,
     pointerId: number,
   ) => {
+    markScreenshotInteraction();
     const event = {
       pointerId,
       clientX: x,
@@ -1002,18 +1009,19 @@ export default function ScreenshotPage() {
       const sy = 260 + (round % 3) * 28;
       const ex = Math.min(canvas.width - 24, sx + 560);
       const ey = Math.min(canvas.height - 24, sy + 320);
+      const steps = 48;
       const pointerId = 7000 + round;
       const startedAt = performance.now();
       dispatchCanvasPointer(canvas, "pointerdown", sx, sy, 1, 0, pointerId);
-      for (let step = 1; step <= 48; step += 1) {
-        const x = sx + ((ex - sx) * step) / 48;
-        const y = sy + ((ey - sy) * step) / 48;
+      for (let step = 1; step <= steps; step += 1) {
+        const x = sx + ((ex - sx) * step) / steps;
+        const y = sy + ((ey - sy) * step) / steps;
         dispatchCanvasPointer(canvas, "pointermove", x, y, 1, -1, pointerId);
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }
       dispatchCanvasPointer(canvas, "pointerup", ex, ey, 0, 0, pointerId);
       invoke("log_screenshot_perf", {
-        message: `[selection-smoothness-smoke] round=${round} elapsed_ms=${Math.round(performance.now() - startedAt)} rect=${Math.round(rectRef.current.x)},${Math.round(rectRef.current.y)},${Math.round(rectRef.current.w)},${Math.round(rectRef.current.h)}`,
+        message: `[selection-smoothness-smoke] round=${round} case=standard steps=${steps} elapsed_ms=${Math.round(performance.now() - startedAt)} rect=${Math.round(rectRef.current.x)},${Math.round(rectRef.current.y)},${Math.round(rectRef.current.w)},${Math.round(rectRef.current.h)}`,
       }).catch(() => {});
       setSelection(false);
       setCurrentRect(EMPTY_RECT, true);
@@ -1448,6 +1456,7 @@ export default function ScreenshotPage() {
         ref={canvasRef}
         tabIndex={-1}
         onPointerDown={(e) => {
+          markScreenshotInteraction();
           if (e.button === 0) {
             updateMagnifier(e.clientX, e.clientY);
           } else {
@@ -1456,6 +1465,7 @@ export default function ScreenshotPage() {
           handleMouseDown(e);
         }}
         onPointerMove={(e) => {
+          markScreenshotInteraction();
           if ((e.buttons & 1) === 1) {
             handleMouseMove(e);
             updateMagnifier(e.clientX, e.clientY);
@@ -1467,12 +1477,13 @@ export default function ScreenshotPage() {
           }
           handleMouseMove(e);
         }}
-        onPointerUp={(e) => { handleMouseUp(e); hideMagnifier(); }}
+        onPointerUp={(e) => { markScreenshotInteraction(); handleMouseUp(e); hideMagnifier(); }}
         onPointerCancel={(e) => {
+          markScreenshotInteraction();
           handlePointerCancel(e);
           hideMagnifier();
         }}
-        onPointerLeave={(e) => { if ((e.buttons & 1) !== 1 && magnifierVisibleRef.current) hideMagnifier(); }}
+        onPointerLeave={(e) => { markScreenshotInteraction(); if ((e.buttons & 1) !== 1 && magnifierVisibleRef.current) hideMagnifier(); }}
         onDoubleClick={handleDoubleClick}
         style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible && !SELECTION_SMOOTHNESS_SMOKE_ENABLED ? "auto" : "none" }}
       />

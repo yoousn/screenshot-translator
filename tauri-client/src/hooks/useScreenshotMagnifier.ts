@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 
 const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+const FALLBACK_PIXEL_HEX = "#000000";
 
 /**
  * F1+F2: PixPin-style square magnifier + HEX pixel color picker.
@@ -10,9 +11,9 @@ const clampNumber = (value: number, min: number, max: number) => Math.max(min, M
 export function useScreenshotMagnifier(
   imageRef: React.RefObject<HTMLImageElement | HTMLCanvasElement | null>,
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  analysisImageDataRef?: React.RefObject<ImageData | null>,
 ) {
-  const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const sampleContextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const lastPixelInfoRef = useRef<{ hex: string; x: number; y: number } | null>(null);
   const overlayContextRef = useRef<{
     canvas: HTMLCanvasElement;
     context: CanvasRenderingContext2D;
@@ -27,30 +28,25 @@ export function useScreenshotMagnifier(
     const img = imageRef.current;
     const cv = canvasRef.current;
     if (!img || !cv) return null;
+    const cachedImageData = analysisImageDataRef?.current;
+    if (cachedImageData) {
+      const cacheX = clampNumber(Math.round(clientX * (cachedImageData.width / cv.width)), 0, Math.max(0, cachedImageData.width - 1));
+      const cacheY = clampNumber(Math.round(clientY * (cachedImageData.height / cv.height)), 0, Math.max(0, cachedImageData.height - 1));
+      const baseIndex = (cacheY * cachedImageData.width + cacheX) * 4;
+      const r = cachedImageData.data[baseIndex] ?? 0;
+      const g = cachedImageData.data[baseIndex + 1] ?? 0;
+      const b = cachedImageData.data[baseIndex + 2] ?? 0;
+      const hex = "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
+      const info = { hex, x: cacheX, y: cacheY };
+      lastPixelInfoRef.current = info;
+      return info;
+    }
     const iw = img instanceof HTMLImageElement ? img.naturalWidth : img.width;
     const ih = img instanceof HTMLImageElement ? img.naturalHeight : img.height;
     const sx = clampNumber(Math.round(clientX * (iw / cv.width)), 0, Math.max(0, iw - 1));
     const sy = clampNumber(Math.round(clientY * (ih / cv.height)), 0, Math.max(0, ih - 1));
-    if (!sampleCanvasRef.current) {
-      sampleCanvasRef.current = document.createElement("canvas");
-      sampleCanvasRef.current.width = 1;
-      sampleCanvasRef.current.height = 1;
-    }
-    const s = sampleCanvasRef.current;
-    let sctx = sampleContextRef.current;
-    if (!sctx) {
-      sctx = s.getContext("2d", { willReadFrequently: true });
-      if (sctx) {
-        sctx.imageSmoothingEnabled = false;
-        sampleContextRef.current = sctx;
-      }
-    }
-    if (!sctx) return null;
-    sctx.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1);
-    const [r, g, b] = sctx.getImageData(0, 0, 1, 1).data;
-    const hex = "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
-    return { hex, x: sx, y: sy };
-  }, [imageRef, canvasRef]);
+    return { hex: lastPixelInfoRef.current?.hex || FALLBACK_PIXEL_HEX, x: sx, y: sy };
+  }, [imageRef, canvasRef, analysisImageDataRef]);
 
   /** Draw PixPin-style square magnifier to an overlay canvas element */
   const drawMagnifier = useCallback((
@@ -116,7 +112,7 @@ export function useScreenshotMagnifier(
       decorationCanvasRef.current = { key: decorationKey, canvas: decoration };
     }
     ctx.drawImage(decoration, 0, 0);
-  }, [imageRef, canvasRef]);
+  }, [imageRef, canvasRef, analysisImageDataRef]);
 
   return { getPixelHex, drawMagnifier };
 }

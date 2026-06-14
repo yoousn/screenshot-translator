@@ -62,6 +62,7 @@ interface UseScreenshotLoaderProps {
   draw: (rx: number, ry: number, rw: number, rh: number) => void;
   textSourceSnapshotPromiseRef: React.MutableRefObject<Promise<any> | null>;
   pendingConfirmTimerRef: React.MutableRefObject<number | null>;
+  interactionAtRef: React.MutableRefObject<number>;
   preShowDownOriginRef?: React.MutableRefObject<{ x: number; y: number; sessionId: string | null; source?: string; eventSeq?: number } | null>;
 }
 
@@ -70,6 +71,8 @@ const BACKGROUND_PREWARM_FALLBACK_DELAY_MS = 1200;
 const BACKGROUND_PREWARM_IDLE_TIMEOUT_MS = 2500;
 const ANALYSIS_IMAGE_FALLBACK_DELAY_MS = 700;
 const ANALYSIS_IMAGE_IDLE_TIMEOUT_MS = 1800;
+const ANALYSIS_IMAGE_FIRST_INTERACTION_GUARD_MS = 450;
+const ANALYSIS_IMAGE_RECENT_INTERACTION_RETRY_MS = 260;
 const CANDIDATE_WARMUP_DELAY_MS = 220;
 type ScreenshotImageSource = HTMLImageElement | HTMLCanvasElement;
 type WebViewSharedBufferEvent = {
@@ -135,6 +138,7 @@ export function useScreenshotLoader({
   draw,
   textSourceSnapshotPromiseRef,
   pendingConfirmTimerRef,
+  interactionAtRef,
   preShowDownOriginRef,
 }: UseScreenshotLoaderProps) {
   const { message } = AntdApp.useApp();
@@ -239,6 +243,7 @@ export function useScreenshotLoader({
     translatedImgRef.current = null;
     maskedCanvasRef.current = null;
     analysisImageDataRef.current = null;
+    interactionAtRef.current = 0;
     textSourceSnapshotPromiseRef.current = null;
     setIsEditing(false);
     resetAnnotations();
@@ -310,14 +315,29 @@ export function useScreenshotLoader({
       );
       return;
     }
-    const capture = () => {
+    const capture = (attempt: number) => {
       if (sessionId !== captureIdRef.current) return;
+      const now = performance.now();
+      const recentInteractionMs = interactionAtRef.current > 0 ? now - interactionAtRef.current : Number.POSITIVE_INFINITY;
+      if (recentInteractionMs < ANALYSIS_IMAGE_FIRST_INTERACTION_GUARD_MS) {
+        logScreenshotBaseline(
+          remoteSessionId || sessionId,
+          "analysis_image_data_deferred",
+          now - frontendSessionStartedAtRef.current,
+          `reason=recent_interaction since_ms=${Math.round(recentInteractionMs)} attempt=${attempt}`,
+        );
+        window.setTimeout(
+          () => scheduleCapture(attempt + 1),
+          Math.max(ANALYSIS_IMAGE_RECENT_INTERACTION_RETRY_MS, ANALYSIS_IMAGE_FIRST_INTERACTION_GUARD_MS - recentInteractionMs),
+        );
+        return;
+      }
       if (hasSelectedRef.current || rectRef.current.w > 0 || rectRef.current.h > 0) {
         logScreenshotBaseline(
           remoteSessionId || sessionId,
           "analysis_image_data_deferred",
           performance.now() - frontendSessionStartedAtRef.current,
-          "reason=selection_active",
+          `reason=selection_active attempt=${attempt}`,
         );
         return;
       }
@@ -327,20 +347,23 @@ export function useScreenshotLoader({
       analysisCanvas.height = height;
       const ctx = analysisCanvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) return;
-      ctx.drawImage(img, 0, 0, width, height);
       try {
+        ctx.drawImage(img, 0, 0, width, height);
         analysisImageDataRef.current = ctx.getImageData(0, 0, width, height);
         logScreenshotBaseline(remoteSessionId || sessionId, "analysis_image_data_ready", performance.now() - frontendSessionStartedAtRef.current, `width=${width} height=${height}`);
       } catch {
         analysisImageDataRef.current = null;
       }
     };
-    const requestIdleCallback = (window as any).requestIdleCallback;
-    if (typeof requestIdleCallback === "function") {
-      requestIdleCallback(capture, { timeout: ANALYSIS_IMAGE_IDLE_TIMEOUT_MS });
-    } else {
-      window.setTimeout(capture, ANALYSIS_IMAGE_FALLBACK_DELAY_MS);
-    }
+    const scheduleCapture = (attempt: number) => {
+      const requestIdleCallback = (window as any).requestIdleCallback;
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(() => capture(attempt), { timeout: ANALYSIS_IMAGE_IDLE_TIMEOUT_MS });
+      } else {
+        window.setTimeout(() => capture(attempt), ANALYSIS_IMAGE_FALLBACK_DELAY_MS);
+      }
+    };
+    window.setTimeout(() => scheduleCapture(0), ANALYSIS_IMAGE_FIRST_INTERACTION_GUARD_MS);
   };
 
   const recoverPreShowDrag = async (sessionKey: string | number, sessionId: number) => {
