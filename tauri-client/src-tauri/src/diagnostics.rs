@@ -43,12 +43,24 @@ pub fn write_startup_diagnostics_probe(app: &tauri::AppHandle) -> Result<PathBuf
         .ok_or_else(|| "failed to resolve startup diagnostics directory".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|e| format!("create startup diagnostics directory failed: {}", e))?;
-    let report = get_diagnostics_report(app.clone())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unavailable".to_string());
     let payload = serde_json::json!({
         "schemaVersion": 1,
         "generatedAt": chrono::Local::now().to_rfc3339(),
         "processId": std::process::id(),
-        "diagnostics": report,
+        "app": {
+            "name": "YSN Screenshot Translator",
+            "version": env!("CARGO_PKG_VERSION"),
+            "appDataDir": app_data_dir,
+        },
+        "diagnostics": {
+            "pending": true,
+            "message": "Full diagnostics are generated asynchronously from the app diagnostics panel."
+        },
     });
     let body = serde_json::to_string_pretty(&payload)
         .map_err(|e| format!("serialize startup diagnostics failed: {}", e))?;
@@ -138,7 +150,7 @@ pub(crate) fn build_startup_readiness_snapshot(app: tauri::AppHandle) -> serde_j
             "error": error,
         })
     });
-    let recording = get_recording_info(app.clone()).unwrap_or_else(|error| {
+    let recording = get_recording_info_sync(app.clone()).unwrap_or_else(|error| {
         serde_json::json!({
             "ready": false,
             "error": error,
@@ -162,8 +174,7 @@ pub(crate) fn build_startup_readiness_snapshot(app: tauri::AppHandle) -> serde_j
     })
 }
 
-#[tauri::command]
-pub fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub fn get_diagnostics_report_sync(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let generated_at = chrono::Local::now().to_rfc3339();
     let app_data_dir = app
         .path()
@@ -173,7 +184,7 @@ pub fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value
     let startup_probe_path = startup_diagnostics_probe_path()
         .to_string_lossy()
         .to_string();
-    let recording = get_recording_info(app.clone()).unwrap_or_else(|error| {
+    let recording = get_recording_info_sync(app.clone()).unwrap_or_else(|error| {
         serde_json::json!({
             "ok": false,
             "error": error,
@@ -221,7 +232,7 @@ pub fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value
             "module": "ocrRuntime",
             "code": "rapidocr-probe-failed",
             "message": "RapidOCR probe failed.",
-            "nextAction": "Run the RapidOCR self-test and reinstall the model/runtime package if needed."
+            "nextAction": "Initialize local OCR and reinstall the model/runtime package if needed."
         }));
     }
     if !recording["ffmpegFound"].as_bool().unwrap_or(false) {
@@ -281,11 +292,18 @@ pub fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value
         "shortcuts": shortcut_status,
         "lastTranslation": last_translation,
         "recovery": {
-            "ocr": "Open the text recognition panel, choose Rapid OCR V5 or V4, then run self-test.",
+            "ocr": "Open the text recognition panel, choose the local OCR model, then initialize and apply it.",
             "recording": "Install or choose ffmpeg.exe, then re-check video recording dependency.",
             "shortcuts": "If global shortcuts fail, restart the app or change conflicting hotkeys in settings."
         }
     }))
+}
+
+#[tauri::command]
+pub async fn get_diagnostics_report(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || get_diagnostics_report_sync(app))
+        .await
+        .map_err(|error| format!("diagnostics report task failed: {error}"))?
 }
 
 #[tauri::command]

@@ -18,6 +18,9 @@ const dedupeRects = (rects: Rect[]) => {
     return true;
   });
 };
+const rectListSignature = (rects: Rect[]) => (
+  rects.map((rect) => `${rect.kind || "unknown"}:${rectSignature(rect)}`).join("|")
+);
 
 interface UseScreenshotWindowRectsProps {
   configRef: React.MutableRefObject<Config>;
@@ -52,6 +55,7 @@ export function useScreenshotWindowRects({
   const rectQueryPendingRef = useRef(false);
   const lastPreciseRectsRef = useRef<Rect[]>([]);
   const lastPreciseRectsAtRef = useRef(0);
+  const windowRectsSignatureRef = useRef("");
 
   const setHoverCandidate = (candidate: Rect | null) => {
     hoverRectRef.current = candidate;
@@ -59,27 +63,29 @@ export function useScreenshotWindowRects({
   };
 
   const setHoverCandidateList = (candidates: Rect[]) => {
-    const signature = candidates.map(rectSignature).join("|");
-    if (signature !== hoverCandidatesSignatureRef.current) {
-      hoverCandidateIndexRef.current = 0;
-      hoverCandidatesSignatureRef.current = signature;
-    }
+    const signature = rectListSignature(candidates);
+    if (signature === hoverCandidatesSignatureRef.current) return false;
+    hoverCandidateIndexRef.current = 0;
+    hoverCandidatesSignatureRef.current = signature;
     hoverCandidatesRef.current = candidates;
     setHoverCandidates(candidates);
     const nextIndex =
       candidates.length === 0 ? 0 : hoverCandidateIndexRef.current % candidates.length;
     hoverCandidateIndexRef.current = nextIndex;
     setHoverCandidate(candidates[nextIndex] || null);
+    return true;
   };
 
   const loadWindowRects = async (force = false) => {
+    const interaction = interactionStateRef.current;
+    if (interaction.isSelecting || interaction.isDragging || interaction.isResizing) return;
     const now = performance.now();
     if (!force && (rectQueryPendingRef.current || now - lastRectQueryRef.current < 50)) return;
     lastRectQueryRef.current = now;
     rectQueryPendingRef.current = true;
     try {
       const includeControls = Boolean(configRef.current.enableUiControlDetection);
-      const nextRects = JSON.parse(await invoke<string>("get_window_rects", { includeControls })) as Rect[];
+      const nextRects = await invoke<Rect[]>("get_window_rects", { includeControls });
       const hasPreciseRects = hasPreciseWindowRect(nextRects);
       const reusablePreciseRects = nextRects.filter(isReusablePreciseRect);
       if (reusablePreciseRects.length > 0) {
@@ -94,14 +100,19 @@ export function useScreenshotWindowRects({
       const resolvedRects = recentPreciseRects
         ? dedupeRects([...lastPreciseRectsRef.current, ...nextRects.filter((rect) => rect.kind === "display")])
         : nextRects;
+      const nextSignature = rectListSignature(resolvedRects);
+      const rectsChanged = nextSignature !== windowRectsSignatureRef.current;
 
       windowRectsRef.current = resolvedRects;
-      setWindowRects(resolvedRects);
+      if (rectsChanged) {
+        windowRectsSignatureRef.current = nextSignature;
+        setWindowRects(resolvedRects);
+      }
       
       const { hasSelected, isSelecting, isDragging, isResizing } = interactionStateRef.current;
       if (!hasSelected && !isSelecting && !isDragging && !isResizing) {
         const mouse = lastMouseRef.current;
-        setHoverCandidateList(
+        const hoverChanged = setHoverCandidateList(
           getDetectionCandidatesAt(
             mouse.x,
             mouse.y,
@@ -111,8 +122,9 @@ export function useScreenshotWindowRects({
             configRef.current.visualDetectionSensitivity || 3
           )
         );
+        if (hoverChanged) triggerRender();
       }
-      triggerRender();
+      if (rectsChanged) triggerRender();
     } catch {
       const canReusePreciseRects =
         lastPreciseRectsRef.current.length > 0
@@ -138,6 +150,7 @@ export function useScreenshotWindowRects({
     hoverCandidatesRef.current = [];
     hoverCandidateIndexRef.current = 0;
     hoverCandidatesSignatureRef.current = "";
+    windowRectsSignatureRef.current = "";
     lastRectQueryRef.current = 0;
     rectQueryPendingRef.current = false;
     lastPreciseRectsRef.current = [];

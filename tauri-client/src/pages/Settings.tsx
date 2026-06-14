@@ -56,7 +56,7 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
       style={{ width: "min(100%, 920px)", margin: "0 auto", paddingBottom: 24 }}
     >
       <SettingsPageHeader saving={controller.isSaving} />
-      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
         <TranslationServiceCard />
         <TranslationChannelCard
           form={form}

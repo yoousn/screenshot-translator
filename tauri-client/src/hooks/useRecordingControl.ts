@@ -180,7 +180,7 @@ export function useRecordingControl() {
       await invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
       segmentsRef.current = [];
       setSavedPath(nextSavedPath);
-      setOverlayStatus("ready");
+      setOverlayStatus("saved");
       const noticeShown = await showSavedNotice();
       if (!noticeShown) {
         message.success(`录制已保存：${nextSavedPath}`);

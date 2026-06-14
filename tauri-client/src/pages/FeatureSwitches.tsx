@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AimOutlined, BorderOuterOutlined, ColumnWidthOutlined, EyeOutlined } from "@ant-design/icons";
-import { Switch, Typography, message } from "antd";
+import { App as AntdApp, Switch, Typography } from "antd";
 import type { Config } from "../types/config";
 
 const { Text } = Typography;
@@ -80,6 +80,7 @@ const iconChipStyle = (checked: boolean): CSSProperties => ({
 });
 
 export default function FeatureSwitches() {
+  const { message } = AntdApp.useApp();
   const [config, setConfig] = useState<Config>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { RapidOcrSelfTestResult, RapidOcrStatus } from "../ocr-models";
 import { readStartupReadinessSnapshot } from "./useStartupDependencyStatus";
 
@@ -10,6 +10,7 @@ type UseRapidOcrControllerOptions = {
 
 export default function useRapidOcrController(options: UseRapidOcrControllerOptions = {}) {
   const { autoRefresh = false } = options;
+  const { message } = AntdApp.useApp();
   const [status, setStatus] = useState<RapidOcrStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [selfTesting, setSelfTesting] = useState(false);
@@ -36,14 +37,14 @@ export default function useRapidOcrController(options: UseRapidOcrControllerOpti
       const result = await invoke<RapidOcrSelfTestResult>("run_rapid_ocr_self_test");
       setLastSelfTest(result);
       if (result.ok) {
-        message.success("RapidOCR 自测通过。");
+        message.success("本地 OCR 初始化完成，当前模型已可用于截图识字。");
       } else {
-        message.warning(result.message || "RapidOCR 自测未通过。");
+        message.warning(result.message || "本地 OCR 初始化未通过。");
       }
       await refreshStatus();
       return result;
     } catch (error: any) {
-      message.error(`RapidOCR 自测失败：${error?.message || error}`);
+      message.error(`本地 OCR 初始化失败：${error?.message || error}`);
       return null;
     } finally {
       setSelfTesting(false);
@@ -105,10 +106,12 @@ export default function useRapidOcrController(options: UseRapidOcrControllerOpti
     status,
     loadingStatus,
     selfTesting,
+    initializing: selfTesting,
     workerBusy,
     lastSelfTest,
     refreshStatus,
     runSelfTest,
+    initializeAndApply: runSelfTest,
     startWorker,
     stopWorker,
     restartWorker,

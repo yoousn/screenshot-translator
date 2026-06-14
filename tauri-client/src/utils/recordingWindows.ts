@@ -55,7 +55,7 @@ export const closeWindowIfExists = async (label: string, timeoutMs = 1200) => {
   const win = await getWindowByLabelIfExists(label);
   if (!win) return;
   await win.hide().catch(() => {});
-  await win.close().catch(() => {});
+  await win.destroy().catch(() => win.close().catch(() => {}));
   const closed = await waitForWindowGone(label, timeoutMs);
   if (!closed) throw new Error(`${label} 未在限定时间内关闭`);
 };
@@ -73,7 +73,7 @@ const closeWindowsByPrefix = async (prefix: string, timeoutMs = 800) => {
   const windows = await getWindowsByPrefix(prefix);
   await Promise.all(windows.map(async (win) => {
     await win.hide().catch(() => {});
-    return withTimeout(win.close().catch(() => {}), timeoutMs).catch(() => null);
+    return withTimeout(win.destroy().catch(() => win.close().catch(() => {})), timeoutMs).catch(() => null);
   }));
 };
 

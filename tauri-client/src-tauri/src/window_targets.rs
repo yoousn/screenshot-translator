@@ -379,7 +379,7 @@ pub fn taskbar_windows_at_cursor(cursor_x: i32, cursor_y: i32) -> Vec<isize> {
 pub fn get_window_rects(
     app: tauri::AppHandle,
     include_controls: Option<bool>,
-) -> Result<String, String> {
+) -> Result<Vec<serde_json::Value>, String> {
     #[cfg(target_os = "windows")]
     {
         let mut rects: Vec<serde_json::Value> = Vec::new();
@@ -419,11 +419,11 @@ pub fn get_window_rects(
             }
         }
         push_display_candidate(&mut rects, screen);
-        Ok(serde_json::to_string(&rects).unwrap_or_else(|_| "[]".to_string()))
+        Ok(rects)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Ok("[]".to_string())
+        Ok(Vec::new())
     }
 }
 

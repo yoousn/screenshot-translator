@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Alert, Button, Card, Col, Descriptions, Divider, List, Progress, Row, Select, Space, Tag, Typography, message } from "antd";
+import { Alert, App as AntdApp, Button, Card, Col, Descriptions, Divider, Progress, Row, Select, Space, Tag, Typography } from "antd";
 import {
   ApiOutlined,
   CheckCircleOutlined,
@@ -38,27 +38,29 @@ function formatElapsed(ms?: number) {
 
 export default function ModelManagement() {
   const { config, setConfig, saveConfig } = useOcrConfigController();
-  const rapidOcr = useRapidOcrController();
+  const rapidOcr = useRapidOcrController({ autoRefresh: true });
+  const { message } = AntdApp.useApp();
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState<RapidOcrModelInstallResult | null>(null);
   const [installProgress, setInstallProgress] = useState<RapidOcrModelInstallProgress | null>(null);
 
   const modelVersion = (config.rapidOcrModelVersion || "v6") as RapidOcrModelVersion;
   const modelRoot = rapidOcr.status?.modelRoot || rapidOcr.status?.modelDir || (modelVersion === "v6" ? "ocrv6" : "models\\rapidocr");
-  const missingModels = rapidOcr.status?.missingModelFiles || [];
-  const ready = Boolean(rapidOcr.status?.ready);
-  const modelPackReady = Boolean(rapidOcr.status?.modelPacksReady);
+  const statusAppliesToSelectedModel = !rapidOcr.status?.rapidOcrModelVersion || rapidOcr.status.rapidOcrModelVersion === modelVersion;
+  const missingModels = statusAppliesToSelectedModel ? (rapidOcr.status?.missingModelFiles || []) : [];
+  const ready = statusAppliesToSelectedModel && Boolean(rapidOcr.status?.ready);
+  const modelPackReady = statusAppliesToSelectedModel && Boolean(rapidOcr.status?.modelPacksReady);
   const manualDownloadSteps = modelVersion === "v6"
     ? [
         "从 PaddleOCR 官方来源获取 PP-OCRv6 Small 检测与识别 ONNX 模型及对应 YAML。",
         "保持模型文件名不变，放入项目根目录 ocrv6。",
-        "回到本页点击重新检测；只有 CTC 契约 probe 通过后才会显示已就绪。",
+        "回到本页点击初始化并应用；只有 CTC 契约 probe 通过后才会显示已就绪。",
       ]
     : [
         "打开 ModelScope 的 RapidAI/RapidOCR 模型仓库。",
         "下载本应用需要的 ONNX 模型；ONNX 字符表已内嵌，不需要另下字典文件。",
         "把文件放到根目录 models\\rapidocr。",
-        "回到本页点击重新检测或运行模型自测。",
+        "回到本页点击初始化并应用。",
       ];
 
   useEffect(() => {
@@ -82,9 +84,9 @@ export default function ModelManagement() {
     const activeModelVersion = status?.rapidOcrModelVersion || rapidOcrModelVersion;
     const activeModelName = localOcrModelName(activeModelVersion);
     if (status?.ready) {
-      message.success(`${activeModelName} 已保存并立即生效，下一次截图识字/翻译会使用该模型。`);
+      message.success(`${activeModelName} 已保存并初始化可用，下一次截图识字/翻译会使用该模型。`);
     } else {
-      message.warning(`${activeModelName} 已保存，下一次截图会使用该模型；当前模型状态仍需检查或自测。`);
+      message.warning(`${activeModelName} 已保存。点击“初始化并应用”后可确认当前模型真实可用。`);
     }
   };
 
@@ -94,13 +96,13 @@ export default function ModelManagement() {
 
   const installModels = async () => {
     setInstalling(true);
-    setInstallProgress({ phase: "准备安装", detail: "正在启动 RapidOCR 模型安装器。", percent: 0, status: "active" });
+    setInstallProgress({ phase: "准备安装", detail: "正在启动备用 V5 / V4 模型安装器。", percent: 0, status: "active" });
     try {
       const result = await invoke<RapidOcrModelInstallResult>("install_rapid_ocr_models");
       setInstallResult(result);
       await rapidOcr.refreshStatus();
       if (result.ok) {
-        message.success(`RapidOCR 模型已安装到 ${result.modelRoot}`);
+        message.success(`备用 V5 / V4 模型已安装到 ${result.modelRoot}`);
       } else {
         message.warning("模型下载完成，但仍有文件需要检查。");
       }
@@ -113,9 +115,9 @@ export default function ModelManagement() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card bordered={false} style={{ borderRadius: 20, background: "linear-gradient(135deg, #eef6ff 0%, #f8fbff 58%, #f5f3ff 100%)" }}>
-        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+      <Card variant="borderless" style={{ borderRadius: 20, background: "linear-gradient(135deg, #eef6ff 0%, #f8fbff 58%, #f5f3ff 100%)" }}>
+        <Space orientation="vertical" size={10} style={{ width: "100%" }}>
           <Space wrap>
             <Tag color="blue">本地 OCR 引擎</Tag>
             <Tag color="purple">PP-OCRv6 Small 默认</Tag>
@@ -133,44 +135,57 @@ export default function ModelManagement() {
       <Row gutter={[16, 16]} align="stretch">
         <Col xs={24} xl={14}>
           <Card
-            bordered={false}
+            variant="borderless"
             title={<span><ApiOutlined style={{ marginRight: 8 }} />本地 OCR 模型</span>}
             extra={<Button size="small" icon={<ReloadOutlined />} loading={rapidOcr.loadingStatus} onClick={rapidOcr.refreshStatus}>重新检测</Button>}
             style={{ height: "100%", borderRadius: 18, boxShadow: "0 18px 48px rgba(15,23,42,0.06)" }}
           >
-            <Space direction="vertical" size={14} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={14} style={{ width: "100%" }}>
               <Alert
                 type={ready ? "success" : modelPackReady ? "info" : "warning"}
                 showIcon
-                message={ready ? "模型可用" : modelPackReady ? "模型文件已就绪，建议运行自测" : "模型缺失或待安装"}
+                title={ready ? "识字可用" : modelPackReady ? "模型文件已就绪，建议初始化" : "模型缺失或待安装"}
                 description={
                   ready
                     ? `当前主模型：${localOcrModelName(modelVersion)}（手动选择），已可用于截图识字和截图翻译。`
                     : modelPackReady
-                      ? "模型文件已经存在，点击自测确认 runner、ONNXRuntime 和模型契约可以正常初始化。"
+                      ? "模型文件已经存在，点击初始化并应用，确认 runner、ONNXRuntime 和模型契约可以正常加载。"
                       : modelVersion === "v6"
-                        ? `当前 V6 模型文件缺失。请将 PP-OCRv6 Small 文件放入 ${modelRoot} 后重新检测。`
+                        ? `当前 V6 模型文件缺失。请将 PP-OCRv6 Small 文件放入 ${modelRoot} 后重新检测。备用 V5 / V4 安装不会安装主 V6 模型。`
                         : `点击“安装备用 V5 / V4 模型”，应用会从 RapidOCR 官方 ModelScope 模型源下载。`
                 }
               />
 
               <Space wrap>
-                <Button type="primary" icon={<CloudDownloadOutlined />} loading={installing} onClick={installModels}>
-                  {modelVersion === "v6" ? "安装备用 V5 / V4 模型" : "下载/安装 V5 / V4 模型"}
+                {modelVersion === "v6" ? (
+                  <Button type="primary" icon={<FolderOpenOutlined />} onClick={openModelDir}>
+                    打开 V6 模型目录
+                  </Button>
+                ) : (
+                  <Button type="primary" icon={<CloudDownloadOutlined />} loading={installing} onClick={installModels}>
+                    下载/安装 V5 / V4 模型
+                  </Button>
+                )}
+                {modelVersion === "v6" && (
+                  <Button icon={<CloudDownloadOutlined />} loading={installing} onClick={installModels}>
+                    安装备份 V5 / V4
+                  </Button>
+                )}
+                <Button icon={<ToolOutlined />} loading={rapidOcr.initializing} onClick={rapidOcr.initializeAndApply}>
+                  初始化并应用
                 </Button>
-                <Button icon={<ToolOutlined />} loading={rapidOcr.selfTesting} onClick={rapidOcr.runSelfTest}>
-                  运行模型自测
-                </Button>
-                <Button icon={<FolderOpenOutlined />} onClick={openModelDir}>
-                  打开模型目录
-                </Button>
+                {modelVersion !== "v6" && (
+                  <Button icon={<FolderOpenOutlined />} onClick={openModelDir}>
+                    打开模型目录
+                  </Button>
+                )}
                 <Tag color={ready ? "green" : "orange"} icon={ready ? <CheckCircleOutlined /> : undefined}>
                   {ready ? "已就绪" : "待处理"}
                 </Tag>
               </Space>
 
               {installProgress && (
-                <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                <Space orientation="vertical" size={4} style={{ width: "100%" }}>
                   <Progress
                     percent={installProgress.percent}
                     status={installProgress.status}
@@ -201,30 +216,32 @@ export default function ModelManagement() {
 
         <Col xs={24} xl={10}>
           <Card
-            bordered={false}
+            variant="borderless"
             title={<span><GlobalOutlined style={{ marginRight: 8 }} />官方来源</span>}
             style={{ height: "100%", borderRadius: 18, boxShadow: "0 18px 48px rgba(15,23,42,0.06)" }}
           >
-            <Space direction="vertical" size={14} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={14} style={{ width: "100%" }}>
               <Alert
                 type="info"
                 showIcon
-                message="模型来源说明"
-                description="PP-OCRv6 Small 使用 PaddleOCR 官方模型；备用 V5 / V4 继续使用 RapidOCR 官方 ModelScope 清单。第一阶段不自动下载 V6。"
+                title="模型来源说明"
+                description="PP-OCRv6 Small 使用 PaddleOCR 官方模型；备用 V5 / V4 继续使用 RapidOCR 官方 ModelScope 清单。备用安装按钮不会下载或安装主 V6 模型。"
               />
-              <Space direction="vertical" style={{ width: "100%" }}>
+              <Space orientation="vertical" style={{ width: "100%" }}>
                 <Button block icon={<LinkOutlined />} onClick={() => openUrl(PADDLEOCR_GITHUB_URL)}>打开 PaddleOCR GitHub</Button>
                 <Button block icon={<LinkOutlined />} onClick={() => openUrl(RAPIDOCR_DOCS_URL)}>打开 RapidOCR 模型文档</Button>
                 <Button block icon={<LinkOutlined />} onClick={() => openUrl(RAPIDOCR_MODELSCOPE_URL)}>打开 ModelScope 模型仓库</Button>
                 <Button block icon={<LinkOutlined />} onClick={() => openUrl(RAPIDOCR_GITHUB_URL)}>打开 RapidOCR GitHub</Button>
               </Space>
               <Divider style={{ margin: "4px 0" }} />
-              <List
-                size="small"
-                header={<Text strong>手动下载方式</Text>}
-                dataSource={manualDownloadSteps}
-                renderItem={(item, index) => <List.Item><Text>{index + 1}. {item}</Text></List.Item>}
-              />
+              <div>
+                <Text strong>手动下载方式</Text>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                  {manualDownloadSteps.map((item, index) => (
+                    <Text key={item}>{index + 1}. {item}</Text>
+                  ))}
+                </div>
+              </div>
             </Space>
           </Card>
         </Col>

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import OcrResultWindow, { type OcrResultContextMenu } from "../components/ocr/OcrResultWindow";
 import { useI18n } from "../i18n";
 
@@ -22,6 +22,7 @@ interface OcrWindowPayload {
 }
 
 export default function OcrPage() {
+  const { message } = AntdApp.useApp();
   const { text: dictionary } = useI18n();
   const labels = dictionary.ocrResult;
   const winRef = useRef(getCurrentWindow());

@@ -16,7 +16,7 @@ export default function ScreenshotRecognitionCard() {
   const labels = text.settings;
 
   return (
-    <Card title={labels.screenshotRecognition} bordered={false}>
+    <Card title={labels.screenshotRecognition} variant="borderless">
       <Row gutter={[24, 16]}>
         <Col xs={24} sm={12}>
           <Form.Item label={labels.detectionBorderWidth} name="detectionBorderWidth" style={itemStyle}>

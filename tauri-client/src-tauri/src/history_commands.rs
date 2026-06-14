@@ -122,8 +122,8 @@ pub fn get_history_info() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn choose_history_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new()
+pub async fn choose_history_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new()
         .set_title("\u{9009}\u{62e9}\u{5386}\u{53f2}\u{8bb0}\u{5f55}\u{76ee}\u{5f55}");
     if let Some(dir) = current_dir {
         let trimmed = dir.trim();
@@ -133,7 +133,8 @@ pub fn choose_history_dir(current_dir: Option<String>) -> Result<Option<String>,
     }
     Ok(dialog
         .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
+        .await
+        .map(|handle| handle.path().to_string_lossy().to_string()))
 }
 
 #[tauri::command]

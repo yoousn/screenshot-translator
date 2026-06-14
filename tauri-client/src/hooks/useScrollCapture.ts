@@ -2,9 +2,9 @@ import { useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "antd";
-import type { Rect } from "../types/screenshot";
-import { getPhysicalSelection, loadPngImage } from "../utils/screenshotImage";
+import { App as AntdApp } from "antd";
+import type { Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
+import { getDesktopPhysicalSelection, getPhysicalSelection, loadPngImage } from "../utils/screenshotImage";
 
 export type ScrollCaptureMode = "idle" | "ready" | "capturing";
 
@@ -12,6 +12,7 @@ interface UseScrollCaptureProps {
   rectRef: React.MutableRefObject<Rect>;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   imageRef: React.MutableRefObject<HTMLImageElement | null>;
+  displayedPhysicalBoundsRef: React.MutableRefObject<ScreenshotPhysicalBounds | null>;
   triggerRender: () => void;
   resetScreenshotState: () => void;
 }
@@ -124,9 +125,11 @@ export function useScrollCapture({
   rectRef,
   canvasRef,
   imageRef,
+  displayedPhysicalBoundsRef,
   triggerRender,
   resetScreenshotState,
 }: UseScrollCaptureProps) {
+  const { message } = AntdApp.useApp();
   const [isScrollCapturing, setIsScrollCapturing] = useState(false);
   const [scrollCaptureMode, setScrollCaptureModeState] = useState<ScrollCaptureMode>("idle");
   const [scrollPreviewBase64, setScrollPreviewBase64] = useState("");
@@ -136,10 +139,36 @@ export function useScrollCapture({
   const scrollFramesRef = useRef<string[]>([]);
   const scrollTimerRef = useRef<number | null>(null);
   const isScrollFramePendingRef = useRef(false);
+  const scrollCaptureSessionRef = useRef(0);
 
   const setScrollCaptureMode = (mode: ScrollCaptureMode) => {
     scrollCaptureModeRef.current = mode;
     setScrollCaptureModeState(mode);
+  };
+
+  const setScreenshotWindowCaptureExcluded = async (excluded: boolean) => {
+    await invoke("set_window_capture_excluded", {
+      label: getCurrentWindow().label,
+      excluded,
+    }).catch(() => {});
+  };
+
+  const stopManualScrollTimer = () => {
+    if (scrollTimerRef.current) {
+      window.clearInterval(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+  };
+
+  const resetManualScrollCaptureState = () => {
+    scrollCaptureSessionRef.current += 1;
+    stopManualScrollTimer();
+    scrollFramesRef.current = [];
+    setScrollPreviewBase64("");
+    isScrollCapturingRef.current = false;
+    isScrollFramePendingRef.current = false;
+    setIsScrollCapturing(false);
+    setScrollCaptureMode("idle");
   };
 
   const getCurrentPhysicalSelection = () => getPhysicalSelection({
@@ -148,18 +177,47 @@ export function useScrollCapture({
     rect: rectRef.current,
   });
 
-  const captureManualScrollFrame = async () => {
+  const getCurrentDesktopPhysicalSelection = () => {
+    const physicalBounds = displayedPhysicalBoundsRef.current;
+    if (!physicalBounds) return null;
+    return getDesktopPhysicalSelection({
+      canvas: canvasRef.current,
+      image: imageRef.current as any,
+      rect: rectRef.current,
+      physicalBounds,
+    });
+  };
+
+  const isActiveScrollCaptureSession = (sessionId: number) => (
+    scrollCaptureSessionRef.current === sessionId &&
+    scrollCaptureModeRef.current === "capturing" &&
+    isScrollCapturingRef.current
+  );
+
+  const captureManualScrollFrame = async (sessionId: number) => {
     if (isScrollFramePendingRef.current || scrollCaptureModeRef.current !== "capturing") return;
+    if (!isActiveScrollCaptureSession(sessionId)) return;
+    const desktopSelection = getCurrentDesktopPhysicalSelection();
     const selection = getCurrentPhysicalSelection();
+    const selectionWidth = desktopSelection?.width ?? selection.w;
+    const selectionHeight = desktopSelection?.height ?? selection.h;
     if (selection.w <= 0 || selection.h <= 0) return;
     try {
       isScrollFramePendingRef.current = true;
-      const frame = await invoke<string>("capture_live_region", {
-        x: Math.round(selection.x),
-        y: Math.round(selection.y),
-        w: Math.round(selection.w),
-        h: Math.round(selection.h),
-      });
+      const frame = desktopSelection
+        ? await invoke<string>("capture_live_desktop_region", {
+          x: Math.round(desktopSelection.x),
+          y: Math.round(desktopSelection.y),
+          w: Math.round(selectionWidth),
+          h: Math.round(selectionHeight),
+        })
+        : await invoke<string>("capture_live_region", {
+          x: Math.round(selection.x),
+          y: Math.round(selection.y),
+          w: Math.round(selectionWidth),
+          h: Math.round(selectionHeight),
+        });
+      if (!isActiveScrollCaptureSession(sessionId)) return;
       const frames = scrollFramesRef.current;
       if (frames.length === 0) {
         scrollFramesRef.current = [frame];
@@ -178,6 +236,7 @@ export function useScrollCapture({
           24,
           18
         );
+        if (!isActiveScrollCaptureSession(sessionId)) return;
         if (diff > 1.2) {
           scrollFramesRef.current = [...frames, frame];
           setScrollPreviewBase64(frame);
@@ -190,13 +249,16 @@ export function useScrollCapture({
       });
       if (scrollFramesRef.current.length >= 30) await finishManualScrollCapture();
     } catch (error: any) {
+      if (!isActiveScrollCaptureSession(sessionId)) return;
       message.error({
         content: `采集滚动帧失败：${error?.message || error}`,
         key: "scroll-shot",
         duration: 3,
       });
     } finally {
-      isScrollFramePendingRef.current = false;
+      if (scrollCaptureSessionRef.current === sessionId) {
+        isScrollFramePendingRef.current = false;
+      }
     }
   };
 
@@ -209,45 +271,65 @@ export function useScrollCapture({
   };
 
   const scrollSelectedRegionDown = async () => {
+    const desktopSelection = getCurrentDesktopPhysicalSelection();
     const selection = getCurrentPhysicalSelection();
+    const selectionWidth = desktopSelection?.width ?? selection.w;
+    const selectionHeight = desktopSelection?.height ?? selection.h;
     if (selection.w <= 0 || selection.h <= 0) return;
-    await invoke("scroll_mouse_at", {
-      x: Math.round(selection.x + selection.w / 2),
-      y: Math.round(selection.y + selection.h / 2),
-      delta: -520,
-    }).catch(() => {});
+    await (desktopSelection
+      ? invoke("scroll_mouse_at_desktop", {
+        x: Math.round(desktopSelection.x + selectionWidth / 2),
+        y: Math.round(desktopSelection.y + selectionHeight / 2),
+        delta: -520,
+      })
+      : invoke("scroll_mouse_at", {
+        x: Math.round(selection.x + selectionWidth / 2),
+        y: Math.round(selection.y + selectionHeight / 2),
+        delta: -520,
+      })
+    ).catch(() => {});
   };
 
   const startManualScrollCapture = async () => {
     if (scrollCaptureModeRef.current !== "ready") return;
+    const sessionId = scrollCaptureSessionRef.current + 1;
+    scrollCaptureSessionRef.current = sessionId;
     scrollFramesRef.current = [];
     setScrollPreviewBase64("");
     setScrollCaptureMode("capturing");
     isScrollCapturingRef.current = true;
     setIsScrollCapturing(true);
-    await invoke("set_window_capture_excluded", {
-      label: getCurrentWindow().label,
-      excluded: true,
-    }).catch(() => {});
+    await setScreenshotWindowCaptureExcluded(true);
     message.loading({
       content: "手动滚动采集中，请自己滚动目标窗口...",
       key: "scroll-shot",
       duration: 0,
     });
-    await captureManualScrollFrame();
+    await captureManualScrollFrame(sessionId);
+    if (!isActiveScrollCaptureSession(sessionId)) {
+      return;
+    }
     await scrollSelectedRegionDown();
+    if (!isActiveScrollCaptureSession(sessionId)) {
+      return;
+    }
     scrollTimerRef.current = window.setInterval(async () => {
-      await captureManualScrollFrame();
+      if (!isActiveScrollCaptureSession(sessionId)) {
+        stopManualScrollTimer();
+        return;
+      }
+      await captureManualScrollFrame(sessionId);
+      if (!isActiveScrollCaptureSession(sessionId)) {
+        stopManualScrollTimer();
+        return;
+      }
       await scrollSelectedRegionDown();
     }, 760);
     triggerRender();
   };
 
   const finishManualScrollCapture = async () => {
-    if (scrollTimerRef.current) {
-      window.clearInterval(scrollTimerRef.current);
-      scrollTimerRef.current = null;
-    }
+    stopManualScrollTimer();
     try {
       const frames = [...scrollFramesRef.current];
       if (frames.length === 0) throw new Error("还没有采集到滚动截图帧");
@@ -266,44 +348,31 @@ export function useScrollCapture({
         duration: 4,
       });
     } finally {
-      await invoke("set_window_capture_excluded", {
-        label: getCurrentWindow().label,
-        excluded: false,
-      }).catch(() => {});
-      scrollFramesRef.current = [];
-      setScrollPreviewBase64("");
-      isScrollCapturingRef.current = false;
-      setIsScrollCapturing(false);
-      setScrollCaptureMode("idle");
+      await setScreenshotWindowCaptureExcluded(false);
+      resetManualScrollCaptureState();
       triggerRender();
     }
   };
 
   const cancelManualScrollCapture = () => {
-    if (scrollTimerRef.current) {
-      window.clearInterval(scrollTimerRef.current);
-      scrollTimerRef.current = null;
-    }
-    scrollFramesRef.current = [];
-    setScrollPreviewBase64("");
-    isScrollCapturingRef.current = false;
-    setIsScrollCapturing(false);
-    setScrollCaptureMode("idle");
+    resetManualScrollCaptureState();
+    void setScreenshotWindowCaptureExcluded(false);
     message.destroy("scroll-shot");
     message.info("已取消滚动截图");
     triggerRender();
   };
 
   const clearScrollCaptureState = () => {
-    if (scrollTimerRef.current) {
-      window.clearInterval(scrollTimerRef.current);
-      scrollTimerRef.current = null;
+    const hadCaptureActivity =
+      scrollCaptureModeRef.current !== "idle" ||
+      isScrollCapturingRef.current ||
+      scrollFramesRef.current.length > 0 ||
+      scrollTimerRef.current !== null ||
+      isScrollFramePendingRef.current;
+    resetManualScrollCaptureState();
+    if (hadCaptureActivity) {
+      void setScreenshotWindowCaptureExcluded(false);
     }
-    scrollFramesRef.current = [];
-    setScrollPreviewBase64("");
-    isScrollCapturingRef.current = false;
-    setIsScrollCapturing(false);
-    setScrollCaptureMode("idle");
   };
 
   return {

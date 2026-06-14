@@ -17,9 +17,9 @@ export default function OcrConfig() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card bordered={false} style={{ borderRadius: 20, background: "linear-gradient(135deg, #eef6ff 0%, #f8fbff 56%, #fff7ed 100%)" }}>
-        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+      <Card variant="borderless" style={{ borderRadius: 20, background: "linear-gradient(135deg, #eef6ff 0%, #f8fbff 56%, #fff7ed 100%)" }}>
+        <Space orientation="vertical" size={10} style={{ width: "100%" }}>
           <Space wrap>
             <Tag color="orange">FFmpeg</Tag>
             <Tag color="blue">目标语言</Tag>

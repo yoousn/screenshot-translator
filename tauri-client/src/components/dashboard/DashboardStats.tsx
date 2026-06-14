@@ -41,10 +41,10 @@ export default function DashboardStats({
 }: DashboardStatsProps) {
   return (
     <Row gutter={[16, 16]}>
-      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={labels.hotkey} value={hotkey} valueStyle={valueStyle} /></Card></Col>
-      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={labels.ocrMode} value={ocrModeLabel} valueStyle={valueStyle} /></Card></Col>
-      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={labels.targetLang} value={targetLang} valueStyle={valueStyle} /></Card></Col>
-      <Col span={6}><Card bordered={false} style={cardStyle}><Statistic title={serverTitle} value={serverValue} valueStyle={valueStyle} suffix={<Tag color={serverStatusColor}>{serverStatusText}</Tag>} /></Card></Col>
+      <Col span={6}><Card variant="borderless" style={cardStyle}><Statistic title={labels.hotkey} value={hotkey} styles={{ content: valueStyle }} /></Card></Col>
+      <Col span={6}><Card variant="borderless" style={cardStyle}><Statistic title={labels.ocrMode} value={ocrModeLabel} styles={{ content: valueStyle }} /></Card></Col>
+      <Col span={6}><Card variant="borderless" style={cardStyle}><Statistic title={labels.targetLang} value={targetLang} styles={{ content: valueStyle }} /></Card></Col>
+      <Col span={6}><Card variant="borderless" style={cardStyle}><Statistic title={serverTitle} value={serverValue} styles={{ content: valueStyle }} suffix={<Tag color={serverStatusColor}>{serverStatusText}</Tag>} /></Card></Col>
     </Row>
   );
 }

@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Card, List, Space, Tag, Typography } from "antd";
+import { Button, Card, Space, Tag, Typography } from "antd";
 
 const { Text } = Typography;
 
@@ -31,32 +31,39 @@ export default function DashboardActionList({
   items,
 }: DashboardActionListProps) {
   return (
-    <Card title={title} bordered={false} style={{ borderRadius: 16 }}>
-      <List
-        itemLayout="horizontal"
-        dataSource={items}
-        renderItem={(item) => {
+    <Card title={title} variant="borderless" style={{ borderRadius: 16 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+        {items.map((item, index) => {
           const isDelayed = item.title === delayedTitle;
           return (
-            <List.Item
-              actions={[
-                <Space key="actions">
+            <div
+              key={item.title}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 16,
+                padding: "12px 0",
+                borderTop: index === 0 ? "none" : "1px solid #f0f0f0",
+              }}
+            >
+              <Space align="start" style={{ minWidth: 0, flex: "1 1 auto" }}>
+                {item.icon}
+                <div style={{ minWidth: 0 }}>
+                  <Text strong>{item.title}</Text>
+                  <Text type="secondary" style={{ display: "block", marginTop: 2 }}>{item.description}</Text>
+                </div>
+              </Space>
+              <Space>
                   <Tag color={item.danger ? "error" : "blue"}>{item.hotkey}</Tag>
                   <Button type="primary" danger={isDelayed && delayedActive} onClick={item.onClick}>
                     {isDelayed && delayedActive ? delayedCancelText : item.buttonText || defaultButtonText}
                   </Button>
-                </Space>,
-              ]}
-            >
-              <List.Item.Meta
-                avatar={item.icon}
-                title={<Text strong>{item.title}</Text>}
-                description={<Text type="secondary">{item.description}</Text>}
-              />
-            </List.Item>
+              </Space>
+            </div>
           );
-        }}
-      />
+        })}
+      </div>
     </Card>
   );
 }

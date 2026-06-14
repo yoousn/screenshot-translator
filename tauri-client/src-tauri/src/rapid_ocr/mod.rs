@@ -174,7 +174,7 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
                 "severity": if runner.is_ok() { "success" } else { "error" },
                 "label": "RapidOCR runner",
                 "description": "RapidOCR runner executable or development Python runner is available.",
-                "nextAction": if runner.is_ok() { "run-ocr-self-test" } else { "install-rapidocr-runner" }
+                "nextAction": if runner.is_ok() { "initialize-local-ocr" } else { "install-rapidocr-runner" }
             },
             {
                 "id": "rapidocr-worker",
@@ -189,8 +189,8 @@ pub fn get_rapid_ocr_status(app: tauri::AppHandle) -> Result<serde_json::Value, 
                 "ready": probe_ok,
                 "severity": if probe_ok { "success" } else { "warning" },
                 "label": "RapidOCR probe",
-                "description": if worker_enabled { "RapidOCR dependencies are available; self-test warms the resident worker." } else { "RapidOCR can initialize the configured PP-OCR model version." },
-                "nextAction": if probe_ok { "ready" } else { "run-ocr-self-test" }
+                "description": if worker_enabled { "RapidOCR dependencies are available; initialization warms the resident worker." } else { "RapidOCR can initialize the configured PP-OCR model version." },
+                "nextAction": if probe_ok { "ready" } else { "initialize-local-ocr" }
             },
             {
                 "id": "rapidocr-root-models",
@@ -359,10 +359,16 @@ fn emit_rapid_ocr_install_progress(
 }
 
 #[tauri::command]
-pub fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub async fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || run_rapid_ocr_self_test_sync(&app))
+        .await
+        .map_err(|error| format!("RapidOCR initialization task failed: {error}"))?
+}
+
+fn run_rapid_ocr_self_test_sync(app: &tauri::AppHandle) -> Result<serde_json::Value, String> {
     let tested_at = chrono::Local::now().to_rfc3339();
     let model_version = rapid_ocr_model_version();
-    let model_root = rapid_ocr_model_root(&app);
+    let model_root = rapid_ocr_model_root(app);
     let missing_models = rapid_ocr_missing_model_files(&model_root, &model_version);
     if !missing_models.is_empty() {
         return Ok(serde_json::json!({
@@ -376,14 +382,14 @@ pub fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Valu
         }));
     }
     if rapid_ocr_worker_enabled() {
-        return match start_rapid_ocr_worker_sync(&app, true) {
+        return match start_rapid_ocr_worker_sync(app, true) {
             Ok(output) => Ok(serde_json::json!({
                 "ok": true,
                 "testedAt": tested_at,
                 "runtime": "rapidocr",
                 "modelVersion": model_version,
                 "modelRoot": model_root.to_string_lossy().to_string(),
-                "message": "RapidOCR worker started and warmed.",
+                "message": "RapidOCR worker initialized and warmed.",
                 "timings": output.get("warmResult").and_then(|value| value.get("timings")).cloned().unwrap_or_else(|| serde_json::json!(null)),
                 "samples": [
                     { "id": "worker-warm", "ok": true, "confidence": 1.0, "modelId": format!("rapidocr-{}-worker", model_version) }
@@ -404,14 +410,14 @@ pub fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Valu
         };
     }
 
-    match run_rapidocr_probe(&app, &model_version) {
+    match run_rapidocr_probe(app, &model_version) {
         Ok(output) if output.status == "success" => Ok(serde_json::json!({
             "ok": true,
             "testedAt": tested_at,
             "runtime": "rapidocr",
             "modelVersion": model_version,
             "modelRoot": model_root.to_string_lossy().to_string(),
-            "message": "RapidOCR probe passed.",
+            "message": "RapidOCR initialization probe passed.",
             "timings": output.timings,
             "samples": [
                 { "id": "engine-init", "ok": true, "confidence": 1.0, "modelId": format!("rapidocr-{}", model_version) }
@@ -422,7 +428,7 @@ pub fn run_rapid_ocr_self_test(app: tauri::AppHandle) -> Result<serde_json::Valu
             "testedAt": tested_at,
             "runtime": "rapidocr",
             "modelVersion": model_version,
-            "message": output.error.unwrap_or_else(|| "RapidOCR probe failed.".to_string()),
+            "message": output.error.unwrap_or_else(|| "RapidOCR initialization probe failed.".to_string()),
             "samples": [
                 { "id": "engine-init", "ok": false, "confidence": 0.0, "modelId": format!("rapidocr-{}", model_version) }
             ]

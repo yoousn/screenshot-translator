@@ -79,6 +79,8 @@ class App:
         self._buf = []
         self._code = None
         self._proc = None
+        self._build_running = False
+        self._cancel_build = False
         self._window = None
         self.staged = {}
         self._next_id = 1
@@ -281,7 +283,9 @@ class App:
             self._buf.append(line)
 
     def start_build(self, key):
-        if self._proc is not None and self._proc.poll() is None:
+        with self._lock:
+            running = self._build_running or (self._proc is not None and self._proc.poll() is None)
+        if running:
             return dict(ok=False, msg="已有构建在运行，请先停止")
         t = BUILD_TARGETS.get(key)
         if not t:
@@ -294,50 +298,105 @@ class App:
         with self._lock:
             self._buf = []
             self._code = None
+            self._proc = None
+            self._build_running = True
+            self._cancel_build = False
         th = threading.Thread(target=self._run_build, args=(key, t, client), daemon=True)
         th.start()
         return dict(ok=True)
 
+    def _is_build_cancelled(self):
+        with self._lock:
+            return self._cancel_build
+
     def _run_build(self, key, t, client):
-        self._log("【开始】" + t["title"])
-        self._log("【目录】" + client)
-        if key != "dev":
-            self._log("【准备】尝试关闭正在运行的 YsnTrans.exe …")
-            try:
-                subprocess.run(["taskkill", "/F", "/T", "/IM", "YsnTrans.exe"], capture_output=True)
-            except Exception:
-                pass
-        self._log("【执行】npm " + " ".join(t["args"]))
-        self._log("────────────────────────")
         code = -1
         try:
-            if os.name == "nt":
-                full = ["cmd", "/c", "npm"] + t["args"]
+            self._log("【开始】" + t["title"])
+            self._log("【目录】" + client)
+            if key != "dev":
+                self._close_running_app_before_build()
+            if self._is_build_cancelled():
+                self._log("【已停止】用户在准备阶段中断了构建")
+                return
+            self._log("【执行】npm " + " ".join(t["args"]))
+            self._log("────────────────────────")
+            try:
+                if os.name == "nt":
+                    full = ["cmd", "/c", "npm"] + t["args"]
+                else:
+                    full = ["npm"] + t["args"]
+                proc = subprocess.Popen(
+                    full, cwd=client, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                )
+                with self._lock:
+                    self._proc = proc
+                for line in proc.stdout:
+                    self._log(line.rstrip("\n"))
+                proc.wait()
+                code = proc.returncode
+            except Exception as e:
+                self._log("【异常】" + str(e))
+                code = -1
+            self._log("────────────────────────")
+            if self._is_build_cancelled():
+                self._log("【已停止】构建进程已退出，退出码 " + str(code))
+            elif code == 0:
+                self._log("【完成】" + t["title"] + " 成功")
+                out_abs = os.path.join(self.root, t["out"]) if t.get("out") else None
+                if out_abs:
+                    self._log("【产物】" + out_abs)
+                if t.get("launch") and out_abs:
+                    self._launch_artifact(out_abs)
             else:
-                full = ["npm"] + t["args"]
-            self._proc = subprocess.Popen(
-                full, cwd=client, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                self._log("【失败】退出码 " + str(code))
+        finally:
+            with self._lock:
+                self._code = code
+                self._build_running = False
+                self._proc = None
+
+    def _close_running_app_before_build(self):
+        self._log("【准备】尝试关闭正在运行的 YsnTrans.exe …")
+        if os.name != "nt":
+            self._log("【准备】非 Windows 环境，跳过关闭 YsnTrans.exe")
+            return
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/T", "/IM", "YsnTrans.exe"],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=5,
             )
-            for line in self._proc.stdout:
-                self._log(line.rstrip("\n"))
-            self._proc.wait()
-            code = self._proc.returncode
+        except subprocess.TimeoutExpired:
+            self._log("【准备警告】关闭 YsnTrans.exe 超时，继续构建")
+            return
         except Exception as e:
-            self._log("【异常】" + str(e))
-            code = -1
-        self._log("────────────────────────")
-        if code == 0:
-            self._log("【完成】" + t["title"] + " 成功")
-            out_abs = os.path.join(self.root, t["out"]) if t.get("out") else None
-            if out_abs:
-                self._log("【产物】" + out_abs)
-            if t.get("launch") and out_abs:
-                self._launch_artifact(out_abs)
-        else:
-            self._log("【失败】退出码 " + str(code))
-        with self._lock:
-            self._code = code
+            self._log("【准备警告】关闭 YsnTrans.exe 失败，继续构建：" + str(e))
+            return
+
+        output = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+        )
+        if result.returncode == 0:
+            self._log("【准备】已关闭正在运行的 YsnTrans.exe")
+            return
+
+        lower_output = output.lower()
+        if (
+            "not found" in lower_output
+            or "no instance" in lower_output
+            or "没有找到" in output
+            or "找不到" in output
+        ):
+            self._log("【准备】未发现正在运行的 YsnTrans.exe，继续构建")
+            return
+
+        self._log("【准备警告】关闭 YsnTrans.exe 返回码 " + str(result.returncode) + "，继续构建")
+        if output:
+            self._log(output)
 
     def _launch_artifact(self, out_abs):
         """构建成功后从产物目录定位并启动 EXE（detached，不阻塞 GUI）。
@@ -388,21 +447,41 @@ class App:
                 since = 0
             lines = self._buf[since:]
             total = len(self._buf)
-            running = self._proc is not None and self._proc.poll() is None
+            running = self._build_running or (self._proc is not None and self._proc.poll() is None)
             code = self._code
         return dict(lines=lines, total=total, running=running, code=code)
 
     def stop_build(self):
-        if self._proc is not None and self._proc.poll() is None:
+        with self._lock:
+            proc = self._proc
+            running = self._build_running or (proc is not None and proc.poll() is None)
+            if running:
+                self._cancel_build = True
+        if running:
             try:
-                if os.name == "nt":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._proc.pid)], capture_output=True)
+                if proc is None or proc.poll() is not None:
+                    self._log("【停止】构建正在准备中，已请求停止")
+                elif os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                        timeout=5,
+                    )
                 else:
-                    self._proc.terminate()
-            except Exception:
-                pass
+                    proc.terminate()
+            except subprocess.TimeoutExpired:
+                self._log("【停止警告】终止构建进程超时，进程可能仍在退出")
+            except Exception as e:
+                self._log("【停止警告】终止构建进程失败：" + str(e))
             self._log("【已停止】用户中断了构建")
         return dict(ok=True)
+
+
+def find_free_port():
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
 
 
 def main():
@@ -415,7 +494,10 @@ def main():
     api = App()
     win = webview.create_window("YSN 部署助手", url=HTML_PATH, js_api=api, width=1100, height=740, min_size=(920, 620))
     api._window = win
-    webview.start()
+    
+    # 动态获取空闲端口，避免与本地其他服务（如 AlibabaProtect 等）端口冲突
+    port = find_free_port()
+    webview.start(http_server=True, http_port=port)
 
 
 if __name__ == "__main__":

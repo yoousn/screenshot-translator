@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { NativeScreenshotDiagnosticsStatus, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
 import type { Config } from "../types/config";
 import { prewarmTranslationServices } from "../utils/localOcrTranslate";
@@ -66,6 +66,11 @@ interface UseScreenshotLoaderProps {
 }
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
+const BACKGROUND_PREWARM_FALLBACK_DELAY_MS = 1200;
+const BACKGROUND_PREWARM_IDLE_TIMEOUT_MS = 2500;
+const ANALYSIS_IMAGE_FALLBACK_DELAY_MS = 700;
+const ANALYSIS_IMAGE_IDLE_TIMEOUT_MS = 1800;
+const CANDIDATE_WARMUP_DELAY_MS = 220;
 type ScreenshotImageSource = HTMLImageElement | HTMLCanvasElement;
 type WebViewSharedBufferEvent = {
   getBuffer: () => ArrayBuffer;
@@ -86,6 +91,20 @@ type SharedBufferReceiver = {
 
 const getScreenshotImageWidth = (image: ScreenshotImageSource) => image instanceof HTMLImageElement ? image.naturalWidth : image.width;
 const getScreenshotImageHeight = (image: ScreenshotImageSource) => image instanceof HTMLImageElement ? image.naturalHeight : image.height;
+const scheduleBrowserIdleTask = (
+  task: () => void,
+  fallbackDelayMs: number,
+  timeoutMs: number,
+) => {
+  const host = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+  };
+  if (typeof host.requestIdleCallback === "function") {
+    host.requestIdleCallback(task, { timeout: timeoutMs });
+    return;
+  }
+  window.setTimeout(task, fallbackDelayMs);
+};
 
 export function useScreenshotLoader({
   screenshotModeRef,
@@ -118,6 +137,7 @@ export function useScreenshotLoader({
   pendingConfirmTimerRef,
   preShowDownOriginRef,
 }: UseScreenshotLoaderProps) {
+  const { message } = AntdApp.useApp();
   const [screenshotState, setScreenshotState] = useState<"initializing" | "ready" | "failed">("initializing");
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [dbgStatus, setDbgStatus] = useState({ imageLoaded: false, imageWidth: 0, imageHeight: 0, screenshotBytes: 0, errorMsg: "" });
@@ -261,9 +281,12 @@ export function useScreenshotLoader({
       const parsedConfig = JSON.parse(raw);
       configRef.current = parsedConfig;
       setConfig(parsedConfig);
-      prewarmLocalOcrWorker("screenshot-page-load");
-      prewarmTranslationServices(parsedConfig, { reason: "screenshot-page-load" })
-        .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
+      scheduleBrowserIdleTask(() => {
+        if (overlayVisibleRef.current || nativeOverlayVisibleRef.current) return;
+        prewarmLocalOcrWorker("screenshot-page-load-idle");
+        prewarmTranslationServices(configRef.current, { reason: "screenshot-page-load-idle" })
+          .catch((error) => console.warn("[Translation Service Prewarm] failed", error));
+      }, BACKGROUND_PREWARM_FALLBACK_DELAY_MS, BACKGROUND_PREWARM_IDLE_TIMEOUT_MS);
     } catch (e) {
       console.error("[ScreenshotPage] loadConfig failed:", e);
       setConfig({});
@@ -289,6 +312,15 @@ export function useScreenshotLoader({
     }
     const capture = () => {
       if (sessionId !== captureIdRef.current) return;
+      if (hasSelectedRef.current || rectRef.current.w > 0 || rectRef.current.h > 0) {
+        logScreenshotBaseline(
+          remoteSessionId || sessionId,
+          "analysis_image_data_deferred",
+          performance.now() - frontendSessionStartedAtRef.current,
+          "reason=selection_active",
+        );
+        return;
+      }
       const { width, height } = getLogicalCanvasSize(displayedPhysicalBoundsRef.current);
       const analysisCanvas = document.createElement("canvas");
       analysisCanvas.width = width;
@@ -305,9 +337,9 @@ export function useScreenshotLoader({
     };
     const requestIdleCallback = (window as any).requestIdleCallback;
     if (typeof requestIdleCallback === "function") {
-      requestIdleCallback(capture, { timeout: 500 });
+      requestIdleCallback(capture, { timeout: ANALYSIS_IMAGE_IDLE_TIMEOUT_MS });
     } else {
-      window.setTimeout(capture, 120);
+      window.setTimeout(capture, ANALYSIS_IMAGE_FALLBACK_DELAY_MS);
     }
   };
 
@@ -503,6 +535,10 @@ export function useScreenshotLoader({
           captureAnalysisImageData(img, sessionId, remoteSessionId);
           window.setTimeout(() => {
             if (sessionId === captureIdRef.current) {
+              if (hasSelectedRef.current || rectRef.current.w > 0 || rectRef.current.h > 0) {
+                logScreenshotBaseline(remoteSessionId || sessionId, "candidate_load_deferred", performance.now() - frontendSessionStartedAtRef.current, "reason=selection_active");
+                return;
+              }
               logScreenshotBaseline(remoteSessionId || sessionId, "candidate_load_start", performance.now() - frontendSessionStartedAtRef.current);
               loadWindowRects(true).then(() => {
                 if (sessionId !== captureIdRef.current) return;
@@ -510,7 +546,7 @@ export function useScreenshotLoader({
                 draw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
               }).catch(() => {});
             }
-          }, 48);
+          }, CANDIDATE_WARMUP_DELAY_MS);
         })().catch((error) => {
           if (sessionId !== captureIdRef.current) return;
           cancelScreenshot(error?.message || "Screenshot overlay failed");

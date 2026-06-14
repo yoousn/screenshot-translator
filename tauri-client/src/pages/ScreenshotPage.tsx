@@ -2,13 +2,13 @@ import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { join, tempDir } from "@tauri-apps/api/path";
-import { Space, Button, message } from "antd";
+import { App as AntdApp, Space, Button } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ScreenshotToolbar from "../components/screenshot/ScreenshotToolbar";
 import TextAnnotationEditor from "../components/screenshot/TextAnnotationEditor";
 import TranslationLoadingOverlay from "../components/screenshot/TranslationLoadingOverlay";
 import type { Config } from "../types/config";
-import type { Annotation, AnnotationTool, Rect, ScreenshotUpdatedPayload } from "../types/screenshot";
+import type { Annotation, AnnotationTool, Rect, ScreenshotPhysicalBounds, ScreenshotUpdatedPayload } from "../types/screenshot";
 import { useScreenshotOcr } from "../hooks/useScreenshotOcr";
 import { useScreenshotAnnotation, DEFAULT_ANNOTATION_COLOR, DEFAULT_ANNOTATION_TOOL, DEFAULT_ANNOTATION_SIZES } from "../hooks/useScreenshotAnnotation";
 import { getActionToolbarStyle, FLOATING_PANEL_MARGIN, FLOATING_PANEL_GAP } from "../utils/screenshotLayout";
@@ -38,6 +38,8 @@ const WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_ENABLED = import.meta.env.VITE_YSN_W
 const WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD === "1";
 const WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE === "1";
 const SELECTION_SMOOTHNESS_SMOKE_ENABLED = import.meta.env.VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE === "1";
+const WINDOW_RECT_WARMUP_FALLBACK_DELAY_MS = 420;
+const WINDOW_RECT_WARMUP_IDLE_TIMEOUT_MS = 1500;
 
 type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
 
@@ -55,7 +57,41 @@ const waitForShellPaint = () => new Promise<void>((resolve) => {
   });
 });
 
+const scheduleIdleTask = (
+  task: () => void,
+  fallbackDelayMs: number,
+  timeoutMs: number,
+) => {
+  const host = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  let cancelled = false;
+  let timeoutId: number | null = null;
+  let idleId: number | null = null;
+  const run = () => {
+    if (!cancelled) task();
+  };
+
+  if (typeof host.requestIdleCallback === "function") {
+    idleId = host.requestIdleCallback(run, { timeout: timeoutMs });
+  } else {
+    timeoutId = window.setTimeout(run, fallbackDelayMs);
+  }
+
+  return () => {
+    cancelled = true;
+    if (idleId !== null && typeof host.cancelIdleCallback === "function") {
+      host.cancelIdleCallback(idleId);
+    }
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+};
+
 export default function ScreenshotPage() {
+  const { message } = AntdApp.useApp();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mouseTrackerRef = useRef<HTMLDivElement>(null);
   const actionToolbarRef = useRef<HTMLDivElement>(null);
@@ -97,10 +133,19 @@ export default function ScreenshotPage() {
   const frameInteractiveRef = useRef(false);
   const imageReadyRef = useRef(false);
   const drawRef = useRef(draw);
+  const magnifierHostRef = useRef<HTMLDivElement | null>(null);
   const magnifierCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const magnifierLabelRef = useRef<HTMLDivElement | null>(null);
   const magnifierHexRef = useRef<string>("");
   const magnifierVisibleRef = useRef(false);
-  const [magnifier, setMagnifier] = useState<{ clientX: number; clientY: number; cx: number; cy: number; hex: string } | null>(null);
+  const suppressHoverPreviewRef = useRef(false);
+  const magnifierFrameRef = useRef<number | null>(null);
+  const magnifierPendingPointRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const recordingPhysicalBoundsRef = useRef<ScreenshotPhysicalBounds | null>(null);
+  const lastRenderedSelectionRef = useRef<Rect | null>(null);
+  const lastRenderedCanvasSizeRef = useRef({ width: 0, height: 0 });
+  const lastRenderedBaseRef = useRef<HTMLImageElement | HTMLCanvasElement | null>(null);
+  const lastRenderedHadOverlayRef = useRef(false);
 
   // Break circular dependency
   const captureRegionBase64Ref = useRef<(action?: SelectedImageBridgeAction) => Promise<string>>(() => Promise.resolve(""));
@@ -317,6 +362,7 @@ export default function ScreenshotPage() {
     rectRef,
     canvasRef,
     imageRef: { get current() { return imageRef.current; } } as any,
+    displayedPhysicalBoundsRef: recordingPhysicalBoundsRef,
     screenshotModeRef,
     triggerRender,
     setCurrentRect,
@@ -343,6 +389,7 @@ export default function ScreenshotPage() {
     rectRef,
     canvasRef,
     imageRef: { get current() { return imageRef.current; } } as any,
+    displayedPhysicalBoundsRef: recordingPhysicalBoundsRef,
     triggerRender,
     resetScreenshotState: () => resetScreenshotState(),
   });
@@ -401,6 +448,8 @@ export default function ScreenshotPage() {
     pendingConfirmTimerRef,
     preShowDownOriginRef,
   });
+
+  recordingPhysicalBoundsRef.current = displayedPhysicalBoundsRef.current;
 
   const canInteractWithOverlay = overlayVisible;
   frameInteractiveRef.current = canInteractWithOverlay;
@@ -542,43 +591,99 @@ export default function ScreenshotPage() {
   // F1+F2: PixPin-style magnifier + HEX color picker
   const { getPixelHex, drawMagnifier } = useScreenshotMagnifier(imageRef as any, canvasRef);
 
+  const clearMagnifierHoverPreview = () => {
+    hoverRectRef.current = null;
+    hoverCandidatesRef.current = [];
+    setHoverCandidate(null);
+    setHoverCandidateList([]);
+  };
+
+  const hideMagnifier = (redraw = true) => {
+    if (magnifierFrameRef.current !== null) {
+      window.cancelAnimationFrame(magnifierFrameRef.current);
+      magnifierFrameRef.current = null;
+    }
+    magnifierPendingPointRef.current = null;
+    magnifierHexRef.current = "";
+    magnifierVisibleRef.current = false;
+    suppressHoverPreviewRef.current = false;
+    if (magnifierHostRef.current) {
+      magnifierHostRef.current.style.display = "none";
+    }
+    if (redraw) {
+      clearMagnifierHoverPreview();
+    }
+  };
+
   const updateMagnifier = (clientX: number, clientY: number) => {
     if (
       configRef.current.enableMagnifier === false ||
       !frameInteractiveRef.current ||
       !imageReadyRef.current ||
       hasSelectedRef.current ||
-      isSelectingRef.current ||
       isEditingRef.current
     ) {
-      if (magnifierVisibleRef.current) setMagnifier(null);
-      magnifierHexRef.current = "";
+      if (magnifierVisibleRef.current) hideMagnifier();
       return;
     }
     const cv = canvasRef.current;
     if (!cv) {
-      if (magnifierVisibleRef.current) setMagnifier(null);
+      if (magnifierVisibleRef.current) hideMagnifier();
       return;
     }
-    const r = cv.getBoundingClientRect();
-    const cx = clientX - r.left;
-    const cy = clientY - r.top;
-    const info = getPixelHex(cx, cy);
-    if (!info) {
-      if (magnifierVisibleRef.current) setMagnifier(null);
-      magnifierHexRef.current = "";
-      return;
+    const shouldClearHoverPreview =
+      !magnifierVisibleRef.current
+      || !suppressHoverPreviewRef.current
+      || hoverRectRef.current !== null
+      || hoverCandidatesRef.current.length > 0;
+    if (shouldClearHoverPreview) {
+      clearMagnifierHoverPreview();
     }
-    magnifierHexRef.current = info.hex;
-    setMagnifier({ clientX, clientY, cx, cy, hex: info.hex });
+    magnifierVisibleRef.current = true;
+    suppressHoverPreviewRef.current = true;
+    if (shouldClearHoverPreview) {
+      triggerRender();
+    }
+    magnifierPendingPointRef.current = { clientX, clientY };
+    if (magnifierFrameRef.current !== null) return;
+    magnifierFrameRef.current = window.requestAnimationFrame(() => {
+      magnifierFrameRef.current = null;
+      const point = magnifierPendingPointRef.current;
+      magnifierPendingPointRef.current = null;
+      const host = magnifierHostRef.current;
+      const magnifierCanvas = magnifierCanvasRef.current;
+      const canvas = canvasRef.current;
+      if (!point || !host || !magnifierCanvas || !canvas || !magnifierVisibleRef.current) return;
+      const bounds = canvas.getBoundingClientRect();
+      const cx = point.clientX - bounds.left;
+      const cy = point.clientY - bounds.top;
+      const info = getPixelHex(cx, cy);
+      if (!info) {
+        hideMagnifier();
+        return;
+      }
+      magnifierHexRef.current = info.hex;
+      const hostWidth = host.offsetWidth || 132;
+      const hostHeight = host.offsetHeight || 146;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const preferredLeft = point.clientX + 16;
+      const preferredTop = point.clientY + 16;
+      const fallbackLeft = point.clientX - hostWidth - 16;
+      const fallbackTop = point.clientY - hostHeight - 16;
+      const left = preferredLeft + hostWidth <= viewportWidth - 8 ? preferredLeft : Math.max(8, fallbackLeft);
+      const top = preferredTop + hostHeight <= viewportHeight - 8 ? preferredTop : Math.max(8, fallbackTop);
+      host.style.left = `${Math.max(8, Math.min(viewportWidth - hostWidth - 8, left))}px`;
+      host.style.top = `${Math.max(8, Math.min(viewportHeight - hostHeight - 8, top))}px`;
+      host.style.display = "block";
+      if (magnifierLabelRef.current) {
+        magnifierLabelRef.current.textContent = `${info.hex} · 按 C 复制`;
+      }
+      drawMagnifier(magnifierCanvas, cx, cy, 8, 120);
+    });
   };
 
-  useEffect(() => {
-    magnifierVisibleRef.current = !!magnifier;
-    if (magnifier && magnifierCanvasRef.current) {
-      drawMagnifier(magnifierCanvasRef.current, magnifier.cx, magnifier.cy, 8, 120);
-    }
-  }, [magnifier, drawMagnifier]);
+  useEffect(() => () => hideMagnifier(false), []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -802,12 +907,30 @@ export default function ScreenshotPage() {
   };
 
   function draw(rx: number, ry: number, rw: number, rh: number, translatedImg?: HTMLImageElement | HTMLCanvasElement | null) {
+    const canvas = canvasRef.current;
+    const maskedCanvas = maskedCanvasRef.current;
+    const sourceImage = imageRef.current as any;
+    const currentHoverRect = suppressHoverPreviewRef.current ? null : hoverRectRef.current;
+    const hasOverlayContent =
+      currentHoverRect !== null
+      || translatedImgRef.current !== null
+      || translatedImg !== undefined
+      || annotationsRef.current.length > 0
+      || draftAnnotationRef.current !== null
+      || recordingStatusRef.current !== "idle";
+    const canvasSizeChanged = !canvas
+      || lastRenderedCanvasSizeRef.current.width !== canvas.width
+      || lastRenderedCanvasSizeRef.current.height !== canvas.height;
+    const baseChanged = lastRenderedBaseRef.current !== maskedCanvas;
+    const previousSelection = canvasSizeChanged || baseChanged || hasOverlayContent || lastRenderedHadOverlayRef.current
+      ? undefined
+      : lastRenderedSelectionRef.current ?? undefined;
     renderScreenshotCanvas({
-      canvas: canvasRef.current,
-      image: imageRef.current as any,
-      maskedCanvas: maskedCanvasRef.current,
-      hoverRect: hoverRectRef.current,
-      hoverCandidatesCount: hoverCandidatesRef.current.length,
+      canvas,
+      image: sourceImage,
+      maskedCanvas,
+      hoverRect: currentHoverRect,
+      hoverCandidatesCount: suppressHoverPreviewRef.current ? 0 : hoverCandidatesRef.current.length,
       hoverCandidateIndex: hoverCandidateIndexRef.current,
       hasSelected: hasSelectedRef.current,
       selection: { x: rx, y: ry, w: rw, h: rh },
@@ -820,7 +943,14 @@ export default function ScreenshotPage() {
       selectionBorderColor: recordingStatusRef.current === "recording" ? RECORDING_BORDER_COLOR : recordingStatusRef.current === "ready" ? RECORDING_BORDER_BLUE : scrollCaptureModeRef.current !== "idle" ? SCROLL_CAPTURE_BORDER_COLOR : undefined,
       selectionLabelColor: recordingStatusRef.current === "recording" ? "rgba(239, 68, 68, 0.9)" : recordingStatusRef.current === "ready" ? "rgba(37, 99, 235, 0.9)" : scrollCaptureModeRef.current !== "idle" ? "rgba(249, 115, 22, 0.9)" : undefined,
       selectionOnly: recordingStatusRef.current !== "idle",
+      previousSelection,
     });
+    lastRenderedSelectionRef.current = { x: rx, y: ry, w: rw, h: rh };
+    if (canvas) {
+      lastRenderedCanvasSizeRef.current = { width: canvas.width, height: canvas.height };
+    }
+    lastRenderedBaseRef.current = maskedCanvas;
+    lastRenderedHadOverlayRef.current = hasOverlayContent;
   }
 
   const dispatchCanvasPointer = (
@@ -904,7 +1034,11 @@ export default function ScreenshotPage() {
     document.body.style.setProperty("overflow", "hidden", "important");
     document.body.style.setProperty("background", "transparent", "important");
     document.documentElement.style.setProperty("background", "transparent", "important");
-    window.setTimeout(() => loadWindowRects(), 120);
+    const cancelWindowRectWarmup = scheduleIdleTask(() => {
+      if (!overlayVisibleRef.current && !isSelectingRef.current && !hasSelectedRef.current) {
+        loadWindowRects();
+      }
+    }, WINDOW_RECT_WARMUP_FALLBACK_DELAY_MS, WINDOW_RECT_WARMUP_IDLE_TIMEOUT_MS);
 
     let unlistenMode: (() => void) | null = null;
     let unlistenShell: (() => void) | null = null;
@@ -1204,6 +1338,7 @@ export default function ScreenshotPage() {
       if (unlistenSessionCancelled) unlistenSessionCancelled();
       if (unlistenMode) unlistenMode();
       if (unlistenRecordingEnded) unlistenRecordingEnded();
+      cancelWindowRectWarmup();
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
       requestRef.current = null;
       renderFramePendingRef.current = false;
@@ -1282,21 +1417,21 @@ export default function ScreenshotPage() {
         <div ref={mouseTrackerRef} style={{ position: "absolute", top: -100, left: -100, zIndex: 9999, background: "rgba(0, 0, 0, 0.75)", color: "#fff", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "Consolas, Monaco, monospace", pointerEvents: "none", whiteSpace: "nowrap", lineHeight: "18px", display: "none" }}>0, 0</div>
       )}
 
-      {magnifier && (
-        <div
-          style={{ position: "fixed", left: magnifier.clientX + 16, top: magnifier.clientY + 16, zIndex: 2147483647, pointerEvents: "none", background: "rgba(255,255,255,0.96)", borderRadius: 6, padding: 4, boxShadow: "0 2px 10px rgba(0,0,0,0.3)" }}
-        >
-          <canvas
-            ref={magnifierCanvasRef}
-            width={120}
-            height={120}
-            style={{ display: "block", width: 120, height: 120, imageRendering: "pixelated" }}
-          />
-          <div style={{ marginTop: 2, fontSize: 12, fontFamily: "monospace", textAlign: "center", color: "#222" }}>
-            {magnifier.hex} · 按 C 复制
-          </div>
+      <div
+        ref={magnifierHostRef}
+        className="screenshot-magnifier"
+        style={{ left: -1000, top: -1000, display: "none" }}
+      >
+        <canvas
+          ref={magnifierCanvasRef}
+          width={120}
+          height={120}
+          className="screenshot-magnifier-canvas"
+        />
+        <div ref={magnifierLabelRef} className="screenshot-magnifier-label">
+          按 C 复制
         </div>
-      )}
+      </div>
 
       {isTranslating && <TranslationLoadingOverlay rect={rect} />}
 
@@ -1312,14 +1447,32 @@ export default function ScreenshotPage() {
       <canvas
         ref={canvasRef}
         tabIndex={-1}
-        onPointerDown={handleMouseDown}
-        onPointerMove={(e) => {
-          handleMouseMove(e);
-          if ((e.buttons & 1) !== 1) updateMagnifier(e.clientX, e.clientY);
+        onPointerDown={(e) => {
+          if (e.button === 0) {
+            updateMagnifier(e.clientX, e.clientY);
+          } else {
+            hideMagnifier();
+          }
+          handleMouseDown(e);
         }}
-        onPointerUp={(e) => { handleMouseUp(e); setMagnifier(null); }}
-        onPointerCancel={handlePointerCancel}
-        onPointerLeave={() => { if (magnifierVisibleRef.current) setMagnifier(null); }}
+        onPointerMove={(e) => {
+          if ((e.buttons & 1) === 1) {
+            handleMouseMove(e);
+            updateMagnifier(e.clientX, e.clientY);
+            return;
+          }
+          if ((e.buttons & 1) !== 1) {
+            updateMagnifier(e.clientX, e.clientY);
+            if (magnifierVisibleRef.current) return;
+          }
+          handleMouseMove(e);
+        }}
+        onPointerUp={(e) => { handleMouseUp(e); hideMagnifier(); }}
+        onPointerCancel={(e) => {
+          handlePointerCancel(e);
+          hideMagnifier();
+        }}
+        onPointerLeave={(e) => { if ((e.buttons & 1) !== 1 && magnifierVisibleRef.current) hideMagnifier(); }}
         onDoubleClick={handleDoubleClick}
         style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible && !SELECTION_SMOOTHNESS_SMOKE_ENABLED ? "auto" : "none" }}
       />

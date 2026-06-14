@@ -20,10 +20,64 @@ type RenderScreenshotCanvasOptions = {
   selectionBorderColor?: string;
   selectionLabelColor?: string;
   selectionOnly?: boolean;
+  previousSelection?: Rect | null;
 };
 
 const getImageWidth = (image: HTMLImageElement | HTMLCanvasElement) => image instanceof HTMLImageElement ? image.naturalWidth : image.width;
 const getImageHeight = (image: HTMLImageElement | HTMLCanvasElement) => image instanceof HTMLImageElement ? image.naturalHeight : image.height;
+const hasArea = (rect: Rect | null | undefined) => !!rect && rect.w > 0 && rect.h > 0;
+
+const clampCanvasRect = (
+  rect: { x: number; y: number; w: number; h: number },
+  canvas: HTMLCanvasElement,
+) => {
+  const x1 = Math.max(0, Math.floor(rect.x));
+  const y1 = Math.max(0, Math.floor(rect.y));
+  const x2 = Math.min(canvas.width, Math.ceil(rect.x + rect.w));
+  const y2 = Math.min(canvas.height, Math.ceil(rect.y + rect.h));
+  const w = x2 - x1;
+  const h = y2 - y1;
+  return w > 0 && h > 0 ? { x: x1, y: y1, w, h } : null;
+};
+
+const unionCanvasRects = (
+  canvas: HTMLCanvasElement,
+  first: { x: number; y: number; w: number; h: number } | null,
+  second: { x: number; y: number; w: number; h: number } | null,
+) => {
+  if (!first) return second ? clampCanvasRect(second, canvas) : null;
+  if (!second) return clampCanvasRect(first, canvas);
+  const x = Math.min(first.x, second.x);
+  const y = Math.min(first.y, second.y);
+  const right = Math.max(first.x + first.w, second.x + second.w);
+  const bottom = Math.max(first.y + first.h, second.y + second.h);
+  return clampCanvasRect({ x, y, w: right - x, h: bottom - y }, canvas);
+};
+
+const getSelectionDecorationRect = (
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  rect: Rect | null | undefined,
+) => {
+  if (!rect) return null;
+  const pad = 12;
+  if (!hasArea(rect)) {
+    return clampCanvasRect({ x: rect.x - pad, y: rect.y - pad, w: pad * 2, h: pad * 2 }, canvas);
+  }
+  const x = Math.min(rect.x, rect.x + rect.w);
+  const y = Math.min(rect.y, rect.y + rect.h);
+  const w = Math.abs(rect.w);
+  const h = Math.abs(rect.h);
+  ctx.font = "12px sans-serif";
+  const label = `${Math.round(w)} x ${Math.round(h)}`;
+  const labelWidth = ctx.measureText(label).width + 12;
+  const tipY = y - 22 >= 0 ? y - 22 : y + h + 4;
+  const left = Math.min(x, x - pad);
+  const top = Math.min(y, tipY, y - pad);
+  const right = Math.max(x + w, x + labelWidth, x + w + pad);
+  const bottom = Math.max(y + h, tipY + 20, y + h + pad);
+  return clampCanvasRect({ x: left, y: top, w: right - left, h: bottom - top }, canvas);
+};
 
 const getHandlePoints = (x: number, y: number, w: number, h: number) => [
   { x, y },
@@ -54,13 +108,33 @@ export const renderScreenshotCanvas = ({
   selectionBorderColor = "#1677ff",
   selectionLabelColor = selectionBorderColor,
   selectionOnly = false,
+  previousSelection,
 }: RenderScreenshotCanvasOptions) => {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const sourceImage = image;
+  const activeImg = overrideTranslatedImg || translatedImg;
+  const canUseDirtySelection =
+    !selectionOnly
+    && previousSelection !== undefined
+    && maskedCanvas
+    && sourceImage
+    && !hoverRect
+    && !activeImg
+    && annotations.length === 0
+    && !draftAnnotation;
+  const dirtyRect = canUseDirtySelection
+    ? unionCanvasRects(
+      canvas,
+      getSelectionDecorationRect(ctx, canvas, previousSelection),
+      getSelectionDecorationRect(ctx, canvas, selection),
+    )
+    : null;
 
-  if (selectionOnly) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (dirtyRect && maskedCanvas) {
+    ctx.drawImage(maskedCanvas, dirtyRect.x, dirtyRect.y, dirtyRect.w, dirtyRect.h, dirtyRect.x, dirtyRect.y, dirtyRect.w, dirtyRect.h);
+  } else if (selectionOnly) ctx.clearRect(0, 0, canvas.width, canvas.height);
   else if (maskedCanvas) ctx.drawImage(maskedCanvas, 0, 0);
   else if (sourceImage) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -106,7 +180,6 @@ export const renderScreenshotCanvas = ({
   const { x, y, w, h } = selection;
   if (w > 0 && h > 0) {
     if (!selectionOnly) ctx.clearRect(x, y, w, h);
-    const activeImg = overrideTranslatedImg || translatedImg;
     if (!selectionOnly && activeImg) ctx.drawImage(activeImg, x, y, w, h);
     else if (!selectionOnly && sourceImage) {
       const scaleX = getImageWidth(sourceImage) / canvas.width;

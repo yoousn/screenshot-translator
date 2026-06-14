@@ -3,6 +3,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { App as AntdApp, ConfigProvider } from "antd";
 import App from "./App";
 import ScreenshotPage from "./pages/ScreenshotPage";
 import PinPage from "./pages/PinPage";
@@ -64,14 +65,17 @@ if (label === "screenshot") {
 
 let Component: React.ComponentType;
 let needsI18nProvider = false;
+let needsAntdProvider = false;
 if (label === "screenshot") {
   Component = ScreenshotPage;
   needsI18nProvider = true;
+  needsAntdProvider = true;
 } else if (label.startsWith("pin_")) {
   Component = PinPage;
 } else if (label.startsWith("ocr_")) {
   Component = OcrPage;
   needsI18nProvider = true;
+  needsAntdProvider = true;
 } else if (label.startsWith("recording_control")) {
   Component = RecordingControlPage;
 } else if (label === "recording_notice") {
@@ -82,14 +86,28 @@ if (label === "screenshot") {
   Component = App;
 }
 
+const renderComponent = () => {
+  const content = needsI18nProvider ? (
+    <I18nProvider>
+      <Component />
+    </I18nProvider>
+  ) : (
+    <Component />
+  );
+
+  if (!needsAntdProvider) return content;
+
+  return (
+    <ConfigProvider theme={{ token: { borderRadius: 12, colorPrimary: "#1677ff" } }}>
+      <AntdApp>
+        {content}
+      </AntdApp>
+    </ConfigProvider>
+  );
+};
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {needsI18nProvider ? (
-      <I18nProvider>
-        <Component />
-      </I18nProvider>
-    ) : (
-      <Component />
-    )}
+    {renderComponent()}
   </React.StrictMode>,
 );

@@ -11,6 +11,7 @@ import { logScreenshotPerf } from "../utils/debugLog";
 import { getViewportDevicePixelRatio } from "../utils/screenshotViewport";
 
 const MIN_AUTO_ACTION_DRAG_PX = 8;
+const HOVER_DETECTION_MIN_INTERVAL_MS = 50;
 
 type PendingPointerDown = {
   x: number;
@@ -262,6 +263,19 @@ export function useScreenshotInteraction({
   const drawRafRef = useRef<number | null>(null);
   const drawRectRef = useRef<Rect | null>(null);
   const drawSessionRef = useRef<string | null>(null);
+  const hoverDetectionFrameRef = useRef<number | null>(null);
+  const hoverDetectionTimerRef = useRef<number | null>(null);
+  const pendingHoverDetectionRef = useRef<{ x: number; y: number; sessionId: string | null } | null>(null);
+  const lastHoverDetectionAtRef = useRef(0);
+  const lastHoverDetectionRef = useRef<{
+    x: number;
+    y: number;
+    rects: Rect[];
+    imageData: ImageData | null;
+    visualEnabled: boolean;
+    sensitivity: number;
+    candidates: Rect[];
+  } | null>(null);
 
   const scheduleDraw = (x: number, y: number, w: number, h: number) => {
     drawRectRef.current = { x, y, w, h };
@@ -296,10 +310,23 @@ export function useScreenshotInteraction({
     }
   };
 
+  const cancelScheduledHoverDetection = () => {
+    if (hoverDetectionFrameRef.current !== null) {
+      cancelAnimationFrame(hoverDetectionFrameRef.current);
+      hoverDetectionFrameRef.current = null;
+    }
+    if (hoverDetectionTimerRef.current !== null) {
+      window.clearTimeout(hoverDetectionTimerRef.current);
+      hoverDetectionTimerRef.current = null;
+    }
+    pendingHoverDetectionRef.current = null;
+  };
+
   useEffect(() => {
     return () => {
       cancelScheduledDraw();
       cancelPendingDownResume();
+      cancelScheduledHoverDetection();
     };
   }, []);
 
@@ -492,6 +519,69 @@ export function useScreenshotInteraction({
     return candidates[hoverCandidateIndexRef.current % Math.max(1, candidates.length)] || null;
   };
 
+  const getHoverDetectionCandidatesAt = (mx: number, my: number) => {
+    const visualEnabled = configRef.current.enableVisualDetection === true;
+    const sensitivity = configRef.current.visualDetectionSensitivity || 3;
+    const rects = windowRectsRef.current;
+    const imageData = analysisImageDataRef.current;
+    const cached = lastHoverDetectionRef.current;
+    if (
+      cached
+      && Math.abs(cached.x - mx) < 2
+      && Math.abs(cached.y - my) < 2
+      && cached.rects === rects
+      && cached.imageData === imageData
+      && cached.visualEnabled === visualEnabled
+      && cached.sensitivity === sensitivity
+    ) {
+      return cached.candidates;
+    }
+    const candidates = getDetectionCandidatesAt(mx, my, rects, imageData, visualEnabled, sensitivity);
+    lastHoverDetectionRef.current = {
+      x: mx,
+      y: my,
+      rects,
+      imageData,
+      visualEnabled,
+      sensitivity,
+      candidates,
+    };
+    return candidates;
+  };
+
+  const runHoverDetection = () => {
+    hoverDetectionFrameRef.current = null;
+    const pending = pendingHoverDetectionRef.current;
+    pendingHoverDetectionRef.current = null;
+    if (!pending || !frameInteractiveRef.current || hasActivePointerGesture()) return;
+    const currentSession = activeSessionIdRef?.current || null;
+    if (pending.sessionId !== currentSession) return;
+    lastHoverDetectionAtRef.current = performance.now();
+    loadWindowRects();
+    setHoverCandidateList(getHoverDetectionCandidatesAt(pending.x, pending.y));
+  };
+
+  const scheduleHoverDetection = (mx: number, my: number) => {
+    pendingHoverDetectionRef.current = {
+      x: mx,
+      y: my,
+      sessionId: activeSessionIdRef?.current || null,
+    };
+    if (hoverDetectionFrameRef.current !== null || hoverDetectionTimerRef.current !== null) return;
+    const elapsed = performance.now() - lastHoverDetectionAtRef.current;
+    const delay = Math.max(0, HOVER_DETECTION_MIN_INTERVAL_MS - elapsed);
+    const scheduleFrame = () => {
+      hoverDetectionTimerRef.current = null;
+      if (hoverDetectionFrameRef.current !== null) return;
+      hoverDetectionFrameRef.current = requestAnimationFrame(runHoverDetection);
+    };
+    if (delay > 0) {
+      hoverDetectionTimerRef.current = window.setTimeout(scheduleFrame, delay);
+      return;
+    }
+    scheduleFrame();
+  };
+
   const selectDetectedRect = (candidate: Rect) => {
     const canvas = canvasRef.current;
     const maxW = canvas?.width || window.innerWidth;
@@ -631,7 +721,7 @@ export function useScreenshotInteraction({
           ? { type: tool, rect: { x: cx, y: cy, w: 0, h: 0 }, points: [{ x: cx, y: cy }], color: annotationColorRef.current, size: annotationSizeRef.current }
           : { type: tool, rect: { x: cx, y: cy, w: 0, h: 0 }, color: annotationColorRef.current, size: annotationSizeRef.current }
       );
-      // P0-1: pointerdown 钀界瑪绔嬪嵆鐢诲嚭璧风偣
+      // P0-1: draw the annotation origin immediately on pointerdown.
       scheduleDraw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       return;
     }
@@ -786,7 +876,7 @@ export function useScreenshotInteraction({
             size: annotationSizeRef.current,
           });
         }
-        // P0-1: 姣忔鏇存柊 draft 鍚庤Е鍙戝悎甯ч噸缁橈紝璁?draft 璺熸墜瀹炴椂鍑虹幇
+        // Redraw after each draft update so annotations follow the pointer.
         scheduleDraw(rectRef.current.x, rectRef.current.y, rectRef.current.w, rectRef.current.h);
       }
       return;
@@ -883,8 +973,6 @@ export function useScreenshotInteraction({
       return;
     }
 
-    loadWindowRects();
-
     if (isEditingRef.current && isPointInSelection(rectRef.current, hasSelectedRef.current, cx, cy)) {
       const annotationHit = hitAnnotationDetailed(annotationsRef.current, { x: cx, y: cy }, annotationSizeRef.current);
       if (annotationHit) {
@@ -904,8 +992,7 @@ export function useScreenshotInteraction({
       e.currentTarget.style.cursor = "move";
       return;
     }
-    const candidates = getDetectionCandidatesAt(cx, cy, windowRectsRef.current, analysisImageDataRef.current, configRef.current.enableVisualDetection === true, configRef.current.visualDetectionSensitivity || 3);
-    setHoverCandidateList(candidates);
+    scheduleHoverDetection(cx, cy);
     // BUG3 修复：框选阶段始终使用 crosshair（行业标准框选手势）。
     // 窗口高亮预览仍保留（hoverRect 继续参与渲染），仅不再把光标改成 pointer。
     e.currentTarget.style.cursor = "crosshair";
@@ -1007,6 +1094,7 @@ export function useScreenshotInteraction({
     activePointerIdRef.current = null;
     pendingDownRef.current = null;
     cancelPendingDownResume();
+    cancelScheduledHoverDetection();
     pendingDetectionRef.current = null;
     annotationDragSnapshotRef.current = null;
     annotationResizeHandleRef.current = null;

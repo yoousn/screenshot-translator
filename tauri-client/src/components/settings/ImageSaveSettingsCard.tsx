@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Button, Card, Col, Form, Input, Row, Space, Switch, Typography, message } from "antd";
+import { App as AntdApp, Button, Card, Col, Form, Input, Row, Space, Switch, Typography } from "antd";
 import type { FormInstance } from "antd";
 import { FolderOpenOutlined, SaveOutlined } from "@ant-design/icons";
 import { useI18n } from "../../i18n";
@@ -12,6 +12,7 @@ interface ImageSaveSettingsCardProps {
 
 export default function ImageSaveSettingsCard({ form }: ImageSaveSettingsCardProps) {
   const { text } = useI18n();
+  const { message } = AntdApp.useApp();
   const labels = text.settings;
 
   const chooseSaveDirectory = async () => {
@@ -29,7 +30,7 @@ export default function ImageSaveSettingsCard({ form }: ImageSaveSettingsCardPro
   };
 
   return (
-    <Card title={<span><SaveOutlined style={{ marginRight: 8 }} />{labels.imageSaveSettings}</span>} bordered={false}>
+    <Card title={<span><SaveOutlined style={{ marginRight: 8 }} />{labels.imageSaveSettings}</span>} variant="borderless">
       <Row gutter={[16, 12]}>
         <Col xs={24} sm={10}>
           <Form.Item label={labels.imageSaveNamePrefix} name="imageSaveNamePrefix" style={{ marginBottom: 6 }}>

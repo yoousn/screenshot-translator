@@ -271,6 +271,7 @@ body {
         <div class="logbar">
           <div class="state"><span class="dot idle" id="buildDot"></span><span id="buildState">空闲中</span></div>
           <button class="btn sm" onclick="clearConsole()">清屏</button>
+          <button class="btn sm" onclick="copyConsole()">复制</button>
           <button class="btn sm danger" id="stopBtn" onclick="api_stop()" disabled>停止构建</button>
         </div>
         <div class="console" id="console"><span class="placeholder">构建日志会显示在这里…</span></div>
@@ -486,6 +487,39 @@ function appendLog(lines) {
 function clearConsole() {
   document.getElementById("console").innerHTML = '<span class="placeholder">构建日志会显示在这里…</span>';
   sawLog = false;
+}
+
+async function copyConsole() {
+  const con = document.getElementById("console");
+  const text = con.innerText.replace("构建日志会显示在这里…", "").trim();
+  if (!text) {
+    toast("没有可复制的日志");
+    return;
+  }
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      throw new Error("Clipboard API unavailable");
+    }
+    await navigator.clipboard.writeText(text);
+    toast("日志已复制");
+  } catch (e) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    area.style.top = "0";
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (copyError) {
+      ok = false;
+    }
+    area.remove();
+    toast(ok ? "日志已复制" : "复制失败，请手动选择日志");
+  }
 }
 
 function setBuildState(kind, text) {

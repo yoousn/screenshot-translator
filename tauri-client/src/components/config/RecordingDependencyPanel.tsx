@@ -23,16 +23,16 @@ export default function RecordingDependencyPanel({
 
   return (
     <Card
-      bordered={false}
+      variant="borderless"
       title={<span><VideoCameraOutlined style={{ marginRight: 8 }} />视频录制</span>}
       extra={<Button size="small" icon={<ReloadOutlined />} loading={checkingRecordingInfo} onClick={onCheckRecordingInfo}>重新检测</Button>}
       style={{ borderRadius: 18, boxShadow: "0 18px 48px rgba(15,23,42,0.06)" }}
     >
-      <Space direction="vertical" size={14} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={14} style={{ width: "100%" }}>
         <Alert
           type={ready ? "success" : "warning"}
           showIcon
-          message={ready ? "FFmpeg 可用" : "FFmpeg 缺失"}
+          title={ready ? "FFmpeg 可用" : "FFmpeg 缺失"}
           description={ready ? "录屏功能已可使用，录制结果会自动保存到 Videos\\YSN。" : "录屏前需要下载 FFmpeg，或选择本机已有的 ffmpeg.exe。"}
           action={<Button type={ready ? "default" : "primary"} icon={<CloudDownloadOutlined />} loading={downloadingFfmpeg} onClick={onDownloadFfmpeg}>下载 FFmpeg</Button>}
         />

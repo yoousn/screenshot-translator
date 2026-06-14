@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Config } from "../types/config";
 import type { Rect, TranslatePair, OcrBlock } from "../types/screenshot";
@@ -40,6 +40,7 @@ export interface ScreenshotOcrDeps {
 }
 
 export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
+  const { message } = AntdApp.useApp();
   const {
     config,
     rectRef,
@@ -139,7 +140,7 @@ export function useScreenshotOcr(deps: ScreenshotOcrDeps) {
       if (!isCurrentOperation(operationGeneration)) return;
       const texts = normalization.text || "\u672a\u8bc6\u522b\u5230\u6587\u5b57\u3002\n\n\u8bf7\u91cd\u65b0\u6846\u9009\u66f4\u6e05\u6670\u3001\u66f4\u5b8c\u6574\u7684\u6587\u5b57\u533a\u57df\u3002";
 
-      message.destroy();
+      message.destroy("ocr");
       setIsOCRingSync(false);
 
       if (texts) {

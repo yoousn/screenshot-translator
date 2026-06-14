@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { message, Space } from "antd";
+import { App as AntdApp, Space } from "antd";
 import {
   CameraOutlined,
   ClockCircleOutlined,
@@ -38,6 +38,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
   const [config, setConfig] = useState<Config>({});
   const [delayedCountdown, setDelayedCountdown] = useState<number | null>(null);
   const [delayedActive, setDelayedActive] = useState(false);
+  const { message } = AntdApp.useApp();
   const { text } = useI18n();
   const T = text.dashboard;
 
@@ -142,7 +143,7 @@ export default function Dashboard({ onStartScreenshot, shortcutError, serverStat
   ];
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={16} style={{ width: "100%" }}>
       {delayedActive && delayedCountdown !== null && (
         <DelayedCountdownOverlay countdown={delayedCountdown} title={T.delayedStarting} onCancel={handleDelayedScreenshot} />
       )}

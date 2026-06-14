@@ -170,7 +170,7 @@ export default function TranslationChannelCard({
   ];
 
   return (
-    <Card title={<span><GlobalOutlined style={{ marginRight: 8 }} />{labels.translationChannel}</span>} bordered={false}>
+    <Card title={<span><GlobalOutlined style={{ marginRight: 8 }} />{labels.translationChannel}</span>} variant="borderless">
       <Form.Item label={<Text strong style={{ fontSize: 12 }}>{labels.activeChannel}</Text>} name="channel" initialValue="google" style={{ marginBottom: 6 }}>
         <Select options={getChannelOptions(labels)} style={{ height: 32 }} />
       </Form.Item>
@@ -186,7 +186,7 @@ export default function TranslationChannelCard({
       </Text>
 
       <div style={{ marginTop: 12, padding: 10, border: "1px solid #eef1f4", borderRadius: 8, background: "#fbfcfe" }}>
-        <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <Space orientation="vertical" size={6} style={{ width: "100%" }}>
           <div>
             <Text strong style={{ fontSize: 12 }}>{labels.channelHealthTitle}</Text>
             <Text type="secondary" style={{ display: "block", fontSize: 11, marginTop: 2 }}>
@@ -235,7 +235,7 @@ export default function TranslationChannelCard({
         <Alert
           type="warning"
           showIcon
-          message={labels.googleQualityWarningTitle}
+          title={labels.googleQualityWarningTitle}
           description={labels.googleQualityWarningDesc}
           action={
             <Button size="small" type="primary" ghost loading={isActivatingGoogle} onClick={activateGoogleChannel}>
@@ -337,7 +337,7 @@ export default function TranslationChannelCard({
           <Alert
             type="info"
             showIcon
-            message={labels.deeplUnavailableTitle || "Choose your DeepL API plan"}
+            title={labels.deeplUnavailableTitle || "Choose your DeepL API plan"}
             description={labels.deeplUnavailableDesc || "Use the Free endpoint for DeepL API Free keys and the Pro endpoint for paid API keys."}
             style={{ marginBottom: 12 }}
           />

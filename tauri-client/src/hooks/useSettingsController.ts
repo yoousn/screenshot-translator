@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { FormInstance } from "antd";
 import type {
   ServerChannelStatus,
@@ -121,6 +121,7 @@ const requestJsonFromCandidates = async <T>(
 };
 
 export default function useSettingsController(form: FormInstance, onConfigSaved: () => void) {
+  const { message } = AntdApp.useApp();
   const [isSaving, setIsSaving] = useState(false);
   const [isActivatingGoogle, setIsActivatingGoogle] = useState(false);
   const [isTestingBaidu, setIsTestingBaidu] = useState(false);
@@ -177,7 +178,7 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       }
     } catch (error) {
       console.error(error);
-      message.error("加载设��失败，请检查本地配置文件是否损坏。");
+      message.error("加载设置失败，请检查本地配置文件是否损坏。");
     } finally {
       isLoadingSettingsRef.current = false;
     }

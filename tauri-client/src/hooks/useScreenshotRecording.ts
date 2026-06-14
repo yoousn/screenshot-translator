@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import { useI18n } from "../i18n";
-import type { Rect } from "../types/screenshot";
-import { getPhysicalSelection } from "../utils/screenshotImage";
+import type { Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
+import { getDesktopPhysicalSelection, getPhysicalSelection } from "../utils/screenshotImage";
 import { closeRecordingBorderWindows, openRecordingWindows } from "../utils/recordingWindows";
 import { traceLog } from "../utils/debugLog";
 
@@ -39,6 +39,7 @@ interface UseScreenshotRecordingProps {
   rectRef: React.MutableRefObject<Rect>;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   imageRef: React.MutableRefObject<(HTMLImageElement | HTMLCanvasElement) | null>;
+  displayedPhysicalBoundsRef: React.MutableRefObject<ScreenshotPhysicalBounds | null>;
   screenshotModeRef: React.MutableRefObject<string>;
   triggerRender: () => void;
   setCurrentRect: (next: Rect, syncState?: boolean) => void;
@@ -51,6 +52,7 @@ export function useScreenshotRecording({
   rectRef,
   canvasRef,
   imageRef,
+  displayedPhysicalBoundsRef,
   screenshotModeRef,
   triggerRender,
   setCurrentRect,
@@ -58,6 +60,7 @@ export function useScreenshotRecording({
   setHoverCandidate,
   resetScreenshotState,
 }: UseScreenshotRecordingProps) {
+  const { message } = AntdApp.useApp();
   const { text } = useI18n();
   const labels = text.config;
   const t = (key: string, replacements: Record<string, string> = {}) => {
@@ -130,6 +133,24 @@ export function useScreenshotRecording({
   });
 
   const getCurrentAbsoluteSelection = async (): Promise<RecordingTarget> => {
+    const physicalBounds = displayedPhysicalBoundsRef.current;
+    if (physicalBounds) {
+      const selection = getDesktopPhysicalSelection({
+        canvas: canvasRef.current,
+        image: imageRef.current as any,
+        rect: rectRef.current,
+        physicalBounds,
+      });
+      return {
+        id: "region",
+        title: t("recordingRegionTitle"),
+        x: Math.round(selection.x),
+        y: Math.round(selection.y),
+        w: Math.round(selection.width),
+        h: Math.round(selection.height),
+      };
+    }
+
     const selection = getCurrentPhysicalSelection();
     const origin = await getCurrentWindow().outerPosition().catch(() => ({ x: 0, y: 0 }));
     return {
@@ -145,6 +166,19 @@ export function useScreenshotRecording({
   const rectFromAbsoluteTarget = async (target: RecordingTarget) => {
     const canvas = canvasRef.current;
     const image = imageRef.current;
+    const physicalBounds = displayedPhysicalBoundsRef.current;
+    if (canvas && physicalBounds) {
+      const scaleX = canvas.width / Math.max(1, physicalBounds.width);
+      const scaleY = canvas.height / Math.max(1, physicalBounds.height);
+      return {
+        x: Math.round((target.x - physicalBounds.x) * scaleX),
+        y: Math.round((target.y - physicalBounds.y) * scaleY),
+        w: Math.round(target.w * scaleX),
+        h: Math.round(target.h * scaleY),
+        kind: "window",
+      } as Rect;
+    }
+
     const origin = await getCurrentWindow().outerPosition().catch(() => ({ x: 0, y: 0 }));
     const imageWidth = image instanceof HTMLImageElement ? image.naturalWidth : image?.width;
     const imageHeight = image instanceof HTMLImageElement ? image.naturalHeight : image?.height;
@@ -254,7 +288,7 @@ export function useScreenshotRecording({
     setRecordingPickerMode(null);
     recordingRegionRef.current = null;
     setRecordingMode("region");
-    message.destroy();
+    message.destroy("recording");
     if (!screenshotModeRef.current || screenshotModeRef.current === "normal") {
       setCurrentRect({ x: 0, y: 0, w: 0, h: 0 }, true);
       setSelection(false);

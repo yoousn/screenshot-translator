@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { FfmpegProgress, FfmpegReleaseInfo, RecordingInfo } from "../components/config/types";
 import { useI18n } from "../i18n";
 import { readStartupReadinessSnapshot } from "./useStartupDependencyStatus";
@@ -21,6 +21,7 @@ type UseRecordingDependencyControllerOptions = {
 export default function useRecordingDependencyController(options: UseRecordingDependencyControllerOptions = {}) {
   const { autoCheck = false } = options;
   const { text } = useI18n();
+  const { message } = AntdApp.useApp();
   const labels = text.config;
   const [ffmpegPath, setFfmpegPath] = useState("");
   const [defaultVideoDir, setDefaultVideoDir] = useState("");

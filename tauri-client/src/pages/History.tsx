@@ -2,13 +2,12 @@ import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { 
-  List, 
+  App as AntdApp,
   Button, 
   Tag, 
   Space, 
   Typography, 
   Card,
-  message,
   InputNumber,
   Descriptions,
   Input
@@ -38,6 +37,7 @@ interface HistoryRecord {
 
 
 export default function History() {
+  const { message } = AntdApp.useApp();
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [historyInfo, setHistoryInfo] = useState<any>(null);
@@ -119,7 +119,7 @@ export default function History() {
   };
 
   return (
-    <Card bordered={false} style={{ borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
+    <Card variant="borderless" style={{ borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.02)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e8e8e8", paddingBottom: 16, marginBottom: 24 }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>
@@ -171,43 +171,34 @@ export default function History() {
         </Text>
       </div>
 
-      <List
-        itemLayout="horizontal"
-        dataSource={history}
-        loading={loading}
-        locale={{ emptyText: "暂无历史翻译记录" }}
-        renderItem={(item) => (
-          <List.Item
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {loading && (
+          <Text type="secondary" style={{ fontSize: 12 }}>加载中...</Text>
+        )}
+        {!loading && history.length === 0 && (
+          <Text type="secondary" style={{ fontSize: 12 }}>暂无历史翻译记录</Text>
+        )}
+        {!loading && history.map((item) => (
+          <div
+            key={item.id}
             style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
               padding: "16px 20px",
               border: "1px solid #f0f0f0",
               borderRadius: 12,
-              marginBottom: 10,
               background: "#ffffff",
             }}
-            actions={[
-              <Space size="large" key="meta">
-                <Text style={{ fontSize: 11, color: "#595959" }}>
-                  识别块: <b>{item.blocks} 个</b>
-                </Text>
-                <Text style={{ fontSize: 11, color: "#595959" }}>
-                  耗时: <b>{item.duration}</b>
-                </Text>
-                <Tag color="success" icon={<CheckCircleOutlined />} style={{ margin: 0 }}>
-                  已翻译
-                </Tag>
-              </Space>
-            ]}
           >
-            <List.Item.Meta
-              avatar={<PictureOutlined style={{ fontSize: 18, color: "#1677ff", background: "#e6f7ff", padding: 8, borderRadius: 8 }} />}
-              title={
+            <Space align="start" style={{ minWidth: 0, flex: "1 1 auto" }}>
+              <PictureOutlined style={{ fontSize: 18, color: "#1677ff", background: "#e6f7ff", padding: 8, borderRadius: 8 }} />
+              <div style={{ minWidth: 0 }}>
                 <Text strong style={{ fontSize: 13, color: "#1f1f1f" }}>
                   {item.filename}
                 </Text>
-              }
-              description={
-                <Space size="middle" style={{ fontSize: 10, color: "#8c8c8c", marginTop: 2 }}>
+                <Space size="middle" wrap style={{ fontSize: 10, color: "#8c8c8c", marginTop: 4, display: "flex" }}>
                   <span>
                     <ClockCircleOutlined style={{ marginRight: 4 }} />
                     {item.time}
@@ -217,11 +208,22 @@ export default function History() {
                     通道: {item.channel}
                   </span>
                 </Space>
-              }
-            />
-          </List.Item>
-        )}
-      />
+              </div>
+            </Space>
+            <Space size="large" wrap>
+                <Text style={{ fontSize: 11, color: "#595959" }}>
+                  识别块: <b>{item.blocks} 个</b>
+                </Text>
+                <Text style={{ fontSize: 11, color: "#595959" }}>
+                  耗时: <b>{item.duration}</b>
+                </Text>
+                <Tag color="success" icon={<CheckCircleOutlined />} style={{ margin: 0 }}>
+                  已翻译
+                </Tag>
+            </Space>
+          </div>
+        ))}
+      </div>
     </Card>
   );
 }

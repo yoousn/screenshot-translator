@@ -24,8 +24,8 @@ type RapidOcrPanelProps = {
 
 function StatusTile({ title, ready, detail }: { title: string; ready: boolean; detail: string }) {
   return (
-    <Card size="small" bordered={false} style={{ height: "100%", borderRadius: 16, background: "#f8fafc" }}>
-      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+    <Card size="small" variant="borderless" style={{ height: "100%", borderRadius: 16, background: "#f8fafc" }}>
+      <Space orientation="vertical" size={6} style={{ width: "100%" }}>
         <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
           <Text strong>{title}</Text>
           <Tag color={ready ? "green" : "orange"} style={{ margin: 0 }}>{ready ? "可用" : "缺失/待检测"}</Tag>
@@ -51,12 +51,12 @@ export default function RapidOcrPanel({
   const missingModels = status?.missingModelFiles || [];
   const hasMissingModels = missingModels.length > 0;
   const alertType = ready ? "success" : hasMissingModels ? "warning" : "info";
-  const alertMessage = ready ? "识字模型可用" : hasMissingModels ? "识字模型文件缺失" : "识字模型需要检测";
+  const alertMessage = ready ? "识字可用" : hasMissingModels ? "模型文件缺失" : "需要初始化本地 OCR";
   const alertDescription = ready
     ? `当前主模型：${localOcrModelName(status?.rapidOcrModelVersion || modelVersion)}（手动选择）。截图识字和截图翻译可用。`
     : hasMissingModels
       ? `模型目录缺少 ${missingModels.length} 个文件。请把当前所选模型放到下方目录后重新检测。`
-      : status?.lastError || "点击重新检测或运行自测，确认本地 OCR runner 和模型是否可用。";
+      : status?.lastError || "点击初始化并应用，确认本地 OCR runner、ONNXRuntime 和当前模型可以真实加载。";
 
   const openModelDir = () => {
     invoke("open_path_in_file_manager", { path: modelDir }).catch(() => undefined);
@@ -64,20 +64,20 @@ export default function RapidOcrPanel({
 
   return (
     <Card
-      bordered={false}
+      variant="borderless"
       title={<span><ApiOutlined style={{ marginRight: 8 }} />本地 OCR 引擎</span>}
       extra={<Button size="small" icon={<ReloadOutlined />} loading={loadingStatus} onClick={onRefreshStatus}>重新检测</Button>}
       style={{ borderRadius: 18, boxShadow: "0 18px 48px rgba(15,23,42,0.06)" }}
     >
-      <Space direction="vertical" size={14} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={14} style={{ width: "100%" }}>
         <Alert
           type={alertType}
           showIcon
-          message={alertMessage}
+          title={alertMessage}
           description={alertDescription}
           action={
             <Button type={ready ? "default" : "primary"} icon={<ToolOutlined />} loading={selfTesting} onClick={onRunSelfTest}>
-              运行自测
+              初始化并应用
             </Button>
           }
         />
@@ -99,9 +99,9 @@ export default function RapidOcrPanel({
           </Col>
           <Col xs={24} md={8}>
             <StatusTile
-              title="模型自测"
+              title="模型初始化"
               ready={Boolean(status?.selfTestReady)}
-              detail={lastSelfTest ? (lastSelfTest.ok ? "最近自测通过" : lastSelfTest.message) : "首次使用建议运行一次自测。"}
+              detail={lastSelfTest ? (lastSelfTest.ok ? "最近初始化通过" : lastSelfTest.message) : "首次使用或切换模型后建议初始化一次。"}
             />
           </Col>
         </Row>

@@ -1216,7 +1216,7 @@ pub async fn force_close_recording_controls(
         source_str, hide_main_for_cleanup
     );
 
-    // 1. force_close_recording_controls 閹笛嗩攽閸撳秷鐦栭弬?
+    // 1. Snapshot current window state before forced recording cleanup.
     dump_all_windows_state_internal(
         &app,
         format!("force_close_recording_controls-before({})", source_str),
@@ -1253,21 +1253,18 @@ pub async fn force_close_recording_controls(
         }
     }
     for window in recording_windows {
-        println!("[window-trace] action=close label={}", window.label());
+        println!("[window-trace] action=destroy label={}", window.label());
         let _ = window.set_always_on_top(false);
         robust_hide_window(&window);
         // Delay closing to prevent the transparent window from flashing white on Windows
         let win_clone = window.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let _ = win_clone.close();
+            let _ = win_clone.destroy();
         });
     }
 
-    // 2. force_close_recording_controls 閹笛嗩攽閸?100ms 鐠囧﹥鏌?
-    // 瑜版洖鍩楅幒褍鍩楅弶锛勭搼鐞氼偅瀚㈤張澶屾畱缁愭褰涢崷?close() 閺冭绱漌indows 娴兼碍濡搁悞锔惧仯/濠碘偓濞茶娲栨禍銈囩舶 owner閿涘潰ain閿涘绱?
-    // 閸欘垵鍏樼€佃壈鍤?main 閸︺劌鍙ч梻顓炴倵鐞氼偊鍣搁弬鐗堢负濞茶鑻熼弰鍓с仛閸戣櫣娅ч懝鑼崶閸欙絻鈧?
-    // 閻㈠彉绨崗鎶芥４閺勵垰娆㈡潻?50ms 閹笛嗩攽閻ㄥ嫸绱濇潻娆撳櫡閸︺劎鐛ラ崣锝団€樼€圭偤鏀㈠В浣风閸氬骸鍟€鐞涖儰绔村▎锟犳閽?main閿涘本绉烽梽銈嗙暙閻ｆ瑧娅х粣妞尖偓?
+    // 2. Re-hide after the destroy pass so Windows focus fallback cannot surface main/screenshot.
     let app_clone = app.clone();
     let source_str_clone = source_str.clone();
     tauri::async_runtime::spawn(async move {
@@ -1447,7 +1444,7 @@ pub fn set_webview_capture_excluded(
 /// Windows OS focus-fallback from activating any of them when a recording overlay closes.
 pub fn hide_all_app_windows(app: &tauri::AppHandle, trigger: &str) {
     for (lbl, win) in app.webview_windows() {
-        // 閸?hide main 閸?screenshot 缁鍨粣妤€褰涢敍灞肩瑝 hide 濮濓絽婀崗鎶芥４娑擃厾娈?recording_control 閼奉亣闊?
+        // Keep only the recording UI visible while recording-control cleanup is in progress.
         if lbl == "main" || lbl == "screenshot" || lbl.starts_with("screenshot_") {
             let is_visible = win.is_visible().unwrap_or(false);
             if is_visible {

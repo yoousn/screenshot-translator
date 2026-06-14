@@ -13,7 +13,7 @@ interface DashboardHeroProps {
 
 export default function DashboardHero({ title, description, buttonText, onStartScreenshot }: DashboardHeroProps) {
   return (
-    <Card bordered={false} style={{ borderRadius: 16 }}>
+    <Card variant="borderless" style={{ borderRadius: 16 }}>
       <Flex justify="space-between" align="center" wrap="wrap" gap={16}>
         <div>
           <Title level={4} style={{ margin: 0 }}>{title}</Title>

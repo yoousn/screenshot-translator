@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Col, Row, Space, Typography, message } from "antd";
+import { App as AntdApp, Button, Card, Col, Row, Space, Typography } from "antd";
 import { DatabaseOutlined } from "@ant-design/icons";
 import { useI18n } from "../../i18n";
 import { clearTranslationMemory, getTranslationMemoryStorageStats, type TranslationMemoryStorageStats } from "../../utils/translationMemory";
@@ -8,6 +8,7 @@ const { Text } = Typography;
 
 export default function TranslationServiceCard() {
   const { text } = useI18n();
+  const { message } = AntdApp.useApp();
   const labels = text.settings;
   const [cacheStats, setCacheStats] = useState<TranslationMemoryStorageStats>(() => getTranslationMemoryStorageStats());
 
@@ -24,7 +25,7 @@ export default function TranslationServiceCard() {
   };
 
   return (
-    <Card title={<span><DatabaseOutlined style={{ marginRight: 8 }} />{labels.translationCache}</span>} bordered={false}>
+    <Card title={<span><DatabaseOutlined style={{ marginRight: 8 }} />{labels.translationCache}</span>} variant="borderless">
       <Row gutter={[16, 12]}>
         <Col xs={24} md={16}>
           <Text strong style={{ fontSize: 12 }}>{labels.translationCache}</Text>

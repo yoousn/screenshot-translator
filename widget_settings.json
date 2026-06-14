@@ -1,0 +1,93 @@
+{
+    "display": {
+        "window_transparency": 0.7,
+        "text_transparency": 1.0,
+        "border_transparency": 0.8,
+        "background_transparency": 0.8,
+        "fully_transparent_mode": false,
+        "corner_radius": 18,
+        "border_width": 2,
+        "border_color": "#c0c0c0",
+        "glass_effect": true,
+        "mouse_passthrough": false,
+        "auto_start": false,
+        "desktop_background_mode": false,
+        "colors": {
+            "background": "#16181d",
+            "time": "#00ffff",
+            "shichen": "#ffff00",
+            "fortune_good": "#00ff00",
+            "fortune_normal": "#ffff00",
+            "fortune_bad": "#ff4444",
+            "status": "#cccccc",
+            "date": "#00ffff",
+            "poem": "#ffd700",
+            "songci": "#87ceeb",
+            "custom": "#cccccc"
+        },
+        "text_config": {
+            "font_family": "Microsoft YaHei UI",
+            "sizes": {
+                "date": 10,
+                "time": 9,
+                "shichen": 8,
+                "fortune": 8,
+                "poem": 8,
+                "songci": 8,
+                "status": 7,
+                "custom": 7
+            },
+            "positions": {
+                "date": {
+                    "x": 0,
+                    "y": 0
+                },
+                "time": {
+                    "x": 0,
+                    "y": 0
+                },
+                "shichen": {
+                    "x": 0,
+                    "y": 0
+                },
+                "fortune": {
+                    "x": 0,
+                    "y": 0
+                },
+                "poem": {
+                    "x": 0,
+                    "y": 0
+                },
+                "songci": {
+                    "x": 0,
+                    "y": 0
+                },
+                "status": {
+                    "x": 0,
+                    "y": 0
+                },
+                "custom": {
+                    "x": 0,
+                    "y": 0
+                }
+            }
+        },
+        "display_control": {
+            "show_date": true,
+            "show_time": true,
+            "show_shichen": true,
+            "show_fortune": true,
+            "show_poem": true,
+            "show_songci": true,
+            "show_status": true,
+            "show_custom": true
+        },
+        "custom_text": "数据已同步"
+    },
+    "window": {
+        "x": 1123,
+        "y": 588,
+        "width": 380,
+        "height": 300
+    }
+}

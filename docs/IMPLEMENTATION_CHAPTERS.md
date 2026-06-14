@@ -4509,3 +4509,582 @@ Alt+A
 
 ### Next Recommended Chapter
 - Deploy the server update to N100, then run a live V6 screenshot acceptance pass for a pure path and a mixed prose-plus-command sample against the configured production translation provider.
+
+## Chapter 289: Magnifier Selection And V6 Initialization Bug Closure (2026-06-14)
+
+### Goals Completed
+- Fixed the known screenshot bug where enabling the magnifier could make drag selection stop following the mouse.
+- Fixed the known V6 model-management bug where switching to V6 could show OCR unavailable/stale state and still present the action as a model self-test.
+- Changed the user-facing model action from self-test wording to initialization/application wording while keeping the internal compatibility command name.
+- Made the RapidOCR initialization command async and moved blocking runner/probe work behind `spawn_blocking` so the UI action remains interactive.
+- Verified the current local bundled RapidOCR runner with `onnxruntime==1.26.0` can initialize PP-OCRv6 Small successfully.
+- Completed a targeted bug audit for screenshot, OCR readiness, scroll capture, recording, configuration, and model-management flows without fixing the additional findings in this chapter.
+
+### External Findings
+- Tauri v2 command guidance supports using async commands for work that can block the UI; the OCR initialization/probe path now follows that shape.
+- ONNXRuntime compatibility is version-sensitive; local source-runner and bundled-runner probes are the authoritative proof that the current packaged runner can load the V6 model contract.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/components/config/RapidOcrPanel.tsx`
+- `tauri-client/src/hooks/useRapidOcrController.ts`
+- `tauri-client/src/pages/ModelManagement.tsx`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src-tauri/src/rapid_ocr/mod.rs`
+- `tauri-client/src-tauri/src/diagnostics.rs`
+- `tauri-client/src-tauri/src/tests.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not fix the additional bugs found during the audit.
+- Did not commit, push, tag, or create a branch.
+- Did not add V6 model download hosting, release-managed checksums, updater behavior, or rollback behavior.
+- Did not rename the backend `run_rapid_ocr_self_test` command or internal `selfTesting` compatibility fields.
+- Did not touch pre-existing unrelated working-tree changes in `app.py`, `YsnTrans.lnk`, local model files, or local settings/database files.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cargo fmt --manifest-path tauri-client\src-tauri\Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client\src-tauri\Cargo.toml --tests`.
+- Passed: source V6 probe: `python tauri-client\src-tauri\rapidocr\rapidocr_runner.py --probe --model-version v6 --model-root ocrv6`, contract dictionary `18708`, classes `18710`, blank `0`, implicit space `18709`.
+- Passed: local bundled V6 probe: `tauri-client\src-tauri\resources\rapidocr\rapidocr-runner\rapidocr-runner.exe --probe --model-version v6 --model-root ocrv6`, same contract. This runner is a gitignored local resource rather than a tracked source diff in this chapter.
+- Passed: `powershell -NoProfile -ExecutionPolicy Bypass -File .\tauri-client\scripts\check-ocr-v6-fixtures.ps1`, all V6 fixture CER values were `0`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml --lib`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml`.
+- Passed: `server\.venv\Scripts\python.exe -m pytest server\tests` (`65 passed`, `1 skipped`).
+- Partial: `git diff --check` still fails only on pre-existing `app.py:425` trailing whitespace; modified chapter files only produced LF-to-CRLF working-copy warnings.
+- Passed: UTF-8 replacement-character scan found exactly one real source match, `tauri-client/src/hooks/useSettingsController.ts:180`.
+
+### Remaining Bug Inventory
+- `tauri-client/src/hooks/useSettingsController.ts:180`: user-facing settings-load error contains real replacement characters in `加载设��失败...`, producing corrupted Chinese text when local config loading fails.
+- `tauri-client/src/hooks/useScrollCapture.ts:221-307`: manual scroll capture sets the screenshot window capture exclusion to true on start, restores it in `finishManualScrollCapture`, but `cancelManualScrollCapture` and `clearScrollCaptureState` do not restore it. Cancel/reset can leave the screenshot overlay excluded from capture.
+- `tauri-client/src/hooks/useScreenshotRecording.ts:132-142`: region recording converts the selected rectangle to absolute coordinates by adding `getCurrentWindow().outerPosition()` to image-local physical selection. Other screenshot paths use `getDesktopPhysicalSelection(... physicalBounds)`, and the FFmpeg `gdigrab` backend consumes desktop offsets, so recording regions can be offset on negative-origin, multi-monitor, or DPI-scaled desktops.
+- `tauri-client/src/hooks/useRecordingControl.ts:169-184` and `231-237`: successful save sets `savedPath` but returns the overlay status to `ready`, even though `OverlayStatus` has a `saved` state and close handling checks for it. The saved control bar can behave like a ready/cancel state instead of a saved state.
+- `tauri-client/src/pages/ModelManagement.tsx:158-161` and `tauri-client/src-tauri/src/rapid_ocr/mod.rs` install flow: when V6 is selected, the install button explicitly installs backup V5/V4 models, while V6 still requires manual model placement. The wording is mostly explicit, but it remains a product-risk because users may expect the primary V6 model to be installed.
+- `tauri-client/src-tauri/src/screenshot_native/wgc_capture.rs` and `tauri-client/src-tauri/src/screenshot_native/dxgi_capture.rs`: WGC capture has a `NotImplemented` error path and DXGI capture still reports a placeholder/blocked contract that falls back to the existing CPU screenshot path. Treat as an architecture/performance risk unless a current user-facing path starts requiring GPU capture as the primary backend.
+- Ant Design v6 compatibility warnings remain in the UI layer, including deprecated `Space direction`, `Card bordered`, `Alert message`, `List`, `Statistic valueStyle`, and static `message`/`notification` usage. The app still renders, but console noise can hide real runtime errors and should be cleaned up in a focused UI compatibility chapter.
+
+### Known Risks
+- The magnifier fix was verified by code path and type/build checks, but a live drag-selection pass with the magnifier enabled is still needed on a real desktop session.
+- V6 readiness is now proven by source and bundled fixed-input probes plus generated fixtures, but real screenshot end-to-end acceptance across the model-management UI remains a manual QA item.
+- Browser smoke on `http://127.0.0.1:5179/` confirmed the model-management page renders the V6 card and `初始化并应用` button. The same smoke also produced expected Tauri IPC errors because the page was running in a normal browser instead of the Tauri WebView.
+- PowerShell terminal output can display valid UTF-8 Chinese as mojibake; future audits should use UTF-8 reads or app rendering rather than raw console display before classifying text as corrupted.
+- `YsnTrans.lnk`, `app.py`, `ocrv6/*.onnx`, `shichen_calendar.db`, and `widget_settings.json` were already dirty/untracked in the working tree and were left untouched.
+
+### Next Recommended Chapter
+- Fix the audited bugs in priority order: restore scroll-capture capture exclusion on every cancel/reset path, then correct recording region desktop-coordinate conversion, then set the recording control overlay to the real `saved` state after successful save.
+
+## Chapter 290: Audited Bug Closure And AntD V6 Cleanup (2026-06-14)
+
+### Goals Completed
+- Fixed the settings-load error text replacement-character corruption in `useSettingsController`.
+- Made manual scroll capture restore screenshot-window capture exclusion on finish, cancel, and reset paths.
+- Added stale async-frame guards so an in-flight scroll-capture frame cannot write preview/message state after cancel/reset.
+- Corrected screenshot recording region coordinates to use screenshot desktop physical bounds instead of screenshot window `outerPosition`.
+- Kept window/display recording target selection mapped back to the canvas using the same desktop physical bounds when available.
+- Fixed recording-control save completion so the overlay enters the existing `saved` state instead of returning to `ready`.
+- Changed the V6 model-management primary action to `打开 V6 模型目录`, and moved V5/V4 installation to an explicitly secondary backup action.
+- Added GPU diagnostics fields that clearly report `cpu-fallback-active`, `existing-cpu-screenshot`, and `gpuCaptureExperimental`, so WGC/DXGI placeholders are not user-facing primary capture readiness.
+- Migrated Ant Design v6 deprecated UI APIs away from `Space direction`, `Card bordered`, `Alert message`, `List`, `Statistic valueStyle`, and static `message`/`notification` usage in the affected pages/components/hooks.
+- Added AntD context wrapping for screenshot and OCR direct window entries so `AntdApp.useApp()` works outside the main window route.
+
+### External Findings
+- FFmpeg `gdigrab` region offsets are desktop/screen offsets, including negative offsets for monitors left or above the primary display; recording region coordinates should therefore be desktop physical coordinates.
+- Tauri window scale and position APIs are DPI-sensitive window APIs, but this recording path already has a stronger source of truth: the screenshot payload physical bounds.
+- Microsoft documents `WDA_EXCLUDEFROMCAPTURE` as suitable for video recording controls, which supports restoring capture exclusion on all cancellation/reset paths.
+- Ant Design v6 marks the migrated APIs as deprecated and scheduled for removal in v7, so removing the warnings now keeps console output useful for real runtime errors.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/hooks/useSettingsController.ts`
+- `tauri-client/src/hooks/useScrollCapture.ts`
+- `tauri-client/src/hooks/useScreenshotRecording.ts`
+- `tauri-client/src/hooks/useRecordingControl.ts`
+- `tauri-client/src/hooks/useScreenshotActions.ts`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotOcr.ts`
+- `tauri-client/src/hooks/useRapidOcrController.ts`
+- `tauri-client/src/hooks/useOcrConfigController.tsx`
+- `tauri-client/src/hooks/useRecordingDependencyController.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/pages/ModelManagement.tsx`
+- `tauri-client/src/pages/Dashboard.tsx`
+- `tauri-client/src/pages/History.tsx`
+- `tauri-client/src/pages/OcrConfig.tsx`
+- `tauri-client/src/pages/Settings.tsx`
+- `tauri-client/src/pages/OcrPage.tsx`
+- `tauri-client/src/pages/FeatureSwitches.tsx`
+- `tauri-client/src/main.tsx`
+- `tauri-client/src/App.tsx`
+- `tauri-client/src/components/config/ConfigSectionCard.tsx`
+- `tauri-client/src/components/config/RapidOcrPanel.tsx`
+- `tauri-client/src/components/config/RecordingDependencyPanel.tsx`
+- `tauri-client/src/components/config/TranslationLanguagePanel.tsx`
+- `tauri-client/src/components/dashboard/DashboardActionList.tsx`
+- `tauri-client/src/components/dashboard/DashboardHero.tsx`
+- `tauri-client/src/components/dashboard/DashboardStats.tsx`
+- `tauri-client/src/components/settings/ImageSaveSettingsCard.tsx`
+- `tauri-client/src/components/settings/ScreenshotRecognitionCard.tsx`
+- `tauri-client/src/components/settings/SystemHotkeyCard.tsx`
+- `tauri-client/src/components/settings/TranslationChannelCard.tsx`
+- `tauri-client/src/components/settings/TranslationServiceCard.tsx`
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not implement a full WGC or DXGI primary capture backend in this chapter.
+- Did not change the stable CPU screenshot path.
+- Did not change the backend `run_rapid_ocr_self_test` compatibility command name.
+- Did not fix pre-existing unrelated dirty files such as `app.py`, `YsnTrans.lnk`, local model files, or local settings/database files.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cargo fmt --manifest-path tauri-client\src-tauri\Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client\src-tauri\Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml --lib`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml`.
+- Passed: UTF-8 replacement-character scan now finds no source-code `�` matches; only Chapter 289's historical bug record still contains the old corrupted sample.
+- Passed: source search found no remaining `Space direction="vertical"`, `Card bordered={false}`, `List`, `Statistic valueStyle`, `Alert message=`, or static `message` imports in the migrated UI scope.
+- Passed: browser smoke on `http://127.0.0.1:5173/` confirmed the model-management V6 action shows `打开 V6 模型目录` plus an explicit backup V5/V4 install action, and no AntD deprecated warnings appeared.
+- Partial: browser smoke still shows expected Tauri IPC errors in a normal browser because `window.__TAURI_INTERNALS__` is absent there.
+- Partial: `git diff --check` still fails only on pre-existing `app.py:425` trailing whitespace; modified files only produced existing LF-to-CRLF working-copy warnings.
+
+### Known Risks
+- The user's reported screenshot-time app freeze was not reproduced in this chapter. The fixes remove several stale-state and blocking-risk paths, but a live Tauri desktop screenshot pass is still needed to confirm the exact freeze scenario.
+- Recording coordinate correction was validated by code path and type/build checks; multi-monitor and mixed-DPI live recording should still be manually tested on real hardware.
+- Scroll-capture capture-exclusion recovery was validated by code path and build checks; live cancel/reset testing should confirm the overlay is capturable again after every exit path.
+- GPU capture remains experimental/diagnostic. The product now reports CPU fallback clearly, but a future chapter is still required for true WGC/DXGI primary capture readiness.
+- Normal browser smoke cannot validate Tauri IPC behavior; the Tauri WebView remains the authoritative runtime for screenshot, OCR, model initialization, and recording flows.
+
+### Next Recommended Chapter
+- Run a real Tauri desktop QA pass for: magnifier drag selection, scroll-capture cancel/reset, V6 initialize/apply, area recording on multi-monitor or non-100% DPI, and post-save recording controls.
+
+## Chapter 291: Deep Freeze-Risk Bug Rescan And Cleanup Hardening (2026-06-14)
+
+### Goals Completed
+- Performed another deep static rescan for screenshot-time freeze risks, stale async state, global Ant Design message cleanup, source-code mojibake, recording window lifecycle, dynamic toast/control window capability coverage, and remaining synchronous Tauri commands.
+- Moved recording temporary-file cleanup behind an async Tauri command wrapper and `spawn_blocking`, so deleting large recording segment files after cancel/save no longer runs on the command caller thread.
+- Kept the recording cleanup safety boundary intact: only `.mp4` files under the app recording temp directory are deleted, and the unit test now calls the sync implementation directly.
+- Removed an additional real mojibake comment from `useScreenshotInteraction`.
+- Rechecked that dynamic `save_toast_*` labels are covered by capability permissions and that the frontend routes save-toasts by query string, so the dynamic label does not block toast rendering.
+- Confirmed the broad UI message cleanup now uses keyed AntD message destruction rather than global `message.destroy()` in the scanned screenshot/OCR/recording scopes.
+
+### External Findings
+- Tauri v2 command/window docs were rechecked while auditing freeze risks: async command wrappers and background blocking workers are the right shape for filesystem, process, clipboard, screenshot, and recording work that can stall the UI.
+- Tauri v2 window API docs were rechecked for the `destroy()` cleanup path used by externally closed recording/save-toast windows.
+- FFmpeg `gdigrab` docs show region capture using `-offset_x` and `-offset_y` with desktop capture input, matching the existing desktop-coordinate recording fix from the previous chapter.
+
+References:
+- `https://v2.tauri.app/develop/calling-rust/`
+- `https://v2.tauri.app/reference/javascript/api/namespacewindow/`
+- `https://ffmpeg.org/ffmpeg-devices.html#gdigrab`
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/recording_process/process_manager.rs`
+- `tauri-client/src-tauri/src/tests.rs`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not convert every remaining sync diagnostic/config/history command in this chapter; the remaining heavy-looking entries are either diagnostic-only, small file/config operations, or need a focused command-boundary pass.
+- Did not implement WGC/DXGI primary GPU capture.
+- Did not change the stable CPU screenshot path.
+- Did not claim the user-reported screenshot freeze is fully reproduced; this chapter removes additional plausible blocking paths and records the remaining live QA requirement.
+- Did not touch pre-existing unrelated dirty files such as `app.py`, `YsnTrans.lnk`, local model files, `shichen_calendar.db`, or `widget_settings.json`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cargo fmt --manifest-path tauri-client\src-tauri\Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client\src-tauri\Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml --lib`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml`.
+- Passed: source scan found no remaining replacement-character or common mojibake matches in `tauri-client/src` and `tauri-client/src-tauri/src`.
+- Passed: source scan found no remaining global AntD `message.destroy()` / `notification.destroy()` usage or static `message`/`notification` imports in the scanned frontend scope.
+- Partial: `git diff --check` still fails only on pre-existing `app.py:425` trailing whitespace; modified files only produced existing LF-to-CRLF working-copy warnings.
+
+### Known Risks
+- The user-reported freeze while taking a screenshot was not reproduced in a live Tauri desktop session here. The next reliable proof still requires real app QA while taking screenshots, especially with magnifier, OCR/model initialization, scroll capture, and recording controls active.
+- Remaining sync Tauri commands include config/history/autostart/window-enumeration/diagnostic smoke commands. They were classified as lower-risk or diagnostic-only in this pass, but a future command-boundary chapter should convert larger user-facing file/registry/window-enumeration paths to async wrappers.
+- Multi-monitor, negative-origin monitor, and mixed-DPI recording still need real hardware validation even though the coordinate path now uses desktop physical bounds where available.
+- WGC/DXGI GPU capture remains experimental/diagnostic and should not be treated as a production-ready primary capture backend.
+- Normal browser smoke cannot validate Tauri IPC, native window lifecycle, clipboard, capture exclusion, or ffmpeg behavior; the Tauri WebView remains the authoritative runtime.
+
+### Next Recommended Chapter
+- Run a real Tauri desktop QA pass focused on the user freeze report: screenshot start while another screenshot is in progress, magnifier drag selection, scroll-capture cancel/reset, save-toast rendering, recording cancel/save cleanup, and V6 initialize/apply under model load.
+
+## Chapter 292: Command Boundary And Scroll-Capture Race Bug Closure (2026-06-14)
+
+### Goals Completed
+- Continued the deep bug rescan after Chapter 291, focusing on hidden runtime failures around frontend `invoke` calls, Tauri command registration, screenshot/scroll-capture coordinates, OCR initialization status, recording state cleanup, and source-code encoding.
+- Fixed the scroll-capture multi-monitor/DPI coordinate bug by adding desktop-coordinate live-capture and mouse-wheel commands, then routing scroll capture through the screenshot payload physical bounds when available.
+- Added and registered the missing `set_capturing_state` Tauri command used by the frontend recording path, so recording can reliably clear screenshot capture state and unregister the capture Escape shortcut.
+- Hardened manual scroll capture against stale async-frame races: every in-flight frame is now tied to the active scroll-capture session, so frames returned after cancel/reset cannot update preview/message state or unlock the wrong session.
+- Rechecked the known magnifier, V6 initialization, Ant Design warning, recording save-state, scroll-capture exclusion, dynamic save-toast label, and invoke-handler bug classes from the previous chapters.
+- Confirmed PowerShell mojibake is display-only for the inspected UI Chinese strings; UTF-8/source-code scans found no real replacement-character, `锟`, or private-use-character corruption in `tauri-client/src` and `tauri-client/src-tauri/src`.
+- Confirmed all literal frontend `invoke(...)` calls found by static scan are registered in the Tauri `generate_handler!` list.
+
+### External Findings
+- No new external architecture dependency was introduced in this chapter; the root causes were local command-boundary and state-machine defects.
+- The Tauri async-command and FFmpeg `gdigrab` desktop-offset findings from Chapter 291 remain the relevant external basis for the blocking-work and desktop-coordinate fixes.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src-tauri/src/screenshot_commands.rs`
+- `tauri-client/src-tauri/src/lib.rs`
+- `tauri-client/src/hooks/useScrollCapture.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not implement WGC/DXGI as a production primary capture backend.
+- Did not change the stable CPU screenshot capture route beyond the focused command-boundary and scroll-capture fixes.
+- Did not claim the user's screenshot-time freeze is reproduced or fully closed without a live Tauri desktop QA pass.
+- Did not convert every remaining lower-risk sync config/history/window-enumeration/diagnostic command to async wrappers.
+- Did not touch pre-existing unrelated dirty files such as `app.py`, `YsnTrans.lnk`, local ONNX model files, `shichen_calendar.db`, or `widget_settings.json`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: static invoke-to-handler scan found no missing registered Tauri commands.
+- Passed: source scan found no replacement-character, `锟`, or private-use-character corruption in `tauri-client/src` and `tauri-client/src-tauri/src`.
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`.
+- Passed: `cd tauri-client; npm run check:ocr-processing`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cargo fmt --manifest-path tauri-client\src-tauri\Cargo.toml -- --check`.
+- Passed: `cargo check --manifest-path tauri-client\src-tauri\Cargo.toml --tests`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml --lib`.
+- Passed: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml`.
+- Passed: `server\.venv\Scripts\python.exe -m pytest server\tests` (`65 passed`, `1 skipped`).
+- Partial: `git diff --check` still fails only on pre-existing `app.py:425` trailing whitespace; modified chapter files only produced existing LF-to-CRLF working-copy warnings.
+
+### Known Risks
+- The user's reported freeze while taking a screenshot still needs live Tauri reproduction/confirmation. Static fixes reduced several plausible blocking, stale-state, and command-boundary risks, but the desktop runtime is the authoritative proof.
+- Scroll capture now uses desktop physical coordinates for ordinary selected regions, but live testing is still needed for negative-origin monitors, mixed DPI, and regions spanning more than one monitor.
+- Area recording coordinate conversion was previously corrected to use screenshot physical bounds; live multi-monitor and non-100% DPI recording still need hardware validation.
+- V6 initialize/apply is validated by probes/builds in earlier chapters, but the real model-management UI flow should still be tested inside Tauri WebView, not a normal browser.
+- Remaining sync command-boundary candidates include config/history/autostart/window enumeration and diagnostics. They are not currently proven blockers, but a future focused chapter can convert larger user-facing file/registry/enumeration paths to async wrappers.
+- WGC/DXGI GPU capture remains experimental/diagnostic with clear CPU fallback reporting, not production primary capture readiness.
+
+### Next Recommended Chapter
+- Run a real Tauri desktop QA pass for the user freeze report and recently fixed paths: magnifier drag selection, screenshot start while another screenshot is active, scroll capture start/cancel/reset/finish, save-toast rendering, V6 initialize/apply, recording cancel/save cleanup, and area recording on multi-monitor or non-100% DPI.
+
+## Chapter 293: Build Helper Taskkill Timeout And Console Copy (2026-06-14)
+
+### Goals Completed
+- Fixed the deployment helper hang where EXE builds could stop forever at `【准备】尝试关闭正在运行的 YsnTrans.exe …` before reaching `npm`.
+- Moved the pre-build `taskkill /IM YsnTrans.exe` call behind a dedicated helper with a 5-second timeout, explicit success/no-process/warning logs, and continue-on-failure behavior.
+- Added the same timeout guard to the build stop path, so `停止构建` cannot indefinitely block on Windows `taskkill`.
+- Added a `复制` button next to `清屏` in the build console toolbar.
+- Implemented console-log copying with Clipboard API first and a textarea fallback for pywebview or restricted clipboard contexts.
+
+### Added Files
+- None.
+
+### Modified Files
+- `app.py`
+- `ui.html`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not run a full Tauri/npm build because the user reported the helper was stuck and asked to fix that path first.
+- Did not change the existing root helper launch/port behavior that was already present in `app.py` before this chapter.
+- Did not alter the broader Tauri screenshot/OCR/recording code in this chapter.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `python -m py_compile app.py`.
+- Passed: static scan confirmed `copyConsole`, `timeout=5`, `TimeoutExpired`, and the new warning/success log paths exist in `app.py` and `ui.html`.
+- Checked: no currently running `taskkill.exe` process was visible after the patch.
+
+### Known Risks
+- An already-open deployment helper window must be restarted to load the patched Python/HTML code.
+- The `复制` button still needs one live pywebview click test to confirm clipboard permission behavior in the user's exact runtime.
+- The EXE build itself was intentionally not run in this chapter, so the next proof should be a short live helper smoke that confirms the log advances past `【准备】` into `【执行】npm ...`.
+
+### Next Recommended Chapter
+- Restart the deployment helper, click `构建 EXE · 不打安装包`, confirm the pre-build close step either succeeds or times out within 5 seconds, then test the new `复制` button against the live console log.
+
+## Chapter 294: Deployment Helper Build Running-State Fix (2026-06-14)
+
+### Goals Completed
+- Investigated whether `启动部署助手.bat` was the reason the deployment helper still appeared unable to build.
+- Confirmed the batch launcher can reach the local Python runtime and that Python, Node, npm, `node_modules`, and `@tauri-apps/cli` are available.
+- Confirmed command-line builds work outside the helper: `npm run build` and `npm run tauri build -- --no-bundle` both completed successfully.
+- Identified the real helper bug: `poll_build()` treated the build as not running while the helper was still in the pre-npm preparation phase because `_proc` is only assigned after `subprocess.Popen(...)`.
+- Added explicit `_build_running` and `_cancel_build` state so the frontend keeps polling from `【准备】` through `【执行】npm ...` and does not freeze on stale preparation logs.
+- Added preparation-stage stop handling so `停止构建` can request cancellation before npm has been spawned.
+
+### Added Files
+- None.
+
+### Modified Files
+- `app.py`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not modify `启动部署助手.bat`; it was not the root cause of the observed build-helper stall.
+- Did not change the Tauri build scripts or Rust packaging configuration.
+- Did not clean unrelated pre-existing dirty files.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `python -m py_compile app.py`.
+- Passed: `npm run tauri -- --version` from `tauri-client`.
+- Passed: `npm run build` from `tauri-client`.
+- Passed: `npm run tauri build -- --no-bundle` from `tauri-client`; produced `tauri-client\src-tauri\target\release\YsnTrans.exe`.
+- Passed: deployment-helper backend probe with a temporary `probe` target running `npm --version`; `poll_build()` stayed `running=True` through preparation and npm execution, then returned `code=0`.
+- Checked: no `tauri build`, `cargo`, `rustc`, or npm build child process was left running after the probe.
+
+### Known Risks
+- An already-open deployment helper window must still be restarted to load this patched `app.py`.
+- The command-line no-bundle build succeeded, but the final proof for the user-facing helper is a live click in the restarted pywebview window.
+- Console output captured through PowerShell can still display valid Chinese as mojibake; judge the helper's in-app rendered text rather than raw terminal output.
+
+### Next Recommended Chapter
+- Restart `启动部署助手.bat`, run `构建 EXE · 不打安装包` from the helper UI, verify the console advances past `【准备】` into `【执行】npm run tauri build -- --no-bundle`, and test the adjacent `复制` button with the completed log.
+
+## Chapter 295: No-Console Deployment Helper Launcher (2026-06-14)
+
+### Goals Completed
+- Removed the persistent command-window experience from launching the deployment helper.
+- Added a no-console `启动部署助手.vbs` launcher that uses Windows Script Host and starts `app.py` through `pythonw.exe` when available.
+- Kept dependency recovery in the no-console launcher: it checks `import webview`, attempts `pip install pywebview` if missing, writes launcher diagnostics to `%TEMP%\ysn_deploy_helper_launch.log`, and shows a Windows message box on unrecoverable startup errors.
+- Updated `启动部署助手.bat` to immediately hand off to the no-console VBS launcher and exit, while retaining the old Python fallback if the VBS file is missing.
+- Moved `chcp 65001` before the Chinese VBS filename check so the batch fallback path does not misread the UTF-8 filename on Windows.
+
+### Added Files
+- `启动部署助手.vbs`
+
+### Modified Files
+- `启动部署助手.bat`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not remove the batch file; it remains a compatibility entry.
+- Did not claim a `.bat` file can be physically launched by Windows with zero initial console flash. A batch file is still executed by `cmd.exe`; the truly no-console entry is the new `.vbs` file or a shortcut targeting it.
+- Did not change the deployment helper UI or Tauri build commands.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cscript.exe //Nologo "启动部署助手.vbs"` with `YSN_DEPLOY_LAUNCHER_DRY_RUN=1`.
+- Passed: `cmd /c "set YSN_DEPLOY_LAUNCHER_DRY_RUN=1&&启动部署助手.bat"`, confirming the batch file hands off to the VBS path without opening the real helper.
+- Passed: `python -m py_compile app.py`.
+- Checked: no `pythonw.exe app.py` helper process was left running after cleanup.
+- Checked: `%TEMP%\ysn_deploy_helper_launch.log` recorded the expected Python path, `pythonw.exe` launch command, and dry-run success.
+
+### Known Risks
+- Directly double-clicking `启动部署助手.bat` may still show a very brief Windows-created command-window flash because `.bat` files are executed by `cmd.exe`.
+- For a fully no-window launch, use `启动部署助手.vbs` directly or create a shortcut that targets `wscript.exe "启动部署助手.vbs"`.
+
+### Next Recommended Chapter
+- Create or update a user-facing shortcut that points directly to `wscript.exe "启动部署助手.vbs"` if the desktop needs a polished one-click no-console entry with a custom icon.
+
+## Chapter 296: Magnifier White-Tail Overlay Fix (2026-06-14)
+
+### Goals Completed
+- Investigated the screenshot-window bug where moving the magnifier caused a large white translucent block to appear to its lower-right side.
+- Identified the likely root cause as hover/candidate preview rendering being updated by the same no-button pointer moves that show the magnifier, which can brighten a large detected control/window region and look like a white panel following the magnifier.
+- Changed magnifier pointer handling so no-button pointer moves update the magnifier first and skip normal hover-detection rendering while the magnifier is visible.
+- Added a `suppressHoverPreviewRef` guard so `renderScreenshotCanvas()` receives no hover rect/candidate count while the magnifier is active.
+- Cleared hover candidate refs/state when entering and leaving magnifier mode so stale large preview rectangles cannot remain on the screenshot canvas.
+- Reworked the magnifier from conditional React state rendering into a fixed DOM host updated by animation frame, reducing React re-render churn during pointer movement.
+- Added fixed-size, clipped CSS for the magnifier host/canvas/label so WebView transparent-window background cannot leak as a large white rectangle if layout briefly miscalculates.
+- Clamped the magnifier position inside the viewport and flips it to the opposite side near screen edges.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/index.css`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change the native screenshot capture pipeline.
+- Did not disable window/control detection globally; it is only suppressed while the magnifier is visible.
+- Did not change OCR, translation, recording, or scroll-capture behavior.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cd tauri-client; npm run tauri build -- --no-bundle`; produced a fresh `tauri-client\src-tauri\target\release\YsnTrans.exe`.
+- Closed the previously running `target\release\YsnTrans.exe` before rebuilding so the new executable could be written.
+
+### Known Risks
+- The white-tail fix was validated by static inspection and builds, but the final proof requires live Alt+A movement over the same Codex/sidebar UI region shown in the user screenshot.
+- If a separate WebView2 transparency bug still appears, the next step is a live screenshot-window pixel/DOM inspection around the magnifier host.
+
+### Next Recommended Chapter
+- Launch the freshly built `target\release\YsnTrans.exe`, press Alt+A, move the magnifier over dense UI/sidebar regions, and confirm no lower-right white block follows the magnifier.
+
+## Chapter 297: Magnifier During Drag Selection Fix (2026-06-14)
+
+### Goals Completed
+- Corrected the magnifier interaction model so the magnifier remains visible and follows the cursor while the user is dragging a screenshot selection.
+- Changed pointer-move ordering: while the primary mouse button is down, the screenshot selection state machine runs first, then the magnifier updates at the current pointer location.
+- Kept the Chapter 296 white-tail fix intact by continuing to suppress hover/candidate preview rendering while the magnifier is visible.
+- Changed pointer-down behavior so left-click initializes the magnifier instead of immediately hiding it; right-click and non-left actions still hide/cancel as before.
+- Kept the magnifier hidden only after selection completion, pointer cancel, or non-drag pointer leave.
+- Hardened magnifier pixel sampling at screen/image edges by clamping both single-pixel sampling and zoom-source rectangles to image bounds.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change the screenshot capture backend.
+- Did not change candidate/window detection outside active magnifier display.
+- Did not alter OCR, translation, recording, scroll capture, or deployment helper code.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cd tauri-client; npm run tauri build -- --no-bundle`; produced a fresh `tauri-client\src-tauri\target\release\YsnTrans.exe`.
+- Closed the previously running `target\release\YsnTrans.exe` before rebuilding.
+
+### Known Risks
+- Final proof still needs a live Alt+A drag test: press, drag a selection, confirm the magnifier follows during the drag, then confirm it disappears after mouse-up with no white-tail block.
+
+### Next Recommended Chapter
+- Run a live screenshot QA pass over dense UI: hover magnifier, drag-select with magnifier active, release selection, repeat near screen edges, and verify copy/save toolbar behavior still appears normally after selection completion.
+
+## Chapter 298: Screenshot Interaction Smoothness Optimization (2026-06-14)
+
+### Goals Completed
+- Reduced screenshot drag-selection frame pressure without changing the user-facing screenshot workflow.
+- Stopped the magnifier animation frame from forcing a main screenshot-canvas redraw on every pointer move.
+- Kept the Chapter 296 white-tail protection by redrawing the main canvas once only when entering magnifier suppression and clearing stale hover previews.
+- Coalesced magnifier color sampling and magnifier canvas drawing into a single animation-frame path so high-frequency pointer events no longer run synchronous pixel reads one event at a time.
+- Added dirty-region rendering support to `renderScreenshotCanvas()` for normal selection movement: when the static masked background is unchanged and no hover/annotation/translation overlay is active, only the previous and current selection decoration bounds are restored and redrawn.
+- Added hover-detection reuse and throttling so repeated pointer movement does not run visual/window candidate detection on every raw pointer event.
+- Reduced redundant React state updates and canvas redraws when window-rect and hover-candidate signatures have not changed.
+- Skipped window-rect IPC loading while a selection/drag/resize gesture is already active, avoiding candidate warmup contention with immediate screenshot dragging.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/utils/renderScreenshotCanvas.ts`
+- `tauri-client/src/hooks/useScreenshotInteraction.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not launch the release app, press global screenshot hotkeys, or run live desktop screenshot QA because the user asked not to test in their active environment.
+- Did not change the native screenshot capture backend, SharedBuffer transfer path, OCR, translation, recording, scroll capture, or deployment helper behavior.
+- Did not close or replace the currently running `YsnTrans.exe`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: static Node probe confirming the dirty-render path is present and guarded by masked background/no-hover/no-annotation conditions.
+
+### Known Risks
+- Dirty-region rendering was verified by type/build/static inspection, but final proof still requires live drag QA in a separate test environment.
+- If a translated image, annotation draft, hover preview, or recording selection overlay is active, the renderer intentionally falls back to the full redraw path for correctness.
+- The native screenshot capture startup path was not changed; if perceived lag remains before the overlay becomes interactive, the next optimization pass should profile capture/window preparation timings rather than the drag-render path.
+
+### Next Recommended Chapter
+- Run isolated live QA on a non-user-active desktop/session: Alt+A hover, drag with magnifier, rapid drag on 2K/4K displays, edge drag, Tab candidate switching, annotation drawing, and translate-mode selection. If drag is now smooth but startup still feels slow, continue with native capture/overlay readiness profiling.
+
+## Chapter 299: Screenshot Warmup And Window-Rect Overhead Trim (2026-06-14)
+
+### Goals Completed
+- Deferred screenshot-page OCR/translation prewarm to browser idle time so page load stops competing with the first interactive overlay frames.
+- Deferred full-frame visual-analysis image extraction and candidate warmup while a selection is already in progress, avoiding heavyweight background work during immediate drag interactions.
+- Reduced magnifier per-frame work by reusing sample/overlay contexts and caching the magnifier decoration grid instead of redrawing it on every pointer update.
+- Removed one full JSON stringify/parse round-trip from `get_window_rects` by returning structured rect arrays directly from Tauri to the WebView.
+- Moved screenshot-page mount-time window-rect warmup from a fixed early timeout to idle/fallback scheduling so non-critical candidate prewarm yields to initial UI responsiveness.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src-tauri/src/window_targets.rs`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not run live Alt+A or desktop interaction testing in the user's active environment.
+- Did not change the native screenshot capture backend or broader OCR/translation/recording flows.
+- Did not address existing Vite chunk-size or dynamic-import warnings in this chapter.
+- Did not commit unrelated dirty workspace files.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cargo check --manifest-path tauri-client\src-tauri\Cargo.toml`.
+
+### Known Risks
+- The startup/perceived-latency gains are validated by static/build checks only; real proof still needs isolated desktop QA away from the user's active session.
+- `get_window_rects` now returns structured values directly, so any future non-TypeScript callers must consume arrays rather than a JSON string.
+- Remaining latency before overlay interactivity may still be dominated by native capture/session startup rather than WebView-side warmup.
+
+### Next Recommended Chapter
+- Profile and trim native screenshot session startup, especially capture readiness and overlay handoff timings, once a separate safe QA environment is available.

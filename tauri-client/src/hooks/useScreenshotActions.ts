@@ -2,7 +2,7 @@ import React from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { Annotation, NativeWgcSelectedOutputClipboardAcceptanceRequest, NativeWgcSelectedOutputClipboardAcceptanceResponse, Rect, ScreenshotPhysicalBounds } from "../types/screenshot";
 import { cropSelectionFromLoadedImage, getDesktopPhysicalSelection, getPhysicalSelection, renderEditedSelectionBase64 } from "../utils/screenshotImage";
 import { openPinWindow } from "../utils/pinWindows";
@@ -83,6 +83,7 @@ export function useScreenshotActions({
   resetScreenshotState,
   cancelScreenshot,
 }: UseScreenshotActionsProps) {
+  const { message } = AntdApp.useApp();
   const outputCacheRef = React.useRef<{ signature: string; base64: string } | null>(null);
   const outputWarmupTimerRef = React.useRef<number | null>(null);
 
@@ -330,7 +331,8 @@ export function useScreenshotActions({
   };
 
   const forceCloseScreenshots = async () => {
-    message.destroy();
+    message.destroy("screenshot");
+    message.destroy("screenshot-overlay");
     const segments = [...recordingSegmentsRef.current];
     invoke("cancel_recording_process").catch(() => {});
     if (segments.length > 0) invoke("cleanup_recording_files", { paths: segments }).catch(() => {});
@@ -367,7 +369,7 @@ export function useScreenshotActions({
         const chooseMs = Math.round(performance.now() - chooseStartedAt);
         logSaveBaseline("dialog_open_end", performance.now() - actionStartedAt, `choose_ms=${chooseMs} cancelled=${!savePath}`);
         if (!savePath) {
-          message.destroy();
+          message.destroy("screenshot");
           await invoke("force_close_screenshots").catch(() => {});
           resetScreenshotState();
           logSaveBaseline("dialog_cancel_exit", performance.now() - actionStartedAt);
@@ -410,7 +412,7 @@ export function useScreenshotActions({
             path: savePath,
           });
 
-          message.destroy();
+          message.destroy("screenshot");
           await invoke("cancel_screenshot", { label: overlayLabel, restoreMain: false });
           resetScreenshotState();
           logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt, "route=cache");
@@ -442,7 +444,7 @@ export function useScreenshotActions({
         const writeStartedAt = performance.now();
         logSaveBaseline("file_write_start", writeStartedAt - actionStartedAt, `path=${savePath} route=rendered`);
         const savePromise = invoke<string>("write_image_to_file", { imageBase64: base64, path: savePath });
-        message.destroy();
+        message.destroy("screenshot");
         await invoke("cancel_screenshot", { label: overlayLabel, restoreMain: false });
         resetScreenshotState();
         logSaveBaseline("overlay_exit_after_save", performance.now() - actionStartedAt, "route=rendered");
@@ -463,7 +465,7 @@ export function useScreenshotActions({
       if ((action === "copy" || action === "both") && !wgcCopiedBase64) {
         await invoke("copy_image_to_clipboard", { imageBase64: base64 });
       }
-      message.destroy();
+      message.destroy("screenshot");
       await invoke("cancel_screenshot", { label: getCurrentWindow().label });
       resetScreenshotState();
 

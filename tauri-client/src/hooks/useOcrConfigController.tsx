@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { LocalConfig } from "../utils/ocrConfigHelpers";
 import { useI18n } from "../i18n";
 import { useConfigHotReload } from "./useConfigHotReload";
 
 export default function useOcrConfigController() {
   const { text } = useI18n();
+  const { message } = AntdApp.useApp();
   const labels = text.config;
   const [config, setConfig] = useState<LocalConfig>({});
   const [saving, setSaving] = useState(false);

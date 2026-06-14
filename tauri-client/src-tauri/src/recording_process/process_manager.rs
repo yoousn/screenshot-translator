@@ -267,8 +267,10 @@ pub fn build_recording_args(
     Ok(args)
 }
 
-#[tauri::command]
-pub fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Result<String, String> {
+pub fn start_recording_sync(
+    app: tauri::AppHandle,
+    options: RecordingOptions,
+) -> Result<String, String> {
     println!("[window-trace] enter start_recording");
     let _ = cleanup_finished_recording_process()?;
     {
@@ -320,6 +322,16 @@ pub fn start_recording(app: tauri::AppHandle, options: RecordingOptions) -> Resu
     *guard = Some(child);
     println!("[window-trace] start_recording RECORDING_PROCESS set Some");
     Ok(output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn start_recording(
+    app: tauri::AppHandle,
+    options: RecordingOptions,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || start_recording_sync(app, options))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 pub fn stop_recording_internal(grace_ms: u64, kill_on_timeout: bool) -> Result<(), String> {
@@ -422,8 +434,7 @@ pub fn run_ffmpeg_merge(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub fn concat_recording_segments(
+pub fn concat_recording_segments_sync(
     app: tauri::AppHandle,
     segment_paths: Vec<String>,
 ) -> Result<String, String> {
@@ -548,7 +559,16 @@ pub fn concat_recording_segments(
 }
 
 #[tauri::command]
-pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+pub async fn concat_recording_segments(
+    app: tauri::AppHandle,
+    segment_paths: Vec<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || concat_recording_segments_sync(app, segment_paths))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub fn copy_file_to_clipboard_sync(path: String) -> Result<(), String> {
     let file_path = PathBuf::from(path.trim());
     if !file_path.is_file() {
         return Err("video file does not exist".to_string());
@@ -583,6 +603,13 @@ pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+pub async fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || copy_file_to_clipboard_sync(path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 pub fn shell_escape_powershell_single(value: &str) -> String {
     format!("'{}'", value.replace("'", "''"))
 }
@@ -602,8 +629,7 @@ pub fn is_recording_temp_file(path: &Path, temp_dir: &Path) -> bool {
             .unwrap_or(false)
 }
 
-#[tauri::command]
-pub fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
+pub fn cleanup_recording_files_sync(paths: Vec<String>) -> Result<(), String> {
     let temp_dir = recording_temp_dir();
     for path in paths {
         let trimmed = path.trim();
@@ -619,8 +645,17 @@ pub fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new()
+pub async fn cleanup_recording_files(paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cleanup_recording_files_sync(paths))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn choose_ffmpeg_executable(
+    current_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new()
         .set_title("Choose ffmpeg.exe")
         .add_filter("ffmpeg", &["exe"]);
     if let Some(path) = current_path {
@@ -634,12 +669,15 @@ pub fn choose_ffmpeg_executable(current_path: Option<String>) -> Result<Option<S
     }
     Ok(dialog
         .pick_file()
-        .map(|path| path.to_string_lossy().to_string()))
+        .await
+        .map(|handle| handle.path().to_string_lossy().to_string()))
 }
 
 #[tauri::command]
-pub fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog = rfd::FileDialog::new().set_title("Choose recording output directory");
+pub async fn choose_recording_output_dir(
+    current_dir: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose recording output directory");
     if let Some(dir) = current_dir {
         let trimmed = dir.trim();
         if !trimmed.is_empty() {
@@ -648,11 +686,11 @@ pub fn choose_recording_output_dir(current_dir: Option<String>) -> Result<Option
     }
     Ok(dialog
         .pick_folder()
-        .map(|path| path.to_string_lossy().to_string()))
+        .await
+        .map(|handle| handle.path().to_string_lossy().to_string()))
 }
 
-#[tauri::command]
-pub fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub fn get_recording_info_sync(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let _ = cleanup_finished_recording_process()?;
     let ffmpeg = find_ffmpeg_executable(&app);
     let is_recording = get_recording_process()
@@ -671,4 +709,11 @@ pub fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "isRecording": is_recording,
         "audioDevices": audio_devices,
     }))
+}
+
+#[tauri::command]
+pub async fn get_recording_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || get_recording_info_sync(app))
+        .await
+        .map_err(|e| e.to_string())?
 }

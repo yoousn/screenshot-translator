@@ -50,7 +50,7 @@ function AppContent() {
       } catch (_) {}
 
       notification.error({
-        message: text.app.shortcutErrorTitle,
+        title: text.app.shortcutErrorTitle,
         description: text.app.shortcutErrorDesc.replace("{hotkey}", hotkey),
         duration: 0,
         placement: "topRight",

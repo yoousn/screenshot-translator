@@ -2347,6 +2347,13 @@ pub fn get_native_screenshot_diagnostics_status() -> Result<serde_json::Value, S
             }
         },
         "gpuPlan": {
+            "runtimeMode": "cpu-fallback-active",
+            "userFacingStatus": "stable-cpu-capture-active-gpu-capture-experimental",
+            "primaryUserVisible": "existing-cpu-screenshot",
+            "gpuCaptureReady": false,
+            "gpuCapturePrimary": false,
+            "gpuCaptureExperimental": true,
+            "recoveryAction": "Keep using the stable CPU screenshot path unless a guarded WGC/DXGI diagnostic is explicitly enabled.",
             "primaryStatus": debug_value(gpu_plan.primary.status),
             "primaryFallback": debug_value(&gpu_plan.primary.fallback),
             "selected": gpu_plan.selected().map(|capability| serde_json::json!({
@@ -3656,7 +3663,7 @@ pub fn show_save_feedback_toast(app: tauri::AppHandle, path: String) -> Result<(
     let toast_clone = toast.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(1700)).await;
-        let _ = toast_clone.close();
+        let _ = toast_clone.destroy();
     });
     Ok(())
 }
@@ -3723,23 +3730,43 @@ pub async fn force_close_screenshots(app: tauri::AppHandle) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn quick_fullscreen_capture() -> Result<(), String> {
-    let (png_bytes, _) = capture_current_monitor_png()?;
-    let decoded = image::load_from_memory(&png_bytes)
-        .map_err(|error| format!("Decode fullscreen capture failed: {error}"))?
-        .to_rgba8();
-    let (width, height) = decoded.dimensions();
-    let mut clipboard =
-        Clipboard::new().map_err(|error| format!("Initialize clipboard failed: {error}"))?;
-    let img_data = ImageData {
-        width: width as usize,
-        height: height as usize,
-        bytes: Cow::Owned(decoded.into_raw()),
-    };
-    clipboard
-        .set_image(img_data)
-        .map_err(|error| format!("Copy image to clipboard failed: {error}"))?;
+pub fn set_capturing_state(app: tauri::AppHandle, state: bool) -> Result<(), String> {
+    CAPTURING.store(state, Ordering::SeqCst);
+    if state {
+        register_capture_escape_shortcut(&app);
+    } else {
+        SCREENSHOT_STARTING.store(false, Ordering::SeqCst);
+        let _ = crate::screenshot_native::cancel_cpu_native_overlay_session("set-capturing-state");
+        unregister_capture_escape_shortcut(&app);
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn quick_fullscreen_capture() -> Result<(), String> {
+    run_screenshot_blocking(
+        "quick-fullscreen".to_string(),
+        "quick_fullscreen_capture_command",
+        || {
+            let (png_bytes, _) = capture_current_monitor_png()?;
+            let decoded = image::load_from_memory(&png_bytes)
+                .map_err(|error| format!("Decode fullscreen capture failed: {error}"))?
+                .to_rgba8();
+            let (width, height) = decoded.dimensions();
+            let mut clipboard = Clipboard::new()
+                .map_err(|error| format!("Initialize clipboard failed: {error}"))?;
+            let img_data = ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: Cow::Owned(decoded.into_raw()),
+            };
+            clipboard
+                .set_image(img_data)
+                .map_err(|error| format!("Copy image to clipboard failed: {error}"))?;
+            Ok(())
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3862,55 +3889,97 @@ pub async fn post_fullscreen_rgba_shared_buffer(
 }
 
 #[tauri::command]
-pub fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
-    if w <= 0 || h <= 0 {
-        return Err("Invalid selection region".to_string());
-    }
+pub async fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
+    run_screenshot_blocking(
+        screenshot_command_log_session_id(),
+        "capture_region_command",
+        move || {
+            if w <= 0 || h <= 0 {
+                return Err("Invalid selection region".to_string());
+            }
 
-    let screenshot_bytes = get_or_encode_screenshot_png()?;
+            let screenshot_bytes = get_or_encode_screenshot_png()?;
 
-    let img = screenshots::image::load_from_memory(&screenshot_bytes)
-        .map_err(|e| format!("Load fullscreen image failed: {}", e))?;
-    let iw = img.width() as i32;
-    let ih = img.height() as i32;
-    let sx = x.clamp(0, iw.saturating_sub(1));
-    let sy = y.clamp(0, ih.saturating_sub(1));
-    let sw = w.clamp(1, iw - sx);
-    let sh = h.clamp(1, ih - sy);
-    let cropped = img.crop_imm(sx as u32, sy as u32, sw as u32, sh as u32);
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    cropped
-        .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
-        .map_err(|e| format!("Encode PNG failed: {}", e))?;
-    let bytes = buffer.into_inner();
-    let mut cropped_path = app_data_dir();
-    cropped_path.push("cropped_temp.png");
-    let _ = fs::write(&cropped_path, &bytes);
-    Ok(BASE64_STANDARD.encode(&bytes))
+            let img = screenshots::image::load_from_memory(&screenshot_bytes)
+                .map_err(|e| format!("Load fullscreen image failed: {}", e))?;
+            let iw = img.width() as i32;
+            let ih = img.height() as i32;
+            let sx = x.clamp(0, iw.saturating_sub(1));
+            let sy = y.clamp(0, ih.saturating_sub(1));
+            let sw = w.clamp(1, iw - sx);
+            let sh = h.clamp(1, ih - sy);
+            let cropped = img.crop_imm(sx as u32, sy as u32, sw as u32, sh as u32);
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            cropped
+                .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
+                .map_err(|e| format!("Encode PNG failed: {}", e))?;
+            let bytes = buffer.into_inner();
+            let mut cropped_path = app_data_dir();
+            cropped_path.push("cropped_temp.png");
+            let _ = fs::write(&cropped_path, &bytes);
+            Ok(BASE64_STANDARD.encode(&bytes))
+        },
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn capture_live_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
-    if w <= 0 || h <= 0 {
-        return Err("Invalid selection area".to_string());
-    }
-    let (origin_x, origin_y, _, _) = current_screen_origin();
-    let global_x = origin_x + x;
-    let global_y = origin_y + y;
-    let center_x = global_x + w / 2;
-    let center_y = global_y + h / 2;
-    let screen = Screen::from_point(center_x, center_y)
-        .map_err(|e| format!("Failed to locate screen for scroll capture: {}", e))?;
-    let rel_x = global_x - screen.display_info.x;
-    let rel_y = global_y - screen.display_info.y;
-    let image = screen
-        .capture_area(rel_x, rel_y, w as u32, h as u32)
-        .map_err(|e| format!("Failed to capture live region: {}", e))?;
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    screenshots::image::DynamicImage::ImageRgba8(image)
-        .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
-        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
-    Ok(BASE64_STANDARD.encode(buffer.into_inner()))
+pub async fn capture_live_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
+    run_screenshot_blocking(
+        screenshot_command_log_session_id(),
+        "capture_live_region_command",
+        move || {
+            if w <= 0 || h <= 0 {
+                return Err("Invalid selection area".to_string());
+            }
+            let (origin_x, origin_y, _, _) = current_screen_origin();
+            let global_x = origin_x + x;
+            let global_y = origin_y + y;
+            let center_x = global_x + w / 2;
+            let center_y = global_y + h / 2;
+            let screen = Screen::from_point(center_x, center_y)
+                .map_err(|e| format!("Failed to locate screen for scroll capture: {}", e))?;
+            let rel_x = global_x - screen.display_info.x;
+            let rel_y = global_y - screen.display_info.y;
+            let image = screen
+                .capture_area(rel_x, rel_y, w as u32, h as u32)
+                .map_err(|e| format!("Failed to capture live region: {}", e))?;
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            screenshots::image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
+                .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+            Ok(BASE64_STANDARD.encode(buffer.into_inner()))
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn capture_live_desktop_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
+    run_screenshot_blocking(
+        screenshot_command_log_session_id(),
+        "capture_live_desktop_region_command",
+        move || {
+            if w <= 0 || h <= 0 {
+                return Err("Invalid selection area".to_string());
+            }
+            let center_x = x + w / 2;
+            let center_y = y + h / 2;
+            let screen = Screen::from_point(center_x, center_y)
+                .map_err(|e| format!("Failed to locate screen for scroll capture: {}", e))?;
+            let rel_x = x - screen.display_info.x;
+            let rel_y = y - screen.display_info.y;
+            let image = screen
+                .capture_area(rel_x, rel_y, w as u32, h as u32)
+                .map_err(|e| format!("Failed to capture live region: {}", e))?;
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            screenshots::image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut buffer, screenshots::image::ImageFormat::Png)
+                .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+            Ok(BASE64_STANDARD.encode(buffer.into_inner()))
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3935,28 +4004,53 @@ pub fn scroll_mouse_at(x: i32, y: i32, delta: i32) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
-    let bytes = BASE64_STANDARD
-        .decode(&image_base64)
-        .map_err(|e| format!("Decode base64 failed: {}", e))?;
-    let img = screenshots::image::load_from_memory_with_format(
-        &bytes,
-        screenshots::image::ImageFormat::Png,
+pub fn scroll_mouse_at_desktop(x: i32, y: i32, delta: i32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        const MOUSEEVENTF_WHEEL: u32 = 0x0800;
+        unsafe {
+            let _ = win32::SetCursorPos(x, y);
+            win32::mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta as u32, 0);
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (x, y, delta);
+        Err("Automatic scrolling is not supported on this platform".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
+    run_screenshot_blocking(
+        screenshot_command_log_session_id(),
+        "copy_image_to_clipboard_command",
+        move || {
+            let bytes = BASE64_STANDARD
+                .decode(&image_base64)
+                .map_err(|e| format!("Decode base64 failed: {}", e))?;
+            let img = screenshots::image::load_from_memory_with_format(
+                &bytes,
+                screenshots::image::ImageFormat::Png,
+            )
+            .map_err(|e| format!("Parse cropped image data failed: {}", e))?;
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            let mut clipboard =
+                Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
+            let img_data = ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: Cow::Owned(rgba.into_raw()),
+            };
+            clipboard
+                .set_image(img_data)
+                .map_err(|e| format!("Copy image to clipboard failed: {}", e))?;
+            Ok(())
+        },
     )
-    .map_err(|e| format!("Parse cropped image data failed: {}", e))?;
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    let mut clipboard =
-        Clipboard::new().map_err(|e| format!("Initialize clipboard failed: {}", e))?;
-    let img_data = ImageData {
-        width: width as usize,
-        height: height as usize,
-        bytes: Cow::Owned(rgba.into_raw()),
-    };
-    clipboard
-        .set_image(img_data)
-        .map_err(|e| format!("Copy image to clipboard failed: {}", e))?;
-    Ok(())
+    .await
 }
 
 #[tauri::command]
@@ -6223,6 +6317,29 @@ mod native_selected_output_copy_command_tests {
         assert_eq!(response["ocrInvoked"], false);
         assert_eq!(response["translationInvoked"], false);
         assert_eq!(response["diagnostics"]["isValidBridge"], true);
+    }
+}
+
+#[cfg(test)]
+mod native_screenshot_diagnostics_status_tests {
+    use super::*;
+
+    #[test]
+    fn gpu_capture_placeholders_are_reported_as_cpu_fallback_runtime() {
+        let status = get_native_screenshot_diagnostics_status().expect("diagnostics status");
+        let gpu_plan = &status["gpuPlan"];
+
+        assert_eq!(
+            gpu_plan["runtimeMode"].as_str(),
+            Some("cpu-fallback-active")
+        );
+        assert_eq!(
+            gpu_plan["primaryUserVisible"].as_str(),
+            Some("existing-cpu-screenshot")
+        );
+        assert_eq!(gpu_plan["gpuCaptureReady"].as_bool(), Some(false));
+        assert_eq!(gpu_plan["gpuCapturePrimary"].as_bool(), Some(false));
+        assert_eq!(gpu_plan["gpuCaptureExperimental"].as_bool(), Some(true));
     }
 }
 

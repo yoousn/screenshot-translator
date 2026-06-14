@@ -120,6 +120,43 @@ html, body, #root {
   pointer-events: auto;
 }
 
+.screenshot-magnifier {
+  position: fixed;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  width: 128px;
+  height: 146px;
+  max-width: 128px;
+  max-height: 146px;
+  overflow: hidden;
+  contain: layout paint size;
+  pointer-events: none;
+  padding: 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.screenshot-magnifier-canvas {
+  display: block;
+  width: 120px;
+  height: 120px;
+  image-rendering: pixelated;
+}
+
+.screenshot-magnifier-label {
+  margin-top: 2px;
+  width: 120px;
+  height: 16px;
+  overflow: hidden;
+  color: #222;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+}
+
 
 .app-brand-wordmark {
   font-family: Georgia, 'Times New Roman', 'Microsoft YaHei UI', serif;

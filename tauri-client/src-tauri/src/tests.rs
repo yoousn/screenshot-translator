@@ -16,7 +16,7 @@ mod tests {
         ffmpeg_asset_name_from_url, ffmpeg_checksum_url_for_download, parse_ffmpeg_sha256_manifest,
     };
     use crate::recording_process::process_manager::{
-        build_recording_args, cleanup_recording_files, default_recording_output_dir,
+        build_recording_args, cleanup_recording_files_sync, default_recording_output_dir,
         escape_concat_path, ffmpeg_stderr_excerpt, recording_temp_dir, resolution_scale_filter,
         RecordingOptions,
     };
@@ -287,7 +287,7 @@ b8bed3238f8bf0e3c3388fb3afafc15ef6265ea82999cbf57639a323c6ee7321  ffmpeg-master-
         let external_file = external_dir.join("unit_test_external.mp4");
         std::fs::write(&external_file, b"external").unwrap();
 
-        cleanup_recording_files(vec![
+        cleanup_recording_files_sync(vec![
             temp_file.to_string_lossy().to_string(),
             external_file.to_string_lossy().to_string(),
         ])
@@ -336,7 +336,7 @@ b8bed3238f8bf0e3c3388fb3afafc15ef6265ea82999cbf57639a323c6ee7321  ffmpeg-master-
             "ready": false,
             "readinessSteps": [
                 { "id": "rapidocr-runner", "ready": true },
-                { "id": "rapidocr-probe", "ready": false, "nextAction": "run-ocr-self-test" }
+                { "id": "rapidocr-probe", "ready": false, "nextAction": "initialize-local-ocr" }
             ]
         });
         let recording = serde_json::json!({ "ffmpegFound": false, "audioDevices": [] });

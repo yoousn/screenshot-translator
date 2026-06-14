@@ -34,8 +34,8 @@ export default function TranslationLanguagePanel({ targetLang, onTargetLangChang
       title={<span><TranslationOutlined style={{ marginRight: 8 }} />{labels.translationTitle}</span>}
       description={labels.translationDesc}
     >
-      <Alert type="info" showIcon message={labels.sourceLanguageAutoMessage} description={labels.sourceLanguageAutoDesc} />
-      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Alert type="info" showIcon title={labels.sourceLanguageAutoMessage} description={labels.sourceLanguageAutoDesc} />
+      <Space orientation="vertical" size={8} style={{ width: "100%" }}>
         <Text strong>{labels.targetLanguage}</Text>
         <Select style={{ width: "100%" }} value={targetLang || "zh"} options={targetLanguages} onChange={onTargetLangChange} />
       </Space>

@@ -65,7 +65,7 @@ export default function SystemHotkeyCard({
   };
 
   return (
-    <Card title={<span><AppstoreOutlined style={{ marginRight: 8 }} />{labels.systemHotkeys}</span>} bordered={false}>
+    <Card title={<span><AppstoreOutlined style={{ marginRight: 8 }} />{labels.systemHotkeys}</span>} variant="borderless">
       <Row gutter={[24, 16]}>
         <Col xs={24} sm={12}>
           <Form.Item label={labels.autostart} name="autostart" valuePropName="checked" style={{ marginBottom: 6 }}>
