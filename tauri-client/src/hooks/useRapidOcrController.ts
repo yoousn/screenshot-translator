@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "antd";
 import type { RapidOcrSelfTestResult, RapidOcrStatus } from "../ocr-models";
+import { readStartupReadinessSnapshot } from "./useStartupDependencyStatus";
 
 type UseRapidOcrControllerOptions = {
   autoRefresh?: boolean;
@@ -93,7 +94,7 @@ export default function useRapidOcrController(options: UseRapidOcrControllerOpti
       refreshStatus();
       return;
     }
-    invoke<any>("get_startup_readiness_snapshot")
+    readStartupReadinessSnapshot()
       .then((snapshot) => {
         if (snapshot?.rapidOcr) setStatus(snapshot.rapidOcr);
       })

@@ -37,6 +37,7 @@ const SCROLL_CAPTURE_BORDER_COLOR = "#f97316";
 const WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT === "1";
 const WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_ACCEPTANCE_REPORT_REAL_CLIPBOARD === "1";
 const WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE_ENABLED = import.meta.env.VITE_YSN_WGC_SELECTED_OUTPUT_AUTO_ACCEPTANCE_SMOKE === "1";
+const SELECTION_SMOOTHNESS_SMOKE_ENABLED = import.meta.env.VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE === "1";
 
 type SelectedImageBridgeAction = "copy" | "save" | "ocr" | "translate";
 
@@ -64,6 +65,7 @@ export default function ScreenshotPage() {
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const preShowDownOriginRef = useRef<{ x: number; y: number; sessionId: string | null; source?: string; eventSeq?: number } | null>(null);
   const autoAcceptanceSmokeStartedRef = useRef(false);
+  const selectionSmoothnessSmokeStartedRef = useRef(false);
   const lastScreenshotPayloadSignatureRef = useRef<string | null>(null);
   const lastScreenshotShellSignatureRef = useRef<string | null>(null);
   
@@ -546,6 +548,7 @@ export default function ScreenshotPage() {
       !frameInteractiveRef.current ||
       !imageReadyRef.current ||
       hasSelectedRef.current ||
+      isSelectingRef.current ||
       isEditingRef.current
     ) {
       if (magnifierVisibleRef.current) setMagnifier(null);
@@ -819,6 +822,80 @@ export default function ScreenshotPage() {
       selectionOnly: recordingStatusRef.current !== "idle",
     });
   }
+
+  const dispatchCanvasPointer = (
+    canvas: HTMLCanvasElement,
+    type: "pointerdown" | "pointermove" | "pointerup",
+    x: number,
+    y: number,
+    buttons: number,
+    button: number,
+    pointerId: number,
+  ) => {
+    const event = {
+      pointerId,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      buttons,
+      button,
+      currentTarget: canvas,
+      target: canvas,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as React.PointerEvent<HTMLCanvasElement>;
+
+    if (type === "pointerdown") {
+      handleMouseDown(event);
+      return;
+    }
+    if (type === "pointermove") {
+      handleMouseMove(event);
+      return;
+    }
+    handleMouseUp(event);
+  };
+
+  const runSelectionSmoothnessSmoke = async () => {
+    if (!SELECTION_SMOOTHNESS_SMOKE_ENABLED || selectionSmoothnessSmokeStartedRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas || !overlayVisibleRef.current || !imageReadyRef.current) return;
+    selectionSmoothnessSmokeStartedRef.current = true;
+    const rounds = 12;
+    invoke("log_screenshot_perf", {
+      message: `[selection-smoothness-smoke] start rounds=${rounds}`,
+    }).catch(() => {});
+
+    for (let round = 1; round <= rounds; round += 1) {
+      const sx = 360 + (round % 4) * 34;
+      const sy = 260 + (round % 3) * 28;
+      const ex = Math.min(canvas.width - 24, sx + 560);
+      const ey = Math.min(canvas.height - 24, sy + 320);
+      const pointerId = 7000 + round;
+      const startedAt = performance.now();
+      dispatchCanvasPointer(canvas, "pointerdown", sx, sy, 1, 0, pointerId);
+      for (let step = 1; step <= 48; step += 1) {
+        const x = sx + ((ex - sx) * step) / 48;
+        const y = sy + ((ey - sy) * step) / 48;
+        dispatchCanvasPointer(canvas, "pointermove", x, y, 1, -1, pointerId);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      dispatchCanvasPointer(canvas, "pointerup", ex, ey, 0, 0, pointerId);
+      invoke("log_screenshot_perf", {
+        message: `[selection-smoothness-smoke] round=${round} elapsed_ms=${Math.round(performance.now() - startedAt)} rect=${Math.round(rectRef.current.x)},${Math.round(rectRef.current.y)},${Math.round(rectRef.current.w)},${Math.round(rectRef.current.h)}`,
+      }).catch(() => {});
+      setSelection(false);
+      setCurrentRect(EMPTY_RECT, true);
+      drawRef.current(0, 0, 0, 0);
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+    }
+
+    invoke("log_screenshot_perf", {
+      message: `[selection-smoothness-smoke] complete rounds=${rounds}`,
+    }).catch(() => {});
+    await invoke("force_close_screenshots").catch(() => {});
+  };
 
   useEffect(() => {
     invoke("log_screenshot_perf", { message: "[baseline] session=screenshot-page phase=mounted elapsed_ms=0" }).catch(() => {});
@@ -1148,6 +1225,18 @@ export default function ScreenshotPage() {
   }, [overlayVisible, screenshotState]);
 
   useEffect(() => {
+    if (!SELECTION_SMOOTHNESS_SMOKE_ENABLED) return;
+    if (selectionSmoothnessSmokeStartedRef.current) return;
+    if (!overlayVisible || screenshotState !== "ready" || !imageRef.current) return;
+    window.setTimeout(() => {
+      runSelectionSmoothnessSmoke().catch((error) => {
+        selectionSmoothnessSmokeStartedRef.current = false;
+        console.warn("[ScreenshotPage] selection smoothness smoke failed", error);
+      });
+    }, 120);
+  }, [overlayVisible, screenshotState]);
+
+  useEffect(() => {
     const toolbar = actionToolbarRef.current;
     if (!toolbar || !hasSelected) return;
 
@@ -1224,12 +1313,15 @@ export default function ScreenshotPage() {
         ref={canvasRef}
         tabIndex={-1}
         onPointerDown={handleMouseDown}
-        onPointerMove={(e) => { handleMouseMove(e); updateMagnifier(e.clientX, e.clientY); }}
+        onPointerMove={(e) => {
+          handleMouseMove(e);
+          if ((e.buttons & 1) !== 1) updateMagnifier(e.clientX, e.clientY);
+        }}
         onPointerUp={(e) => { handleMouseUp(e); setMagnifier(null); }}
         onPointerCancel={handlePointerCancel}
         onPointerLeave={() => { if (magnifierVisibleRef.current) setMagnifier(null); }}
         onDoubleClick={handleDoubleClick}
-        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible ? "auto" : "none" }}
+        style={{ position: "absolute", top: 0, left: 0, zIndex: 10, cursor: "crosshair", outline: "none", touchAction: "none", pointerEvents: overlayVisible && !SELECTION_SMOOTHNESS_SMOKE_ENABLED ? "auto" : "none" }}
       />
 
       {overlayVisible && screenshotState === "ready" && hasSelected && !isSelecting && recordingStatus === "idle" && recordingPickerMode && (

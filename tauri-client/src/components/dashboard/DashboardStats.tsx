@@ -22,9 +22,9 @@ const cardStyle: React.CSSProperties = {
 };
 
 const valueStyle: React.CSSProperties = {
-  fontSize: 22,
-  lineHeight: 1.35,
-  fontWeight: 600,
+  fontSize: 18,
+  lineHeight: 1.42,
+  fontWeight: 650,
   whiteSpace: "normal",
   wordBreak: "break-word",
 };

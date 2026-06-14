@@ -231,6 +231,13 @@ export function useScreenshotInteraction({
   const internalLastMouseRef = useRef({ x: 0, y: 0 });
   const lastMouseRef = sharedLastMouseRef || internalLastMouseRef;
   const firstPointerDownSessionRef = useRef<string | null>(null);
+  const selectionMoveStatsRef = useRef({
+    moves: 0,
+    drawRequests: 0,
+    startedAt: 0,
+    lastMoveAt: 0,
+    maxMoveGapMs: 0,
+  });
 
   const logFirstPointerDownMetrics = (phase: string, pointerX: number, pointerY: number) => {
     const viewportWidth = Math.max(1, window.innerWidth);
@@ -387,6 +394,16 @@ export function useScreenshotInteraction({
     || isResizingAnnotationRef.current
   );
 
+  const resetSelectionMoveStats = () => {
+    selectionMoveStatsRef.current = {
+      moves: 0,
+      drawRequests: 0,
+      startedAt: 0,
+      lastMoveAt: 0,
+      maxMoveGapMs: 0,
+    };
+  };
+
   const startPlainSelectionAt = (cx: number, cy: number) => {
     if (!frameInteractiveRef.current) return false;
     // 框选优先级最高：即便已存在选区，只要不是在拖动/缩放已有选区，也允许从空白处重新开始框选。
@@ -397,6 +414,13 @@ export function useScreenshotInteraction({
     startPosRef.current = { x: cx, y: cy };
     selectionStartedAtRef.current = performance.now();
     selectionDragDistanceRef.current = 0;
+    selectionMoveStatsRef.current = {
+      moves: 0,
+      drawRequests: 0,
+      startedAt: selectionStartedAtRef.current,
+      lastMoveAt: 0,
+      maxMoveGapMs: 0,
+    };
     setIsSelecting(true);
     isSelectingRef.current = true;
     setHoverCandidate(null);
@@ -531,7 +555,7 @@ export function useScreenshotInteraction({
       logInteractionBaseline("first_pointer_down", `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} image_ready=${imageReadyRef.current}`);
       logFirstPointerDownMetrics("first_pointer_down_metrics", e.clientX, e.clientY);
     }
-    focusScreenshotWindow();
+    focusScreenshotCanvas();
     captureCanvasPointer(e.currentTarget, e.pointerId);
     if (e.button === 2) {
       e.preventDefault();
@@ -709,7 +733,7 @@ export function useScreenshotInteraction({
         scheduleDraw(grownRect.x, grownRect.y, grownRect.w, grownRect.h);
       }
     }
-    if (mouseTrackerRef.current) {
+    if (mouseTrackerRef.current && mouseTrackerRef.current.style.display !== "none") {
       mouseTrackerRef.current.style.left = `${cx + 16}px`;
       mouseTrackerRef.current.style.top = `${cy + 20}px`;
       mouseTrackerRef.current.textContent = `${cx}, ${cy}`;
@@ -826,6 +850,13 @@ export function useScreenshotInteraction({
     }
 
     if (isSelectingRef.current) {
+      const moveNow = performance.now();
+      const stats = selectionMoveStatsRef.current;
+      if (stats.lastMoveAt > 0) {
+        stats.maxMoveGapMs = Math.max(stats.maxMoveGapMs, moveNow - stats.lastMoveAt);
+      }
+      stats.moves += 1;
+      stats.lastMoveAt = moveNow;
       const snapX: number[] = [];
       const snapY: number[] = [];
       for (const wr of windowRectsRef.current) {
@@ -847,6 +878,7 @@ export function useScreenshotInteraction({
       selectionDragDistanceRef.current = Math.max(selectionDragDistanceRef.current, Math.hypot(snapCx - startPosRef.current.x, snapCy - startPosRef.current.y));
       const next = { x: Math.min(startPosRef.current.x, snapCx), y: Math.min(startPosRef.current.y, snapCy), w: Math.abs(startPosRef.current.x - snapCx), h: Math.abs(startPosRef.current.y - snapCy) };
       updateCurrentRect(next, false);
+      selectionMoveStatsRef.current.drawRequests += 1;
       scheduleDraw(next.x, next.y, next.w, next.h);
       return;
     }
@@ -922,6 +954,16 @@ export function useScreenshotInteraction({
 
     const valid = rectRef.current.w > 5 && rectRef.current.h > 5;
     const dragDistance = Math.max(selectionDragDistanceRef.current, Math.hypot(rectRef.current.w, rectRef.current.h));
+    const hadSelectionMoveStats = selectionMoveStatsRef.current.startedAt > 0;
+    if (wasSelecting || hadSelectionMoveStats) {
+      const stats = selectionMoveStatsRef.current;
+      const durationMs = stats.startedAt > 0 ? performance.now() - stats.startedAt : 0;
+      logInteractionBaseline(
+        "selection_drag_finished",
+        `valid=${valid} moves=${stats.moves} draw_requests=${stats.drawRequests} duration_ms=${Math.round(durationMs)} max_move_gap_ms=${Math.round(stats.maxMoveGapMs)} rect=${Math.round(rectRef.current.x)},${Math.round(rectRef.current.y)},${Math.round(rectRef.current.w)},${Math.round(rectRef.current.h)}`
+      );
+      resetSelectionMoveStats();
+    }
     // 框选优先级最高：仅当“几乎未拖动的单击”(无有效框) 且窗口磁吸/检测开关开启时，才补位识别窗口；真实拖框永不被覆盖。
     const autoDetectEnabled = configRef.current.enableVisualDetection === true || configRef.current.enableUiControlDetection === true;
     if (wasSelecting && !valid && dragDistance < MIN_AUTO_ACTION_DRAG_PX && e && autoDetectEnabled) {
@@ -955,6 +997,7 @@ export function useScreenshotInteraction({
     isDraggingAnnotationRef.current = false;
     isResizingAnnotationRef.current = false;
     annotationResizeHandleRef.current = null;
+    resetSelectionMoveStats();
     cancelScheduledDraw();
   };
 

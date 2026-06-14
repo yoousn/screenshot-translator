@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { message } from "antd";
 import type { FfmpegProgress, FfmpegReleaseInfo, RecordingInfo } from "../components/config/types";
 import { useI18n } from "../i18n";
+import { readStartupReadinessSnapshot } from "./useStartupDependencyStatus";
 
 const FFMPEG_RELEASE_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/latest";
 
@@ -42,7 +43,7 @@ export default function useRecordingDependencyController(options: UseRecordingDe
       } catch {}
 
       try {
-        const snapshot = await invoke<any>("get_startup_readiness_snapshot");
+        const snapshot = await readStartupReadinessSnapshot();
         if (snapshot?.recording) setRecordingInfo(snapshot.recording);
       } catch {}
     };

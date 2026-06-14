@@ -27,7 +27,7 @@ const ROWS: FeatureSwitchRow[] = [
   {
     keys: ["enableVisualDetection", "enableUiControlDetection"],
     label: "智能区域识别",
-    desc: "识别整窗、大区域和按钮输入框等控件边界",
+    desc: "单击时识别整窗、大区域、按钮和输入框等候选区域",
     icon: <AimOutlined />,
     defaultVal: false,
     activeWhen: "any",
@@ -35,7 +35,7 @@ const ROWS: FeatureSwitchRow[] = [
   {
     keys: ["edgeSnapEnabled"],
     label: "拖拽边缘吸附",
-    desc: "拖动框选时自动贴近附近窗口或控件边缘",
+    desc: "拖拽选区边缘靠近候选区域时贴边；依赖上方识别结果",
     icon: <BorderOuterOutlined />,
     defaultVal: true,
   },
