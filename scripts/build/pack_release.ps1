@@ -6,7 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..\..")).Path
 $portableDir = Join-Path $projectRoot "release\YSN-Screenshot-Translator"
 $tauriConfig = Join-Path $projectRoot "tauri-client\src-tauri\tauri.conf.json"
 
@@ -23,10 +24,10 @@ $safeVersion = $resolvedVersion -replace '[^\w\.-]', '_'
 $artifactDir = Join-Path $projectRoot "build\x64_v$safeVersion"
 
 if ($Build) {
-    $buildScript = Join-Path $projectRoot "build.bat"
+    $buildScript = Join-Path $projectRoot "scripts\build\build.bat"
     & cmd /c "`"$buildScript`" --no-pause --no-launch"
     if ($LASTEXITCODE -ne 0) {
-        throw "build.bat failed with exit code $LASTEXITCODE"
+        throw "scripts\build\build.bat failed with exit code $LASTEXITCODE"
     }
 }
 
@@ -42,7 +43,7 @@ $required = @(
 
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "Portable package is incomplete. Missing: $path. Run .\build.bat first."
+        throw "Portable package is incomplete. Missing: $path. Run .\scripts\build\build.bat first."
     }
 }
 

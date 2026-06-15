@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-set "ROOT=%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 set "CLIENT_DIR=%ROOT%tauri-client"
 set "TAURI_DIR=%CLIENT_DIR%\src-tauri"
 set "PORTABLE_DIR=%ROOT%release\YSN-Screenshot-Translator"

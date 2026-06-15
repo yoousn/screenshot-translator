@@ -9,6 +9,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..\..")).Path
+
 function Invoke-Remote {
   param([string]$Command)
   & ssh $SshHost $Command
@@ -62,15 +65,15 @@ $remoteBackup = $remoteBackup -replace "`r", ""
 Invoke-Remote $remoteBackup
 
 Write-Host "[2/6] Uploading complete translation server runtime..."
-Copy-RemoteFile "server\app.py" "$RemoteDir/app.py"
-Copy-RemoteFile "server\config.py" "$RemoteDir/config.py"
-Copy-RemoteFile "server\http_client.py" "$RemoteDir/http_client.py"
-Copy-RemoteFile "server\safe_transport.py" "$RemoteDir/safe_transport.py"
-Copy-RemoteFile "server\security.py" "$RemoteDir/security.py"
-Copy-RemoteFile "server\translator.py" "$RemoteDir/translator.py"
-Copy-RemoteFile "server\translation_prompt.py" "$RemoteDir/translation_prompt.py"
-Copy-RemoteFile "server\requirements.txt" "$RemoteDir/requirements.txt"
-Copy-RemoteFile "tauri-client\src\utils\translationGlossary.json" "$RemoteDir/translationGlossary.json"
+Copy-RemoteFile (Join-Path $projectRoot "server\app.py") "$RemoteDir/app.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\config.py") "$RemoteDir/config.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\http_client.py") "$RemoteDir/http_client.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\safe_transport.py") "$RemoteDir/safe_transport.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\security.py") "$RemoteDir/security.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\translator.py") "$RemoteDir/translator.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\translation_prompt.py") "$RemoteDir/translation_prompt.py"
+Copy-RemoteFile (Join-Path $projectRoot "server\requirements.txt") "$RemoteDir/requirements.txt"
+Copy-RemoteFile (Join-Path $projectRoot "tauri-client\src\utils\translationGlossary.json") "$RemoteDir/translationGlossary.json"
 
 Write-Host "[3/6] Running remote syntax and transport-policy checks..."
 Invoke-Remote "cd '$RemoteDir' && .venv/bin/python -m py_compile app.py config.py http_client.py safe_transport.py security.py translator.py translation_prompt.py"

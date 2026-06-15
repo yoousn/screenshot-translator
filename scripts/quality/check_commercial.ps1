@@ -10,7 +10,8 @@ $ErrorActionPreference = "Stop"
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..\..")).Path
 $clientRoot = Join-Path $repoRoot "tauri-client"
 $tauriRoot = Join-Path $clientRoot "src-tauri"
 

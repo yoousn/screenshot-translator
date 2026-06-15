@@ -99,7 +99,7 @@
 
 ### P0：工程健康与可构建
 
-- `check_commercial.ps1` 是当前统一商业检查入口。
+- `scripts\quality\check_commercial.ps1` 是当前统一商业检查入口。
 - 前端 `npm run check:i18n`、`npm run check:ocr-processing`、`npm run build` 必须保持通过。
 - Rust `cargo check`、`cargo test` 必须保持通过。
 - release build / smoke launch 作为发布前门禁，不一定每章都跑。
@@ -247,8 +247,8 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 
 ### 5.1 构建验收
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1` 通过。
-- 发布前额外跑 `check_commercial.ps1 -TauriBuild -SmokeLaunch`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality\check_commercial.ps1` 通过。
+- 发布前额外跑 `scripts\quality\check_commercial.ps1 -TauriBuild -SmokeLaunch`。
 - 不允许通过 UI 文案把未验证功能显示成 ready。
 
 ### 5.2 用户主流程验收
@@ -265,48 +265,55 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 - 诊断报告能帮助定位 OCR、录制、翻译、依赖、权限问题。
 - 真实 Windows 设备验收有记录，有失败项就继续修。
 
-## 6. 当前风险登记（2026-06-15，Chapter 300 后）
+## 6. 当前风险登记（2026-06-15，Chapter 307 审计后）
 
 > 本节是当前恢复工作的第一读取入口。旧的 Chapter 148 风险登记保留在下面的历史快照中，只能作为背景，不再代表当前产品状态。
 
 ### 6.1 当前已验证事实
 
-- 当前源码版本已对齐为 `1.2.7`：`tauri-client/package.json`、`tauri-client/package-lock.json`、`tauri-client/src-tauri/Cargo.toml` 和 `tauri-client/src-tauri/tauri.conf.json` 一致。
-- 当前便携发布目录已重新整理为 `release\YSN-Screenshot-Translator\YsnTrans.exe`，包含 exe、`resources`、RapidOCR runner 和 `models\rapidocr`。
-- 当前便携 zip 已生成：`build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`，大小约 `199.52 MB`。
-- 这次整理没有运行完整 `build.bat`，因为完整脚本会关闭正在运行的 `YsnTrans.exe`；因此 `tauri-client/src-tauri/target/release/bundle/` 和 `build\x64_v1.2.6` 下的旧安装器仍不能代表当前 `1.2.7` 发布状态。
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1` 在 2026-06-15 审计中已通过。
-- `npm run check:ocr-fixtures` 在 2026-06-15 审计中已通过，覆盖中文、英文、技术路径、韩文、日文和阿拉伯文；但日文和阿拉伯文仍有真实质量边界，不能宣称多语言已达到最终商业级。
-- `npm run smoke:translate-service` 在 2026-06-15 审计中已通过，实际命中内网 `http://192.168.1.3:8318`，通道为 `google`，15 blocks / 5 batches 总耗时约 `6.7s`。
-- `npm run build` 和 `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml` 在 2026-06-15 审计中已通过；Rust 测试列表约 `282` 个。
-- `python -m py_compile app.py` 已通过；`python -m pytest server\tests` 未能复跑，因为当前 Python 环境缺少 `pytest`。
-- 用户在 2026-06-15 反馈：当前截图体验已经“很顺畅舒适”，偶尔卡顿，怀疑可能与放大镜有关。本轮仅记录风险，不改截图交互。
+- 当前源码版本已对齐为 `1.2.8`：`tauri-client/package.json`、`tauri-client/package-lock.json`、`tauri-client/src-tauri/Cargo.toml`、`tauri-client/src-tauri/Cargo.lock` 和 `tauri-client/src-tauri/tauri.conf.json` 一致。
+- 当前工作区 `git status --short` 干净，审计开始时没有未提交代码改动干扰判断。
+- 当前源码健康门禁在本轮审计中通过：`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality\check_commercial.ps1`。
+- `npm run check:ocr-fixtures` 在本轮审计中通过，覆盖中文、英文、技术路径、韩文、日文和阿拉伯文；但日文和阿拉伯文仍有真实质量边界，不能宣称多语言已达到最终商业级。
+- `npm run smoke:translate-service` 在本轮审计中通过，实际命中 `https://ocr.yousn.me`，通道为 `google`，15 blocks / 5 batches 总耗时约 `6.7s`。
+- `python -m pytest server` 在本轮审计中通过：`65 passed, 1 skipped, 1 warning`。之前“当前环境缺少 pytest”的记录已过期。
+- Chapter 306 已完成截图偶发卡顿的两处证据级缓解：全屏 `ImageData` 分析不再压到连续拖拽路径，放大镜 HEX 取色不再在指针移动中同步读 1x1 像素；临时 probe 已移除。
+- Chapter 310 已按用户要求清理构建产物：`build`、`release`、`tauri-client\src-tauri\target`、`tauri-client\dist` 和 `tauri-client\node_modules\.vite` 已删除；当前工作区不保留本地安装包、便携包、release exe 或 Rust/Tauri 编译缓存。
+- Chapter 311 已继续压缩工作区体积：删除可重建的 `server\.venv`，并运行 `git gc --prune=now` 与 `git lfs prune`；当前大头主要是 `.git` 历史/LFS、`tauri-client\node_modules`、RapidOCR runner、FFmpeg 和 OCR 模型。
+- 便携 zip 不再作为当前分发物；README 主安装路径只指向 GitHub Release 的 setup 安装包。
+- Chapter 313 已生成 `1.2.8` setup 安装包：`build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`，SHA256 `DBCC35ACA17012C81AF27BF155C052164223D52B61F8E3358B3FA2FC2454344E`。
+- 当前实际运行中的 app 来自 `C:\Users\Administrator\AppData\Local\YsnTrans\YsnTrans.exe`，本轮没有关闭它，也没有运行会杀进程的完整 `scripts\build\build.bat`。
+- Chapter 309 已整理根目录：用户入口 `README.md`、`app.py`、`启动部署助手.bat`、`ui.html` 保留在根目录；构建、质检、维护、部署脚本分别移入 `scripts\build`、`scripts\quality`、`scripts\maintenance`、`scripts\deploy`；历史备份和一次性清单移入 `docs\archive\root-cleanup`。
+- `models\rapidocr` 仍是有效 OCR 资产目录，用于 V5/V4 兼容模型、打包和 fixture smoke；`ocrv6` 是 PP-OCRv6 资产目录，两者并行保留，不能因为已有 `ocrv6` 就删除 `models`。
 
 ### 6.2 当前高风险区
 
 | 风险 | 当前真实状态 | 下一步处理 |
 |---|---|---|
-| 发布闭环仍未完整 | 便携目录和 zip 已对齐到 `1.2.7`；安装器仍停留在旧 `1.2.6` 产物，且未做签名、自动更新、模型托管和回滚链路 | 在允许关闭当前 app 时运行完整 `build.bat --no-pause --no-launch`，生成 `1.2.7` 安装器并补 smoke launch |
-| 文档维护刚恢复同步 | README、主计划和章节快照已开始对齐到 Chapter 300；旧 Chapter 148 风险登记保留为历史 | 后续每章结束继续同步主计划当前区和章节日志，避免再次漂移 |
-| 截图偶发卡顿 | 用户体感总体顺滑，偶发卡顿可能与放大镜、hover candidate、window-rect warmup 或 native capture handoff 有关 | 下一章只做低风险 profiling 和放大镜路径观察，不直接重写截图状态机 |
+| 发布闭环仍未完整 | 源码、构建门禁、OCR fixture、翻译 smoke 和 server pytest 都是绿的；用户在 2026-06-15 明确本段不再要求补 release smoke/hash 记录，可按当前阶段完成处理；更广泛公开分发仍缺模型托管、回滚链路、隐私/支持说明和安装体验记录；代码签名与自动更新暂不做 | 需要正式对外分发时，再运行完整发布构建并做安装体验检查；smoke/hash 作为发布工程证据，不作为本段继续开发门槛 |
+| 文档维护刚恢复同步 | README、主计划和章节快照已按 Chapter 307 审计结果修正；旧 Chapter 148 风险登记保留为历史 | 后续每章结束继续同步主计划当前区和章节日志，避免再次漂移 |
+| 截图偶发卡顿 | Chapter 306 已用 probe 证据修掉两个明确尖峰；用户真实手感仍需要更多设备/显示配置确认 | 先做真实设备矩阵和长时间连续截图记录；只有复现卡顿时再重新打开 profiling |
 | 真实桌面 QA 仍不足 | 自动化和构建门禁较多，但多屏/DPI/RDP/安全软件/长时间连续截图仍缺系统记录 | 建立最小人工 QA 表，优先记录失败样例与复现条件 |
 | 代码组织债务 | `screenshot_commands.rs`、`ScreenshotPage.tsx`、`useScreenshotInteraction.ts`、`useScreenshotLoader.ts` 仍偏大 | 后续只在相关改动时抽取清晰模块，避免大拆影响当前顺滑体验 |
-| 服务端测试环境不完整 | 翻译 smoke 通过，但本机 Python 环境缺少 `pytest`，无法复跑 `server\tests` | 固化服务端测试依赖或提供一键测试环境 |
+| 发布级安装体验仍缺最后验收 | 当前运行的是已安装路径，源码和发布目录不是同一个入口；需要确认安装器安装后的图标、快捷方式、资源路径、OCR runner、模型路径和卸载/覆盖安装行为 | 用最终安装器做一次干净安装 smoke，而不是只测源码 target exe |
 
 ### 6.3 下一轮优先级
 
-1. 在不打断当前截图手感的前提下，记录放大镜路径的真实耗时和卡顿条件。
-2. 等用户允许关闭正在运行的 app 后，运行完整 `build.bat --no-pause --no-launch`，生成当前版本安装器并补 release smoke。
-3. 补齐服务端测试环境，让 `python -m pytest server\tests` 可复跑。
-4. 继续保持 OCR fixture、翻译 smoke、前端 build、Rust test 和商业检查入口可复跑。
-5. 针对大文件做随改随拆，不做无关大规模重构。
+1. 当前阶段按用户决策视为完成，不再补 release smoke/hash 记录。
+2. 下一阶段优先做真实设备矩阵、安装体验、模型托管、许可证/隐私/支持渠道等发布闭环；代码签名和自动更新先不做。
+3. 需要正式发版时，运行完整发布构建并做安装体验检查。
+4. 继续保持 OCR fixture、翻译 smoke、server pytest、前端 build、Rust test 和商业检查入口可复跑。
 
 ### 6.4 当前用户使用路径
 
-- 当前可直接验证的本地 exe：`release\YSN-Screenshot-Translator\YsnTrans.exe`。
-- 当前可复制到其他机器试用的便携 zip：`build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`。
-- 迁移新电脑时必须复制整个便携目录或 zip 解压目录，不能只复制单个 exe。
-- 完整安装包不是本轮真实产物；旧 `1.2.6` 安装器只能作为历史产物，不应继续作为当前发布入口。
+- 普通用户当前主入口是 GitHub Release 的 `YsnTrans_<version>_x64-setup.exe` 安装包，例如 `YsnTrans_1.2.8_x64-setup.exe`。
+- GitHub 自动生成的 `Source code (zip)` 和 `Source code (tar.gz)` 只是源码快照，不是可直接安装的 Windows 应用。
+- 当前不保留本地 release exe；`tauri-client\src-tauri\target\release\YsnTrans.exe` 已随 `tauri-client\src-tauri\target` 清理。
+- `release\YSN-Screenshot-Translator\YsnTrans.exe` 已随 `release` 清理，不能作为当前入口。
+- 便携 zip 不再作为当前分发物；README 主安装路径只指向 GitHub Release 的 setup 安装包。
+- 当前待上传安装包：`build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`。
+- 发布新版本时使用 `cd tauri-client; $env:CARGO_BUILD_JOBS='1'; $env:RUST_MIN_STACK='33554432'; npm run tauri -- build --bundles nsis` 只构建 NSIS setup 安装包，再把生成的 `YsnTrans_<version>_x64-setup.exe` 上传到对应 GitHub Release。
+- 本段不再要求补 smoke/hash 记录；正式对外发版前仍建议重新同步构建并检查安装体验。
 
 ## 6.5 历史风险登记（2026-06-03，Chapter 148 后）
 

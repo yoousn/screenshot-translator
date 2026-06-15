@@ -428,10 +428,10 @@
 
 暂不删除，需用户确认：
 
-- `check_commercial.ps1`：商业检查入口，建议保留。
-- `deploy_n100_translation_server.ps1`：翻译服务部署脚本，建议保留，除非 N100 路线废弃。
-- `pack_release.ps1`：发布打包入口，必须保留。
-- `refresh_windows_icon_cache.ps1`：图标刷新辅助，建议保留。
+- `scripts/quality/check_commercial.ps1`：商业检查入口，建议保留。
+- `scripts/deploy/deploy_n100_translation_server.ps1`：翻译服务部署脚本，建议保留，除非 N100 路线废弃。
+- `scripts/build/pack_release.ps1`：发布打包入口，必须保留。
+- `scripts/maintenance/refresh_windows_icon_cache.ps1`：图标刷新辅助，建议保留。
 - `scripts/check-icon-contrast.ps1`：图标质量检查，建议保留。
 - `scripts/sync-app-icons.ps1`：图标同步，建议保留。
 - `tauri-client/scripts/build-rapidocr-runner.ps1`：OCR runner 构建，必须保留。

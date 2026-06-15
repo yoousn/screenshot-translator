@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-set "ROOT=%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 set "DRY_RUN="
 set "NO_PAUSE="
 set "DEEP="
@@ -40,7 +41,7 @@ if "%FAILURES%"=="0" (
 echo ============================================================
 echo(
 echo Build entry: use the EXE-only build batch file.
-echo Complete portable entry: build.bat --portable-only --no-launch
+echo Complete portable entry: scripts\build\build.bat --portable-only --no-launch
 echo(
 
 if not defined NO_PAUSE pause
@@ -87,15 +88,16 @@ exit /b 0
 
 :clean_windows_caches
 echo([windows] Cleaning icon and thumbnail caches ...
-if not exist "%ROOT%refresh_windows_icon_cache.ps1" (
-  echo([error] Missing helper: %ROOT%refresh_windows_icon_cache.ps1
+set "ICON_CACHE_HELPER=%ROOT%scripts\maintenance\refresh_windows_icon_cache.ps1"
+if not exist "%ICON_CACHE_HELPER%" (
+  echo([error] Missing helper: %ICON_CACHE_HELPER%
   set /a FAILURES+=1
   exit /b 0
 )
 set "WINDOWS_CACHE_ARGS=-IncludeThumbnailCache"
 if defined DRY_RUN set "WINDOWS_CACHE_ARGS=%WINDOWS_CACHE_ARGS% -WhatIf"
 if defined SKIP_EXPLORER_RESTART set "WINDOWS_CACHE_ARGS=%WINDOWS_CACHE_ARGS% -SkipExplorerRestart"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%refresh_windows_icon_cache.ps1" %WINDOWS_CACHE_ARGS%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ICON_CACHE_HELPER%" %WINDOWS_CACHE_ARGS%
 if errorlevel 1 (
   echo([warn] Windows cache helper reported a partial failure
   set /a FAILURES+=1

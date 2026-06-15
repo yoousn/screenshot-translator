@@ -5,33 +5,43 @@
 ## Current Resume Snapshot - 2026-06-15
 
 ### Product State
-- The current source version is `1.2.7` across `package.json`, `package-lock.json`, `Cargo.toml`, and `tauri.conf.json`.
-- The current verified local portable entry is `release\YSN-Screenshot-Translator\YsnTrans.exe`.
-- The current portable zip is `build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`, generated from the assembled portable directory and measured at about `199.52 MB`.
-- The latest installer artifacts still visible in the workspace are old `1.2.6` outputs. They are historical and should not be treated as the current release until a full `build.bat --no-pause --no-launch` run regenerates `1.2.7` installers.
-- User feedback on 2026-06-15 says screenshot interaction now feels smooth and comfortable overall, with occasional stutter that may involve the magnifier path. Do not destabilize the screenshot flow with broad rewrites; next screenshot work should begin with low-risk profiling.
-- The product remains a high-completion internal / pre-release build, not a fully commercial release. Remaining commercial gaps are installer/signing/update flow, model hosting/rollback, real device matrix, multi-monitor/DPI evidence, service test reproducibility, and large-file maintenance debt.
+- The current source version is `1.2.8` across `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`.
+- Local build artifacts have been intentionally cleaned in Chapter 310: `build`, `release`, `tauri-client\src-tauri\target`, `tauri-client\dist`, and `tauri-client\node_modules\.vite` are absent.
+- The primary public distribution path is the GitHub Release setup asset, e.g. `YsnTrans_1.2.8_x64-setup.exe`; GitHub's generated source archives are not app installers.
+- Portable zip packaging is no longer part of the current README distribution path.
+- The current local handoff installer is `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`.
+- The root portable directory `release\YSN-Screenshot-Translator\YsnTrans.exe` and source-facing release executable `tauri-client\src-tauri\target\release\YsnTrans.exe` are intentionally not present after cleanup.
+- User feedback on 2026-06-15 says screenshot interaction now feels smooth and comfortable overall. Chapter 306 already landed evidence-backed mitigation for the earlier occasional stutter.
+- The product remains a high-completion internal / pre-release build, not a fully commercial release. Remaining commercial gaps are final release artifact sync, model hosting/rollback, privacy/support/third-party notices, real device matrix, multi-monitor/DPI evidence, and large-file maintenance debt. Code signing and automatic updates are explicitly not active near-term work.
+- The root directory was cleaned in Chapter 309: user-facing entries stay at root, project scripts are grouped under `scripts\build`, `scripts\quality`, `scripts\maintenance`, and `scripts\deploy`, and historical scratch material is archived under `docs\archive\root-cleanup`.
+- `models\rapidocr` is still required for RapidOCR V5/V4 compatibility assets, packaging, and OCR fixture gates. `ocrv6` is a separate PP-OCRv6 asset directory; keep both.
 
 ### Current Hot Paths
 - Default screenshot flow remains the WebView2 SharedBuffer / transparent screenshot helper route from Chapters 264-299.
-- No screenshot behavior was changed in Chapter 300; release and documentation cleanup only.
-- Magnifier-related smoothness risk is recorded for the next focused profiling chapter.
+- Chapter 306 moved full-frame visual-analysis `ImageData` work out of the active drag path and removed synchronous magnifier 1x1 pixel sampling during pointer movement.
+- The next screenshot task should be real-device confirmation, not another blind rewrite of the interaction model.
 - OCR remains the product-owned RapidOCR / ONNXRuntime path with PP-OCRv6 selectable/default direction and V5/V4 compatibility models available.
-- Translation smoke currently works through LAN `http://192.168.1.3:8318` using the `google` channel; this is usable for smoke but not the final commercial translation quality route.
+- Translation smoke currently works through `https://ocr.yousn.me` using the `google` channel; this is usable for smoke but not the final commercial translation quality route.
 
 ### Latest Validation Snapshot
-- Passed recently: `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`.
+- Passed recently: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality\check_commercial.ps1`.
 - Passed recently: `cd tauri-client; npm run build`.
 - Passed recently: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml`.
 - Passed recently: `cd tauri-client; npm run check:ocr-fixtures`.
 - Passed recently: `cd tauri-client; npm run smoke:translate-service`.
 - Passed recently: `python -m py_compile app.py`.
-- Not run successfully: `python -m pytest server\tests`; the current Python environment does not have `pytest` installed.
+- Passed recently: `python -m pytest server` with `65 passed, 1 skipped, 1 warning`.
+- Passed recently: PowerShell parse checks for moved build, quality, maintenance, and deploy scripts.
+- Passed recently: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality\check_commercial.ps1 -SelfTestNativeFailureTrap`.
+- Passed recently: `cmd /c "scripts\maintenance\clean_all_cache.bat --dry-run --no-pause --project-only"`.
+- Checked recently: `build`, `release`, `tauri-client\src-tauri\target`, `tauri-client\dist`, and `tauri-client\node_modules\.vite` are absent after cleanup.
+- Passed recently: `CARGO_BUILD_JOBS=1` / `RUST_MIN_STACK=33554432` setup build for `1.2.8`.
+- Checked recently: `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`, SHA256 `DBCC35ACA17012C81AF27BF155C052164223D52B61F8E3358B3FA2FC2454344E`.
 - Current workspace still contains a pre-existing deletion of `启动部署助手.vbs`; do not silently revert it unless the user confirms this launcher should be restored.
 
 ### Next Recommended Chapter
-- Chapter 301 should profile the occasional screenshot stutter without changing the current interaction model: focus first on magnifier animation frame work, pixel sampling, hover suppression, window-rect warmup, and native capture handoff timings.
-- After the user allows closing the currently running app, run full `build.bat --no-pause --no-launch` to regenerate `1.2.7` installers and then smoke-launch the packaged output.
+- Upload `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe` to the matching GitHub Release.
+- User decision on 2026-06-15: treat this segment as complete without adding release smoke/hash records; keep those checks as optional final distribution evidence.
 - Keep documentation current after each chapter; the master plan current-risk section and this resume snapshot should not drift behind the detailed chapter tail again.
 
 ## Historical Resume Snapshot - 2026-06-10
@@ -5543,3 +5553,334 @@ References:
 
 ### Next Recommended Chapter
 - Run the real-device matrix on at least one additional Windows display/DPI/device setup, then regenerate the 1.2.7 installer as the final release artifact step.
+
+## Chapter 307: Completion Audit And Documentation Reality Sync (2026-06-15)
+
+### Goals Completed
+- Audited the current project completion state after user feedback that the product already feels close to perfect and some documents may be stale.
+- Confirmed the source tree is in a high-completion pre-release state: commercial check, OCR fixture smoke, translation service smoke, and server pytest all pass in the current environment.
+- Corrected stale release-package wording in English and Chinese READMEs so the missing portable zip is described as the target refreshed artifact, not as an already-present verified package.
+- Updated the master plan current-risk section from the older Chapter 300 view to the Chapter 307 audit reality.
+- Updated the current resume snapshot at the top of this file so future resume work starts from the real artifact state instead of stale portable/pytest notes.
+- Preserved the user-visible app and did not run full `build.bat`, because it closes the currently running installed app before rebuilding.
+
+### Added Files
+- None.
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change screenshot, OCR, translation, recording, settings, icons, packaging scripts, or runtime behavior.
+- Did not run full `build.bat --no-pause --no-launch`, because the currently running app is installed at `C:\Users\Administrator\AppData\Local\YsnTrans\YsnTrans.exe` and the build script intentionally kills running app processes.
+- Did not regenerate the portable zip or resync the root portable directory.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `git status --short` was clean at the start of the audit.
+- Passed: `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`.
+- Passed: `cd tauri-client; npm run check:ocr-fixtures`.
+- Passed: `cd tauri-client; npm run smoke:translate-service`, using `https://ocr.yousn.me` with the `google` channel.
+- Passed: `python -m pytest server`, reporting `65 passed, 1 skipped, 1 warning`.
+- Checked: `Get-FileHash` showed `tauri-client\src-tauri\target\release\YsnTrans.exe` and `release\YSN-Screenshot-Translator\YsnTrans.exe` are not byte-identical.
+- Checked: `build\x64_v1.2.7\ScreenshotTranslator_Windows.zip` is currently absent.
+- Checked: `tauri-client\src-tauri\target\release\bundle\nsis\YsnTrans_1.2.7_x64-setup.exe` exists and is newer than the root copied NSIS installer; root `build\x64_v1.2.7` installer copies still need a fresh full build/copy sync.
+
+### Known Risks
+- Product feature completion is high, and the user accepted this segment as complete without additional release smoke/hash records. Final public distribution can still benefit from a same-cycle artifact rebuild and installer check.
+- Code signing, automatic update, model hosting/rollback, broader real-device matrix, and installation/uninstallation smoke remain outside the current verified boundary.
+- Some historical chapter text still contains mojibake in old Chinese filenames or legacy notes; this chapter only corrected current resume/status material.
+
+### Next Recommended Chapter
+- Move on to the remaining commercial-release items: real-device matrix, installation polish, model hosting/rollback, privacy/support statements, and third-party notices. Code signing and automatic updates are not active near-term requirements.
+- If a formal external release is prepared later, rebuild artifacts from one cycle and optionally record smoke/hash evidence then.
+
+## Chapter 308: Source-Available License Positioning (2026-06-15)
+
+### Goals Completed
+- Clarified the project licensing posture after the user decided not to buy code-signing certificates, not to sell the app for now, and not to leave the public repository open to unrestricted reuse.
+- Added a project license file that makes the repository source-available for learning, review, and personal non-commercial use, while restricting redistribution, resale, repackaging, branded builds, and impersonation.
+- Updated English and Chinese READMEs to stop implying a missing future license and to summarize the current source-available posture.
+- Updated the master plan and resume snapshot so code signing and automatic updates are no longer active near-term requirements.
+
+### Added Files
+- `LICENSE.md`
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not add an OSI-approved open-source license.
+- Did not add code signing, automatic updates, privacy policy, support policy, model hosting, or release artifacts.
+- Did not audit every third-party dependency license; the new license notes that third-party components keep their own license terms.
+
+### Validation
+- Checked local repository state for existing license/privacy/support files before adding the new license.
+- Referenced GitHub and OSI guidance: a public repository without a license does not grant broad reuse rights by default, and licenses that restrict commercial use or fields of use are not OSI-style open source.
+
+### Known Risks
+- This is a practical project license statement, not formal legal advice.
+- The third-party dependency/model notice still needs a dedicated `THIRD_PARTY_NOTICES.md` before broad public distribution.
+
+### Next Recommended Chapter
+- Add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md` files so the public repository has clear user-facing policy boundaries.
+
+## Chapter 309: Root Directory Cleanup And Script Relocation (2026-06-15)
+
+### Goals Completed
+- Cleaned the repository root after the user noted that many `.ps1`, `.bat`, and `.txt` files made it feel messy.
+- Kept the requested user-facing root entries: `README.md`, `app.py`, `启动部署助手.bat`, and `ui.html`.
+- Kept required repository metadata at root: `.gitattributes`, `.gitignore`, `AGENTS.md`, `LICENSE.md`, and `README.zh-CN.md`.
+- Moved build, packaging, quality, maintenance, and deployment scripts into focused `scripts` subdirectories.
+- Archived historical root scratch material under `docs\archive\root-cleanup` instead of deleting it.
+- Confirmed `models\rapidocr` is still required and must remain alongside `ocrv6`: `models\rapidocr` supplies RapidOCR V5/V4 compatibility assets for packaging and OCR fixture gates, while `ocrv6` supplies PP-OCRv6 assets.
+
+### Added Files
+- `docs\archive\root-cleanup\manifest.txt`
+- `docs\archive\root-cleanup\screenshot-selection-smoothness-log.md`
+- `docs\archive\root-cleanup\widget_settings.json`
+- `docs\archive\root-cleanup\1\**`
+- `docs\archive\root-cleanup\expert-recording-files\**`
+- `docs\archive\root-cleanup\ysn_backup\**`
+- `scripts\build\build.bat`
+- `scripts\build\pack_release.ps1`
+- `scripts\deploy\deploy_n100_translation_server.ps1`
+- `scripts\maintenance\clean_all_cache.bat`
+- `scripts\maintenance\refresh_windows_icon_cache.ps1`
+- `scripts\quality\check_commercial.ps1`
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs\COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+- `docs\SCREENSHOT_LATENCY_AND_SELECTION_PLAN.md`
+
+### Moved Files
+- `build.bat` -> `scripts\build\build.bat`
+- `pack_release.ps1` -> `scripts\build\pack_release.ps1`
+- `check_commercial.ps1` -> `scripts\quality\check_commercial.ps1`
+- `clean_all_cache.bat` -> `scripts\maintenance\clean_all_cache.bat`
+- `refresh_windows_icon_cache.ps1` -> `scripts\maintenance\refresh_windows_icon_cache.ps1`
+- `deploy_n100_translation_server.ps1` -> `scripts\deploy\deploy_n100_translation_server.ps1`
+- `manifest.txt` -> `docs\archive\root-cleanup\manifest.txt`
+- `screenshot-selection-smoothness-log.md` -> `docs\archive\root-cleanup\screenshot-selection-smoothness-log.md`
+- `widget_settings.json` -> `docs\archive\root-cleanup\widget_settings.json`
+- `.ysn_backup\**` -> `docs\archive\root-cleanup\ysn_backup\**`
+- `1\**` -> `docs\archive\root-cleanup\1\**`
+- `expert-recording-files\**` -> `docs\archive\root-cleanup\expert-recording-files\**`
+- `YsnTrans.pdb` -> `build\debug\YsnTrans.pdb`
+- `__pycache__` -> `build\cache\root-python-__pycache__`
+
+### Deleted Files
+- None intentionally; root clutter was moved or archived instead of discarded.
+
+### Explicit Non-Goals
+- Did not move or delete `models` or `ocrv6`.
+- Did not move core source/resource directories such as `tauri-client`, `server`, `docs`, `scripts`, `ffmpeg`, `release`, or `build`.
+- Did not run full `scripts\build\build.bat`, because it closes running `YsnTrans.exe`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: PowerShell parse checks for `scripts\build\pack_release.ps1`, `scripts\quality\check_commercial.ps1`, `scripts\maintenance\refresh_windows_icon_cache.ps1`, and `scripts\deploy\deploy_n100_translation_server.ps1`.
+- Passed: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\quality\check_commercial.ps1 -SelfTestNativeFailureTrap`.
+- Passed: `cmd /c "scripts\maintenance\clean_all_cache.bat --dry-run --no-pause --project-only"`, confirming the moved batch script resolves the repository root correctly without deleting anything.
+- Passed: `git diff --check`; only existing LF-to-CRLF warnings were reported.
+
+### Known Risks
+- Historical chapter text still contains old root command paths because those lines are records of past validations.
+- Full release build and packaging were not rerun, so moved build scripts are statically verified but not release-build verified in this chapter.
+- `YsnTrans.pdb` and `__pycache__` were moved into ignored build/cache locations and remain local artifacts rather than source assets.
+
+### Next Recommended Chapter
+- Add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md`, then do model hosting/rollback notes when preparing broader public distribution.
+
+## Chapter 310: Generated Build Artifact Cleanup (2026-06-15)
+
+### Goals Completed
+- Cleaned generated build and release artifacts after the user asked to keep only the build environment, necessary files, and model files.
+- Removed local installer/package outputs and portable output directories.
+- Removed Rust/Tauri build cache and frontend build caches while preserving source files, `node_modules`, OCR models, OCR runner resources, and FFmpeg runtime assets.
+- Confirmed root directory now contains source/control files and required top-level project/resource directories rather than installer/package artifacts.
+
+### Added Files
+- None.
+
+### Modified Files
+- `docs\COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Generated Artifacts
+- `build\`
+- `release\`
+- `tauri-client\src-tauri\target\`
+- `tauri-client\dist\`
+- `tauri-client\node_modules\.vite\`
+
+### Preserved Files And Directories
+- `models\`
+- `ocrv6\`
+- `tauri-client\src-tauri\resources\rapidocr\`
+- `ffmpeg\`
+- `tauri-client\node_modules\`
+- Source, docs, scripts, server, and deploy-helper files.
+
+### Explicit Non-Goals
+- Did not delete `models`, `ocrv6`, RapidOCR runner resources, FFmpeg, or `node_modules`.
+- Did not run a rebuild after cleanup, because the point of this chapter was to remove generated artifacts.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Checked size/status after cleanup: `build`, `release`, `tauri-client\src-tauri\target`, `tauri-client\dist`, and `tauri-client\node_modules\.vite` are missing.
+- Checked preserved assets: `models` is about `127.57 MB`, `ocrv6` about `58.73 MB`, `tauri-client\src-tauri\resources\rapidocr` about `199.45 MB`, `ffmpeg` about `194.67 MB`, and `tauri-client\node_modules` about `193.52 MB`.
+- Checked installer/package leftovers with `Get-ChildItem -Recurse -Include *.msi,*setup.exe,*.zip,*.pdb`; only RapidOCR runner's internal `base_library.zip` remains, which is part of the necessary bundled OCR runtime.
+
+### Known Risks
+- The next full app build will be slower because Rust/Tauri `target` and frontend caches were removed.
+- Current workspace intentionally has no release exe, installer, portable directory, or zip until `scripts\build\build.bat` / `scripts\build\pack_release.ps1` are run again.
+
+### Next Recommended Chapter
+- Add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md`, then decide the model hosting/rollback policy before broader public distribution.
+
+## Chapter 313: Version 1.2.8 Setup Build And Release Prep (2026-06-15)
+
+### Goals Completed
+- Bumped the app version from `1.2.7` to `1.2.8`.
+- Removed portable zip instructions from the active README release path; the active distribution artifact is only the setup installer.
+- Built the `1.2.8` NSIS setup installer for GitHub Release upload.
+- Copied the setup installer to a small handoff directory and removed the heavy build cache afterward so only the setup artifact remains locally.
+- Prepared release notes around the documented screenshot stutter/magnifier optimization work from Chapters 305-306.
+
+### Added Files
+- None tracked; the generated setup installer is ignored under `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`.
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs\COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+- `tauri-client\package.json`
+- `tauri-client\package-lock.json`
+- `tauri-client\src-tauri\Cargo.toml`
+- `tauri-client\src-tauri\Cargo.lock`
+- `tauri-client\src-tauri\tauri.conf.json`
+
+### Deleted Generated/Local Artifacts
+- `tauri-client\src-tauri\target\` after copying out the setup installer.
+- `tauri-client\dist\`
+- `tauri-client\node_modules\.vite\`
+
+### Explicit Non-Goals
+- Did not build or keep a portable zip.
+- Did not upload the setup installer to GitHub Release; the user will upload it manually.
+- Did not run installer smoke or install/uninstall checks.
+
+### Validation
+- First `npm run tauri -- build --bundles nsis` attempt failed during Rust dependency release compilation with rustc out-of-memory / stack overflow after the previous target cleanup.
+- Passed: `CARGO_BUILD_JOBS=1` and `RUST_MIN_STACK=33554432` with `npm run tauri -- build --bundles nsis`.
+- Passed: frontend production build inside the Tauri build; only existing Vite dynamic-import/chunk-size warnings were reported.
+- Passed: Tauri built `D:\Desktop\自制截图\tauri-client\src-tauri\target\release\bundle\nsis\YsnTrans_1.2.8_x64-setup.exe`.
+- Copied installer to `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`.
+- Checked SHA256: `DBCC35ACA17012C81AF27BF155C052164223D52B61F8E3358B3FA2FC2454344E`.
+- Checked artifact leftovers: outside Git/node_modules, only `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe` and RapidOCR runner's internal `base_library.zip` remain.
+
+### Known Risks
+- Installer smoke was not run; the user asked only to build the setup installer and upload it manually.
+- Future clean release builds on this machine should keep `CARGO_BUILD_JOBS=1` and `RUST_MIN_STACK=33554432` after a full `target` cleanup to avoid rustc memory pressure.
+
+### Next Recommended Chapter
+- Upload `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe` to the `v1.2.8` GitHub Release, then add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md` when ready.
+
+## Chapter 311: Deep Workspace Size Cleanup (2026-06-15)
+
+### Goals Completed
+- Investigated why the workspace still appeared to be around 4 GB after generated build artifacts were removed.
+- Identified the remaining size drivers: `.git` history/LFS cache, `server\.venv`, `tauri-client` dependencies and RapidOCR runner resources, FFmpeg, and OCR model directories.
+- Removed the local server Python virtual environment, which is reproducible from `server\requirements.txt`.
+- Ran Git object cleanup and LFS prune to compact local repository storage.
+- Confirmed there are no ordinary installer/package leftovers outside the necessary RapidOCR runner internal runtime archive.
+
+### Added Files
+- None.
+
+### Modified Files
+- `docs\COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Generated/Local Artifacts
+- `server\.venv\`
+
+### Preserved Files And Directories
+- `.git\`
+- `tauri-client\node_modules\`
+- `tauri-client\src-tauri\resources\rapidocr\`
+- `ffmpeg\`
+- `models\`
+- `ocrv6\`
+- Source, docs, scripts, server files, and deploy-helper files.
+
+### Explicit Non-Goals
+- Did not delete `.git`, because that would stop the folder being a working Git repository.
+- Did not delete `tauri-client\node_modules`, because the user asked to keep the build environment.
+- Did not delete FFmpeg, RapidOCR runner resources, or OCR models.
+- Did not run a rebuild.
+
+### Validation
+- Before this cleanup, top-level size drivers were approximately `.git` `2297.75 MB`, `server` `997.17 MB`, `tauri-client` `400.83 MB`, `ffmpeg` `194.67 MB`, `models` `127.57 MB`, and `ocrv6` `58.73 MB`.
+- Passed: removed `server\.venv` after resolving and verifying its absolute path remained inside the repository.
+- Passed: `git gc --prune=now`.
+- Passed: `git lfs prune`, deleting `32` local LFS objects while retaining `112`.
+- After cleanup, top-level size drivers are approximately `.git` `856.51 MB`, `tauri-client` `400.83 MB`, `ffmpeg` `194.67 MB`, `models` `127.57 MB`, `ocrv6` `58.73 MB`, `docs` `0.91 MB`, and `server` `0.44 MB`.
+- Checked installer/package leftovers with `Get-ChildItem -Recurse -Include *.msi,*setup.exe,*.zip,*.pdb`; only RapidOCR runner's internal `base_library.zip` remains.
+
+### Known Risks
+- Server tests or local server execution now require recreating `server\.venv` first.
+- `.git` remains the largest single directory because it contains repository history and required LFS objects; reducing it further requires removing Git history locally or creating a fresh/shallow clone, which is a different tradeoff.
+
+### Next Recommended Chapter
+- Add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md`, then decide the model hosting/rollback policy before broader public distribution.
+
+## Chapter 312: README Setup Installer Distribution Path (2026-06-15)
+
+### Goals Completed
+- Updated the user-facing README installation instructions to match the current release practice: each GitHub Release uploads a setup installer asset.
+- Changed normal-user installation guidance to download `YsnTrans_<version>_x64-setup.exe` from Release Assets.
+- Clarified that GitHub's generated `Source code (zip)` and `Source code (tar.gz)` files are source snapshots, not Windows installers.
+- Removed portable zip packaging from the README distribution path; the active path is setup-installer only.
+- Updated the master plan and resume snapshot so future work does not drift back to portable-zip-first release wording.
+
+### Added Files
+- None.
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs\COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not build or upload a new setup installer.
+- Did not change version numbers or release assets.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Checked README install sections manually after edit.
+- Passed: `git diff --check`; only existing LF-to-CRLF warnings were reported.
+
+### Next Recommended Chapter
+- Add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md`, then decide the model hosting/rollback policy before broader public distribution.
