@@ -2,7 +2,39 @@
 
 > This file is the single execution-history document for the project. It is intentionally optimized for fast resume: keep the current status and recent implementation chapters detailed, and keep older history as a compact ledger inside this same file instead of scattering archive docs.
 
-## Current Resume Snapshot - 2026-06-10
+## Current Resume Snapshot - 2026-06-15
+
+### Product State
+- The current source version is `1.2.7` across `package.json`, `package-lock.json`, `Cargo.toml`, and `tauri.conf.json`.
+- The current verified local portable entry is `release\YSN-Screenshot-Translator\YsnTrans.exe`.
+- The current portable zip is `build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`, generated from the assembled portable directory and measured at about `199.52 MB`.
+- The latest installer artifacts still visible in the workspace are old `1.2.6` outputs. They are historical and should not be treated as the current release until a full `build.bat --no-pause --no-launch` run regenerates `1.2.7` installers.
+- User feedback on 2026-06-15 says screenshot interaction now feels smooth and comfortable overall, with occasional stutter that may involve the magnifier path. Do not destabilize the screenshot flow with broad rewrites; next screenshot work should begin with low-risk profiling.
+- The product remains a high-completion internal / pre-release build, not a fully commercial release. Remaining commercial gaps are installer/signing/update flow, model hosting/rollback, real device matrix, multi-monitor/DPI evidence, service test reproducibility, and large-file maintenance debt.
+
+### Current Hot Paths
+- Default screenshot flow remains the WebView2 SharedBuffer / transparent screenshot helper route from Chapters 264-299.
+- No screenshot behavior was changed in Chapter 300; release and documentation cleanup only.
+- Magnifier-related smoothness risk is recorded for the next focused profiling chapter.
+- OCR remains the product-owned RapidOCR / ONNXRuntime path with PP-OCRv6 selectable/default direction and V5/V4 compatibility models available.
+- Translation smoke currently works through LAN `http://192.168.1.3:8318` using the `google` channel; this is usable for smoke but not the final commercial translation quality route.
+
+### Latest Validation Snapshot
+- Passed recently: `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`.
+- Passed recently: `cd tauri-client; npm run build`.
+- Passed recently: `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml`.
+- Passed recently: `cd tauri-client; npm run check:ocr-fixtures`.
+- Passed recently: `cd tauri-client; npm run smoke:translate-service`.
+- Passed recently: `python -m py_compile app.py`.
+- Not run successfully: `python -m pytest server\tests`; the current Python environment does not have `pytest` installed.
+- Current workspace still contains a pre-existing deletion of `启动部署助手.vbs`; do not silently revert it unless the user confirms this launcher should be restored.
+
+### Next Recommended Chapter
+- Chapter 301 should profile the occasional screenshot stutter without changing the current interaction model: focus first on magnifier animation frame work, pixel sampling, hover suppression, window-rect warmup, and native capture handoff timings.
+- After the user allows closing the currently running app, run full `build.bat --no-pause --no-launch` to regenerate `1.2.7` installers and then smoke-launch the packaged output.
+- Keep documentation current after each chapter; the master plan current-risk section and this resume snapshot should not drift behind the detailed chapter tail again.
+
+## Historical Resume Snapshot - 2026-06-10
 
 ### Product State
 - C/E selected-output technical acceptance is complete as of Chapter 250: Overall 100%, Plan C 100%, Plan E 100%.
@@ -87,7 +119,7 @@ Older chapters are intentionally summarized here to keep this file fast to open 
 | 193-207 | WGC command contracts and file-size audits | WGC one-frame report commands, screenshot_native audits, and diagnostic request/response contracts were tightened. | Older line-count records here are stale; use latest chapter audits instead. |
 | 208-229 | DXGI/WGC selected-output runway | DXGI acquire timeout evidence, selected-output ranking/readback plans, desktop pulse diagnostics, and guarded live WGC/DXGI experiments prepared the final acceptance path. | Detailed evidence resumes at Chapter 230 and should be used for current decisions. |
 
-## Detailed Current Chapters - 230-269
+## Detailed Current Chapters - 230-300
 
 ## Chapter 230 - Diagnostic Request DTO Split And WGC Real-API Test Guards (2026-06-09)
 
@@ -4265,55 +4297,6 @@ Alt+A
 - `tauri-client/src-tauri/src/screenshot_native/native_overlay_session.rs`
 - `tauri-client/src-tauri/src/screenshot_native/win32_overlay.rs`
 - `tauri-client/src/hooks/useScreenshotLoader.ts`
-
-## Chapter 306: Screenshot Stutter Mitigation And Icon Refresh (2026-06-15)
-
-### Goals Completed
-- Moved the full-screen visual-detection `ImageData` readback out of the active drag path by deferring it until screenshot interaction has been quiet for the guard window.
-- Removed the forced retry cap that allowed the readback to run during continuous synthetic dragging.
-- Changed the magnifier HEX picker to read from cached `ImageData` when available and reuse the previous HEX text before the cache is ready, avoiding synchronous 1x1 canvas readback during pointer movement.
-- Removed the temporary screenshot stutter probe call sites after validation; no probe helper remains in the tracked source tree.
-- Replaced the app, tray/taskbar, Windows, macOS, iOS, Android, favicon, and custom candidate icons from the new source icon.
-- Converted the white source-image corners to transparent before icon generation and post-processed PNG corners so the checked icon sizes have `alpha=0` at all four corners.
-
-### Added Files
-- New ChatGPT Image source icon PNG under the icon design draft directory.
-
-### Modified Files
-- `tauri-client/src/hooks/useScreenshotLoader.ts`
-- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
-- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
-- `tauri-client/src/pages/ScreenshotPage.tsx`
-- `tauri-client/index.html`
-- `tauri-client/public/favicon.ico`
-- `tauri-client/src-tauri/icons/**`
-- `docs/IMPLEMENTATION_CHAPTERS.md`
-
-### Deleted Files
-- None in the staged commit; the temporary helper was never committed to HEAD.
-
-### Explicit Non-Goals
-- Did not regenerate the 1.2.7 installer; the user asked to leave installer regeneration for the final release step.
-- Did not address the broader code-organization debt.
-- Did not modify unrelated parallel settings/main-window work or the deleted deployment-helper VBS file.
-
-### Validation
-- Passed: `cd tauri-client; npx tsc --noEmit`.
-- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
-- Passed: `cd tauri-client; npx tauri build --no-bundle`; generated `tauri-client/src-tauri/target/release/YsnTrans.exe`.
-- Probe before cleanup: `tmp-runtime-logs\stutter-probe-optimized-no-pixel-readback-20260615-062045-out.log` completed all 16 drag cases with no `stutter-probe` threshold hits.
-- Probe before cleanup confirmed `pixel_sample_ms` no longer appeared, and `analysis_image_data_ready` did not run during the continuous drag matrix.
-- Formal release smoke after cleanup: `tmp-runtime-logs\release-final-auto-screenshot-post-favicon-20260615-063115-out.log` reached screenshot `image_ready` in 12ms and `first_paint` in 24ms on a 2560x1440 capture.
-- Icon pixel check passed for `icon.png`, `32x32.png`, `64x64.png`, `taskbar-32x32.png`, `taskbar-64x64.png`, `icon-candidate-v1-16x16.png`, and `icon-candidate-v1-32x32.png`: four corner alpha values were `0,0,0,0` and center alpha was `255`.
-- Checked: no lingering `YsnTrans` or `rapidocr-runner` process remained after smoke runs.
-
-### Known Risks
-- Computer Use desktop automation could not initialize because the bundled Windows `@oai/sky` package subpath was not exported; verification used the app's own smoke path and build logs instead of foreground mouse control.
-- Browser automation was not used for the desktop executable path because the relevant target is a Tauri app, not a local web route.
-- This chapter validates the current machine thoroughly, but the broader real-device matrix remains incomplete.
-
-### Next Recommended Chapter
-- Run the real-device matrix on at least one additional Windows display/DPI/device setup, then regenerate the 1.2.7 installer as the final release artifact step.
 - `docs/IMPLEMENTATION_CHAPTERS.md`
 
 ### Explicit Non-Goals
@@ -5137,3 +5120,426 @@ References:
 
 ### Next Recommended Chapter
 - Profile and trim native screenshot session startup, especially capture readiness and overlay handoff timings, once a separate safe QA environment is available.
+
+## Chapter 300: Release And Documentation Reality Sync (2026-06-15)
+
+### Goals Completed
+- Cleaned up the release/documentation drift identified in the 2026-06-15 project audit.
+- Reassembled the current `1.2.7` portable directory without running the full build script, so the currently running `YsnTrans.exe` was not force-closed.
+- Generated the current portable zip from the assembled portable directory.
+- Updated English and Chinese READMEs from stale `v1.2.5` installer paths to the current `v1.2.7` portable package and build flow.
+- Updated the master plan with a new current-risk section for Chapter 300 and clearly marked the old Chapter 148 risk section as historical.
+- Updated the implementation resume snapshot from the stale 2026-06-10 / Chapter 269 state to the current 2026-06-15 / Chapter 300 state.
+- Recorded the user's latest screenshot feedback: interaction feels smooth and comfortable overall, with occasional stutter possibly tied to magnifier behavior.
+
+### Added Files
+- None.
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs/COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Generated Artifacts
+- `release\YSN-Screenshot-Translator\YsnTrans.exe`
+- `release\YSN-Screenshot-Translator\resources\...`
+- `release\YSN-Screenshot-Translator\models\rapidocr\...`
+- `build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`
+
+### Deleted Files
+- None in this chapter.
+
+### Explicit Non-Goals
+- Did not change screenshot, magnifier, OCR, translation, recording, or scroll-capture behavior.
+- Did not run full `build.bat`, because it closes the currently running app before building.
+- Did not regenerate `1.2.7` NSIS/MSI installers; existing visible installers are still historical `1.2.6` artifacts.
+- Did not restore the pre-existing deletion of `启动部署助手.vbs`; that remains a user/workspace decision.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: assembled portable directory from the current `tauri-client\src-tauri\target\release\YsnTrans.exe`, `tauri-client\src-tauri\resources`, and `models\rapidocr`.
+- Passed: portable directory file count/size check reported `188` files and `368970781` bytes.
+- Passed: `powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1`, producing `build\x64_v1.2.7\ScreenshotTranslator_Windows.zip` at about `199.52 MB`.
+- Passed: `git diff --check`.
+- Passed: `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1`.
+
+### Known Risks
+- `1.2.7` installers still need a full build when it is acceptable to close the running app.
+- The portable directory was assembled from existing current build output rather than a fresh full build.
+- The occasional screenshot stutter reported by the user is only recorded here; it still needs a focused profiling chapter.
+- Service-side pytest coverage still needs an environment with `pytest` installed.
+
+### Next Recommended Chapter
+- Profile the occasional screenshot stutter without broad behavior changes, starting with magnifier frame work, pixel sampling, hover/candidate suppression, window-rect warmup, and capture handoff timings.
+- When the user allows closing the current app, run full `build.bat --no-pause --no-launch`, regenerate `1.2.7` installers, and smoke-launch the packaged output.
+
+## Chapter 301: Borderless Main Window Brand Chrome (2026-06-15)
+
+### Goals Completed
+- Removed the duplicate native main-window title bar by setting the Tauri main window to `decorations: false`.
+- Kept a lightweight professional window-control surface in the app header with minimize, maximize/restore, and close actions.
+- Added safe drag handling for the main header and left brand area so the borderless window can still be moved without interfering with clickable header controls.
+- Simplified the left brand wordmark to a more restrained premium style while keeping the single `Ysn Trans` brand signal requested by the user.
+- Kept the change isolated from the other parallel work streams and did not touch existing README/master-plan changes or the pre-existing VBS deletion.
+
+### Added Files
+- `tauri-client/src/components/app/MainWindowControls.tsx`
+
+### Modified Files
+- `tauri-client/src-tauri/tauri.conf.json`
+- `tauri-client/src/components/app/AppLayout.tsx`
+- `tauri-client/src/index.css`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change screenshot, OCR, translation, recording, scroll capture, packaging, or release artifacts.
+- Did not close or replace the currently running `YsnTrans.exe`.
+- Did not run a full Tauri desktop smoke because that would require launching/replacing the desktop app state.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8'))"`.
+- Passed: `git diff --check -- tauri-client\src\components\app\AppLayout.tsx tauri-client\src\components\app\MainWindowControls.tsx tauri-client\src\index.css tauri-client\src-tauri\tauri.conf.json`; only existing LF-to-CRLF warnings were reported.
+- Passed: local browser preview after adding safe Tauri-window guards; the main layout rendered, the brand was present, three window buttons were present, and `1200x800` inspection showed no horizontal overflow.
+
+### Known Risks
+- Real proof of the borderless native window still needs a Tauri desktop smoke after the app can be restarted.
+- Browser preview cannot verify native window dragging, native maximize/restore behavior, or actual removal of the Windows title bar.
+- Remaining browser console errors during preview are expected outside Tauri because existing app hooks call Tauri `invoke`.
+
+### Next Recommended Chapter
+- When it is acceptable to restart or launch the desktop app, run a focused main-window smoke: confirm no native title bar, drag from brand/header blank area, verify minimize/maximize/restore/close, and check the 1200px header does not visually crowd status chips.
+- Continue the previously recommended screenshot-stutter profiling after this visual polish is verified.
+
+## Chapter 302: Temporary Screenshot Stutter Probe (2026-06-15)
+
+### Goals Completed
+- Added a removable, single-module temporary probe for the user-reported occasional screenshot stutter.
+- Kept screenshot behavior unchanged; the probe only measures elapsed time and logs slow slices when explicitly built with `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1`.
+- Instrumented the current highest-suspicion paths: magnifier frame work, 1x1 pixel sampling, magnifier canvas draw, main selection canvas draw, full-frame analysis `ImageData`, and window-rect IPC.
+- Marked every temporary call site with `STUTTER_PROBE_TEMP` so cleanup can be done with `rg STUTTER_PROBE_TEMP`.
+- Preserved the other parallel work streams; did not touch the main-window chrome files, release README changes, Tauri config changes from Chapter 301, or the pre-existing VBS deletion.
+
+### Added Files
+- `tauri-client/src/utils/screenshotStutterProbe.ts`
+
+### Modified Files
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not optimize or change magnifier, selection, detection, OCR, translation, recording, or scroll-capture behavior.
+- Did not start, close, replace, or smoke-test the currently running desktop app.
+- Did not run a probe-enabled Tauri build because the currently running `target\release\YsnTrans.exe` should not be replaced during parallel active work.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `git diff --check`; only existing LF-to-CRLF warnings were reported.
+- Checked: `rg STUTTER_PROBE_TEMP tauri-client\src -S` finds the temporary module and all temporary call sites.
+
+### Known Risks
+- The normal build run in this chapter did not enable `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1`, so it proves compile/build safety but does not yet produce live `[stutter-probe]` timing evidence.
+- Probe evidence still requires a controlled run from a build made with `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1`, followed by normal Alt+A hover/drag attempts until the occasional stutter reproduces.
+- The temporary module intentionally remains in source until the stutter sample is captured or the probe is no longer needed.
+
+### Next Recommended Chapter
+- When it is acceptable to restart the app, build or launch a temporary probe-enabled version with `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1`, reproduce several Alt+A hover/drag sessions with magnifier and intelligent detection enabled, then inspect `[stutter-probe]` lines to decide whether the root cause is magnifier frame work, pixel sampling, selection draw, analysis `ImageData`, or window-rect IPC.
+- After diagnosis, remove the temporary probe with `rg STUTTER_PROBE_TEMP`, rerun `npx tsc --noEmit` and `npm run build`, then record the cleanup chapter.
+
+## Chapter 303: Probe Smoke Findings And Automation Blockers (2026-06-15)
+
+### Goals Completed
+- Took over unattended screenshot-stutter testing after the user explicitly allowed desktop control.
+- Attempted to initialize the Computer Use Windows automation plugin before any fallback automation. It failed twice with the same internal `@oai/sky` package export error, so real mouse/keyboard desktop automation was not used.
+- Built a probe-enabled release with `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1` and `VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE=1` before later parallel Settings changes introduced a TypeScript blocker.
+- Ran the app with `YSN_SCREENSHOT_AUTO_START_SMOKE=1` and collected stdout/stderr logs under `tmp-runtime-logs`.
+- Captured a valid automatic screenshot + internal selection smoke sample from `tmp-runtime-logs\stutter-probe-auto-20260615-045520-out.log`.
+- Added a temporary probe-only magnifier smoke extension so future probe builds can exercise `updateMagnifier` during internal synthetic drags when real desktop automation is unavailable.
+
+### Added Files
+- None in this chapter.
+
+### Modified Files
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not fix the concurrent Settings TypeScript error because it belongs to another parallel work stream.
+- Did not use PowerShell/SendInput foreground UI automation after Computer Use failed.
+- Did not claim the automatic smoke proves real human mouse movement or real magnifier-hover behavior.
+- Did not leave the diagnostic `YsnTrans.exe` process running.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed before the concurrent Settings blocker appeared: `cd tauri-client; VITE_YSN_SCREENSHOT_STUTTER_PROBE=1 VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE=1 npx tauri build --no-bundle`.
+- Passed valid auto-smoke launch: `YSN_SCREENSHOT_AUTO_START_SMOKE=1` against the probe build.
+- Valid log evidence:
+  - `rgba_canvas_ready elapsed_ms=13`.
+  - `first_paint elapsed_ms=25`.
+  - `[stutter-probe] phase=analysis_image_data_ms duration_ms=41.40 threshold_ms=12 width=2560 height=1440`.
+  - `analysis_image_data_ready elapsed_ms=69 width=2560 height=1440`.
+  - `candidate_load_deferred elapsed_ms=247 reason=selection_active`.
+  - `selection-smoothness-smoke` completed `12` rounds, each around `257-261 ms`.
+- No `selection_draw_ms` probe exceeded the current `8 ms` threshold in the valid automatic smoke.
+- No valid `magnifier_frame_ms`, `pixel_sample_ms`, or `magnifier_draw_ms` sample was captured because the original internal smoothness smoke bypassed the React pointer wrapper.
+
+### Blocked / Invalid Attempts
+- Computer Use automation failed twice with: `Package subpath './dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js' is not defined by "exports" in ...\@oai\sky\package.json`.
+- After another parallel work stream modified Settings files, `npx tsc --noEmit` failed with an unrelated `Settings.tsx` prop type error: `Property 'activeChannel' does not exist...`.
+- A later diagnostic `vite build` + `cargo build --release` completed, but the resulting auto-start smoke only logged native capture/payload emission and never reached frontend `shared_buffer_received/image_ready`; this run is not valid stutter evidence.
+
+### Known Risks
+- The current strongest measured spike is full-frame visual-analysis `ImageData` at about `41 ms` on a 2560x1440 screen. This is enough to explain an occasional hitch if it overlaps early user movement.
+- Magnifier remains unproven by live evidence because Computer Use was unavailable and the valid automatic smoke did not exercise `updateMagnifier`.
+- The repository currently has concurrent Settings changes that block `tsc`; this must be resolved by that work stream before a formal probe build or cleanup build can pass normally.
+- The temporary probe and probe-only magnifier smoke extension remain in source and must be removed after diagnosis.
+
+### Next Recommended Chapter
+- First resolve or wait for the concurrent Settings TypeScript fix, then rebuild with `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1 VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE=1 npx tauri build --no-bundle` and rerun `YSN_SCREENSHOT_AUTO_START_SMOKE=1` to collect magnifier probe lines.
+- Product-side mitigation candidate, pending confirmation: delay or slice full-frame `analysisImageData` until after the first selection gesture settles, because the current measured `41.40 ms` readback is already above a 60 fps frame budget.
+- If Computer Use becomes available again, run real Alt+A hover/drag with magnifier enabled and inspect `magnifier_frame_ms`, `pixel_sample_ms`, and `magnifier_draw_ms` before changing magnifier behavior.
+
+## Chapter 303: Main Brand Lavender Tile Revision (2026-06-15)
+
+### Goals Completed
+- Replaced the previous italic gradient `Ysn Trans` wordmark with a compact lavender rounded-rectangle brand tile inspired by the user's Plus Jakarta Sans reference.
+- Changed the brand text to `YsnTrans` without a space, using black Plus Jakarta Sans-style typography.
+- Set the tile to `140px x 60px` with a `14px` radius and a flat lavender background.
+- Adjusted the left brand/header slot height and padding so the tile sits cleanly in the sidebar while keeping the drag region behavior from Chapter 301.
+- Kept the change isolated from the parallel screenshot-stutter probe work in Chapter 302.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/components/app/AppLayout.tsx`
+- `tauri-client/src/index.css`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change main-window borderless behavior, window controls, screenshot, OCR, translation, recording, packaging, or release artifacts.
+- Did not touch the temporary screenshot-stutter probe files from Chapter 302.
+- Did not start, close, or replace the currently running desktop `YsnTrans.exe`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `git diff --check -- tauri-client\src\components\app\AppLayout.tsx tauri-client\src\index.css`; only existing LF-to-CRLF warnings were reported.
+- Passed: local browser preview reported the brand text as `YsnTrans`, tile size `140x60`, background `rgb(201, 192, 255)`, radius `14px`, black text, Plus Jakarta Sans font stack, and no preview startup failure from the brand change.
+- Checked: temporary Vite preview process was stopped after the visual check.
+
+### Known Risks
+- Browser preview verifies CSS and layout only; the running desktop app still needs a restart to show the updated brand tile in the real Tauri window.
+- The Google-hosted Plus Jakarta Sans import follows the existing project pattern for Inter but still depends on font availability/network until fonts are bundled locally in a future polish chapter.
+
+### Next Recommended Chapter
+- Restart or rebuild the desktop app when convenient, confirm the real borderless main window shows the lavender brand tile cleanly, and decide whether the lavender needs to be lighter/darker after seeing it in the actual WebView.
+
+## Chapter 304: Main Brand Plain Black Wordmark (2026-06-15)
+
+### Goals Completed
+- Reverted the lavender brand tile treatment from Chapter 303 after user feedback.
+- Kept the `YsnTrans` text and Plus Jakarta Sans-style typography, but removed the background block, fixed tile dimensions, radius, and lavender fill.
+- Set the wordmark to pure black text on a transparent background.
+- Restored the left brand area to a compact `64px` height while preserving the borderless-window drag behavior from Chapter 301.
+- Kept the change isolated from the parallel screenshot-stutter probe and settings work.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/components/app/AppLayout.tsx`
+- `tauri-client/src/index.css`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change window controls, main-window borderless config, screenshot, OCR, translation, recording, settings, packaging, or release artifacts.
+- Did not touch temporary screenshot-stutter probe files or parallel settings changes.
+- Did not start, close, or replace the currently running desktop `YsnTrans.exe`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `git diff --check -- tauri-client\src\components\app\AppLayout.tsx tauri-client\src\index.css`; only existing LF-to-CRLF warnings were reported.
+- Passed: local browser preview reported `YsnTrans`, transparent background `rgba(0, 0, 0, 0)`, text color `rgb(0, 0, 0)`, Plus Jakarta Sans font stack, `23px` font size, and `700` font weight.
+- Checked: temporary Vite preview process was stopped after the visual/CSS check.
+
+### Known Risks
+- Browser preview verifies CSS and layout only; the currently running desktop app still needs a restart to show the updated wordmark.
+
+### Next Recommended Chapter
+- Restart or rebuild the desktop app when convenient and confirm the real borderless main window shows the plain black wordmark cleanly in the left sidebar.
+
+## Chapter 304: Translation Channel Save-And-Enable UX (2026-06-15)
+
+### Goals Completed
+- Reworked the settings-page translation channel section so selecting a channel only opens it for viewing/editing and never saves or enables it.
+- Removed the large channel health summary block and the Google warning panel from the visible translation channel UI.
+- Kept the existing channel dropdown per user preference, but relabeled it as the channel to configure instead of the active channel.
+- Added explicit active/editing state: green breathing dot for the currently enabled channel, yellow breathing dot for editing or unsaved changes, and static red state for failed save/enable attempts.
+- Added one unified `保存并启用 {channel}` action for Google, Baidu, LLM, and DeepL.
+- Changed `保存并启用` to validate required fields first, then call the existing server `/api/config/test` path so the channel is only enabled after a real provider test passes.
+- Kept target language, service URL, LAN preference, token, hotkeys, and other ordinary settings on their existing save behavior.
+- Stopped ordinary form auto-save and the top `保存设置` action from persisting translation channel selection, API keys, provider model, endpoint, or prompt fields.
+- Treated Google Translate as a normal formal channel with a compact quality note instead of a large risk warning.
+
+### Added Files
+- None.
+
+### Modified Files
+- `tauri-client/src/components/settings/TranslationChannelCard.tsx`
+- `tauri-client/src/components/settings/types.ts`
+- `tauri-client/src/hooks/useSettingsController.ts`
+- `tauri-client/src/pages/Settings.tsx`
+- `tauri-client/src/i18n/zh-CN.ts`
+- `tauri-client/src/i18n/en-US.ts`
+- `tauri-client/src/index.css`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not change translation provider implementations or server API contracts.
+- Did not change screenshot, OCR, recording, main-window brand, screenshot-stutter probe, packaging, or release artifacts.
+- Did not restart or replace the running desktop `YsnTrans.exe`.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run check:i18n`, reporting `594 zh-CN keys match 594 en-US keys`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: targeted `git diff --check` on the modified translation/settings files; only existing LF-to-CRLF warnings were reported.
+- Passed: local browser preview of the settings page confirmed `保存并启用 Google Translate（无密钥）` is visible, the status bar is `translation-channel-statusbar is-enabled`, `通道健康摘要` is absent, `质量风险` is absent, the old Google yellow warning title is absent, and no horizontal overflow was detected at `1280px`.
+- Checked: the temporary Vite preview process on port `5173` was stopped after verification.
+
+### Known Risks
+- Browser preview can verify layout and DOM state, but it cannot exercise the real Tauri desktop save path end-to-end without using the running app and live translation service configuration.
+- The Ant Design dropdown option was not stable enough in the in-app browser automation to complete a visual click-through to Baidu, but the React state/type/build path for the selected-channel panel passed compile and build checks.
+- Old compatibility functions for `testChannel` remain in the settings controller, but the new translation channel UI no longer calls them.
+
+### Next Recommended Chapter
+- In the real desktop app, open Settings, switch the dropdown between Google/Baidu/LLM/DeepL, confirm selection only changes the editor panel, then use `保存并启用` against Google and one configured keyed provider to verify green/red status transitions and local/server config persistence.
+
+## Chapter 305: Screenshot Stutter Range Matrix Probe (2026-06-15)
+
+### Goals Completed
+- Continued the temporary screenshot-stutter investigation with the user's requested wider drag coverage.
+- Expanded the probe-only selection smoke path to cover 16 drag shapes: small top-left, medium center, large diagonal, near fullscreen, top edge wide, bottom edge wide, left edge tall, right edge tall, center wide, center tall, reverse bottom-right, reverse bottom-left, top-right corner, bottom-left corner, thin horizontal, and thin vertical.
+- Ran the range matrix three times for 48 total synthetic drag sessions.
+- Kept the probe isolated behind `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1` / `VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE=1`; normal builds do not emit the probe timings.
+- Preserved the parallel main-window and settings work streams; did not edit those files.
+
+### Added Files
+- `tauri-client/src/utils/screenshotStutterProbe.ts`
+
+### Modified Files
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not make the stutter probe permanent.
+- Did not change screenshot interaction behavior for normal builds.
+- Did not regenerate installers or release artifacts.
+- Did not fix or modify the unrelated settings/main-window changes from parallel work streams.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Earlier probe compile/build gates passed before the parallel settings stream changed the worktree: `cd tauri-client; npx tsc --noEmit` and `cd tauri-client; npm run build`.
+- Current full TypeScript/build validation is blocked by unrelated settings changes in the same worktree; this chapter used diagnostic Tauri builds with a temporary config that runs `vite build` instead of the normal `tsc && vite build` gate.
+- Passed diagnostic run: `VITE_YSN_SCREENSHOT_STUTTER_PROBE=1` and `VITE_YSN_SCREENSHOT_SELECTION_SMOOTHNESS_SMOKE=1` with `npx tauri build --no-bundle --config %TEMP%\ysn-tauri-probe-config.json`.
+- Captured valid range-matrix logs:
+  - `tmp-runtime-logs\stutter-probe-range-20260615-051218-run1-out.log`
+  - `tmp-runtime-logs\stutter-probe-range-20260615-051248-run2-out.log`
+  - `tmp-runtime-logs\stutter-probe-range-20260615-051316-run3-out.log`
+- The range matrix produced no `selection_draw_ms` entries above the 8ms threshold across all three runs, so large/edge/reverse selection rectangle drawing is not currently the primary suspect.
+- The largest observed full-frame analysis readback was `[stutter-probe] phase=analysis_image_data_ms duration_ms=53.00 threshold_ms=12 width=2560 height=1440`.
+- The largest observed magnifier first-frame path was `[stutter-probe] phase=magnifier_frame_ms duration_ms=30.30 threshold_ms=8 x=51 y=48`, paired with `[stutter-probe] phase=pixel_sample_ms duration_ms=29.30 threshold_ms=2 sx=51 sy=48`.
+- A visual-detection-off A/B run logged `analysis_image_data_skipped reason=visual_detection_disabled`, confirming the 36-53ms analysis readback belongs to the intelligent visual detection image-data path.
+
+### Known Risks
+- This is synthetic frontend smoke evidence, not a human hand-drag recording on multiple real devices.
+- The in-app Computer Use automation failed to initialize in this environment because the bundled `@oai/sky` package export for the Windows computer-use client was unavailable, so foreground desktop mouse automation was not used.
+- Magnifier-off A/B data was inconclusive because the ad-hoc config mutation did not reliably reflect in the running test app; do not treat those logs as proof that magnifier is or is not safe.
+- Window-rect IPC occasionally logged around 140ms during idle candidate loading, but active drag currently skips that query, so it is a lower-confidence suspect for the reported drag stutter.
+
+### Next Recommended Chapter
+- Implement a small root-cause mitigation for the two evidenced spikes: defer or idle-schedule the full-frame `analysisImageData` capture so it cannot overlap first selection movement, and warm or throttle the magnifier's first pixel-sampling frame without disabling the drag-following magnifier.
+- After the parallel settings TypeScript blocker is resolved, rerun the normal gates, remove the `STUTTER_PROBE_TEMP` instrumentation, then repeat one probe-enabled confirmation run and one normal human screenshot session.
+
+## Chapter 306: Screenshot Stutter Mitigation And Icon Refresh (2026-06-15)
+
+### Goals Completed
+- Moved the full-screen visual-detection `ImageData` readback out of the active drag path by deferring it until screenshot interaction has been quiet for the guard window.
+- Removed the forced retry cap that allowed the readback to run during continuous synthetic dragging.
+- Changed the magnifier HEX picker to read from cached `ImageData` when available and reuse the previous HEX text before the cache is ready, avoiding synchronous 1x1 canvas readback during pointer movement.
+- Removed the temporary screenshot stutter probe module and all `STUTTER_PROBE_TEMP` call sites after validation.
+- Replaced the app, tray/taskbar, Windows, macOS, iOS, Android, and custom candidate icons from the new source icon.
+- Converted the white source-image corners to transparent before icon generation and post-processed PNG corners so the checked icon sizes have `alpha=0` at all four corners.
+
+### Added Files
+- `图标设计草案/ChatGPT Image 2026年6月15日 05_42_48.png`
+
+### Modified Files
+- `tauri-client/src/hooks/useScreenshotLoader.ts`
+- `tauri-client/src/hooks/useScreenshotMagnifier.ts`
+- `tauri-client/src/hooks/useScreenshotWindowRects.ts`
+- `tauri-client/src/pages/ScreenshotPage.tsx`
+- `tauri-client/index.html`
+- `tauri-client/public/favicon.ico`
+- `tauri-client/src-tauri/icons/**`
+- `docs/IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- `tauri-client/src/utils/screenshotStutterProbe.ts`
+
+### Explicit Non-Goals
+- Did not regenerate the 1.2.7 installer; the user asked to leave installer regeneration for the final release step.
+- Did not address the broader code-organization debt.
+- Did not modify unrelated parallel settings/main-window work or the deleted `启动部署助手.vbs`.
+
+### Validation
+- Passed: `cd tauri-client; npx tsc --noEmit`.
+- Passed: `cd tauri-client; npm run build`; only existing Vite dynamic-import and chunk-size warnings were reported.
+- Passed: `cd tauri-client; npx tauri build --no-bundle`; generated `tauri-client/src-tauri/target/release/YsnTrans.exe`.
+- Probe before cleanup: `tmp-runtime-logs\stutter-probe-optimized-no-pixel-readback-20260615-062045-out.log` completed all 16 drag cases with no `stutter-probe` threshold hits.
+- Probe before cleanup confirmed `pixel_sample_ms` no longer appeared, and `analysis_image_data_ready` did not run during the continuous drag matrix.
+- Formal release smoke after cleanup: `tmp-runtime-logs\release-final-auto-screenshot-post-favicon-20260615-063115-out.log` reached screenshot `image_ready` in 12ms and `first_paint` in 24ms on a 2560x1440 capture.
+- Icon pixel check passed for `icon.png`, `32x32.png`, `64x64.png`, `taskbar-32x32.png`, `taskbar-64x64.png`, `icon-candidate-v1-16x16.png`, and `icon-candidate-v1-32x32.png`: four corner alpha values were `0,0,0,0` and center alpha was `255`.
+- Checked: no lingering `YsnTrans` or `rapidocr-runner` process remained after smoke runs.
+
+### Known Risks
+- Computer Use desktop automation could not initialize because the bundled Windows `@oai/sky` package subpath was not exported; verification used the app's own smoke path and build logs instead of foreground mouse control.
+- Browser automation was not used for the desktop executable path because the relevant target is a Tauri app, not a local web route.
+- This chapter validates the current machine thoroughly, but the broader real-device matrix remains incomplete.
+
+### Next Recommended Chapter
+- Run the real-device matrix on at least one additional Windows display/DPI/device setup, then regenerate the 1.2.7 installer as the final release artifact step.

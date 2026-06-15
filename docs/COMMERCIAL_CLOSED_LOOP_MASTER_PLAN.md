@@ -9,7 +9,7 @@
 - 后续无人连续开发时，默认先读本文档的当前优先级，再读 `docs/IMPLEMENTATION_CHAPTERS.md` 的最后一章，然后继续下一章，不再临时新建散乱计划文档。
 - 每完成一个可验证章节，必须同步更新章节日志；如果主路线、商业级标准、OCR 架构或发布策略发生变化，必须同步更新本文档。
 - 临时调研材料、模型实验记录、下载链接、截图对比和一次性命令输出，必须合并进本文档、章节日志、代码内 manifest/测试，或在用完后删除。
-- 当前真实判断：从“能用的个人工具”推进到“接近商业级可售卖版本”，连续无人打断开发预计仍需要约 1–2 周；达到更完整的商业级可售卖闭环，还需要持续真实设备测试、安装包/升级链路、模型托管、错误恢复、性能压测和视觉 polish。
+- 当前真实判断：项目已进入高完成度内测 / 准发布工程状态，截图、OCR、翻译、录制、便携打包和诊断都有真实实现与门禁；距离完整商业级可售卖版本仍缺安装包/签名/升级链路、模型托管、真实设备矩阵、多屏/DPI 记录、错误恢复细节和持续视觉 polish。
 - 2026-06-11 用户决策：Native first-frame / QQ 微信级商业确认计划先冻结，不继续默认化或扩大验收；短期优先做小功能增删和日常体验修补，完成后再回到商业级确认。
 - 长期执行不以“章节数量”作为完成标准，只以用户主流程、商业级验收、发布闭环和真实设备结果作为完成标准。
 
@@ -265,9 +265,54 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 - 诊断报告能帮助定位 OCR、录制、翻译、依赖、权限问题。
 - 真实 Windows 设备验收有记录，有失败项就继续修。
 
-## 6. 当前风险登记（2026-06-03，Chapter 148 后）
+## 6. 当前风险登记（2026-06-15，Chapter 300 后）
 
-> 本节用于无人连续开发时快速判断“哪些已经真实验证，哪些仍然不能对用户承诺”。如果实现或验证状态变化，必须同步更新本节，禁止用 UI 文案假装能力已完成。
+> 本节是当前恢复工作的第一读取入口。旧的 Chapter 148 风险登记保留在下面的历史快照中，只能作为背景，不再代表当前产品状态。
+
+### 6.1 当前已验证事实
+
+- 当前源码版本已对齐为 `1.2.7`：`tauri-client/package.json`、`tauri-client/package-lock.json`、`tauri-client/src-tauri/Cargo.toml` 和 `tauri-client/src-tauri/tauri.conf.json` 一致。
+- 当前便携发布目录已重新整理为 `release\YSN-Screenshot-Translator\YsnTrans.exe`，包含 exe、`resources`、RapidOCR runner 和 `models\rapidocr`。
+- 当前便携 zip 已生成：`build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`，大小约 `199.52 MB`。
+- 这次整理没有运行完整 `build.bat`，因为完整脚本会关闭正在运行的 `YsnTrans.exe`；因此 `tauri-client/src-tauri/target/release/bundle/` 和 `build\x64_v1.2.6` 下的旧安装器仍不能代表当前 `1.2.7` 发布状态。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\check_commercial.ps1` 在 2026-06-15 审计中已通过。
+- `npm run check:ocr-fixtures` 在 2026-06-15 审计中已通过，覆盖中文、英文、技术路径、韩文、日文和阿拉伯文；但日文和阿拉伯文仍有真实质量边界，不能宣称多语言已达到最终商业级。
+- `npm run smoke:translate-service` 在 2026-06-15 审计中已通过，实际命中内网 `http://192.168.1.3:8318`，通道为 `google`，15 blocks / 5 batches 总耗时约 `6.7s`。
+- `npm run build` 和 `cargo test --manifest-path tauri-client\src-tauri\Cargo.toml` 在 2026-06-15 审计中已通过；Rust 测试列表约 `282` 个。
+- `python -m py_compile app.py` 已通过；`python -m pytest server\tests` 未能复跑，因为当前 Python 环境缺少 `pytest`。
+- 用户在 2026-06-15 反馈：当前截图体验已经“很顺畅舒适”，偶尔卡顿，怀疑可能与放大镜有关。本轮仅记录风险，不改截图交互。
+
+### 6.2 当前高风险区
+
+| 风险 | 当前真实状态 | 下一步处理 |
+|---|---|---|
+| 发布闭环仍未完整 | 便携目录和 zip 已对齐到 `1.2.7`；安装器仍停留在旧 `1.2.6` 产物，且未做签名、自动更新、模型托管和回滚链路 | 在允许关闭当前 app 时运行完整 `build.bat --no-pause --no-launch`，生成 `1.2.7` 安装器并补 smoke launch |
+| 文档维护刚恢复同步 | README、主计划和章节快照已开始对齐到 Chapter 300；旧 Chapter 148 风险登记保留为历史 | 后续每章结束继续同步主计划当前区和章节日志，避免再次漂移 |
+| 截图偶发卡顿 | 用户体感总体顺滑，偶发卡顿可能与放大镜、hover candidate、window-rect warmup 或 native capture handoff 有关 | 下一章只做低风险 profiling 和放大镜路径观察，不直接重写截图状态机 |
+| 真实桌面 QA 仍不足 | 自动化和构建门禁较多，但多屏/DPI/RDP/安全软件/长时间连续截图仍缺系统记录 | 建立最小人工 QA 表，优先记录失败样例与复现条件 |
+| 代码组织债务 | `screenshot_commands.rs`、`ScreenshotPage.tsx`、`useScreenshotInteraction.ts`、`useScreenshotLoader.ts` 仍偏大 | 后续只在相关改动时抽取清晰模块，避免大拆影响当前顺滑体验 |
+| 服务端测试环境不完整 | 翻译 smoke 通过，但本机 Python 环境缺少 `pytest`，无法复跑 `server\tests` | 固化服务端测试依赖或提供一键测试环境 |
+
+### 6.3 下一轮优先级
+
+1. 在不打断当前截图手感的前提下，记录放大镜路径的真实耗时和卡顿条件。
+2. 等用户允许关闭正在运行的 app 后，运行完整 `build.bat --no-pause --no-launch`，生成当前版本安装器并补 release smoke。
+3. 补齐服务端测试环境，让 `python -m pytest server\tests` 可复跑。
+4. 继续保持 OCR fixture、翻译 smoke、前端 build、Rust test 和商业检查入口可复跑。
+5. 针对大文件做随改随拆，不做无关大规模重构。
+
+### 6.4 当前用户使用路径
+
+- 当前可直接验证的本地 exe：`release\YSN-Screenshot-Translator\YsnTrans.exe`。
+- 当前可复制到其他机器试用的便携 zip：`build\x64_v1.2.7\ScreenshotTranslator_Windows.zip`。
+- 迁移新电脑时必须复制整个便携目录或 zip 解压目录，不能只复制单个 exe。
+- 完整安装包不是本轮真实产物；旧 `1.2.6` 安装器只能作为历史产物，不应继续作为当前发布入口。
+
+## 6.5 历史风险登记（2026-06-03，Chapter 148 后）
+
+> 以下内容保留用于历史追溯，不能作为当前状态判断。当前状态以本文件 6.1-6.4 和 `docs/IMPLEMENTATION_CHAPTERS.md` 最新章节为准。
+
+> 历史原文说明：本节曾用于 Chapter 148 后的无人连续开发恢复。当前恢复入口已迁移到 6.1-6.4。
 
 ### 6.1 已验证事实
 

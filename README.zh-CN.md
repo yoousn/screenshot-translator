@@ -6,7 +6,7 @@
 
 ## 发布状态
 
-- 当前发布目标：**v1.2.5**
+- 当前发布目标：**v1.2.7**
 - 支持平台：**Windows**
 - 应用名称：**YsnTrans**
 - 核心技术栈：**Tauri 2 + React + TypeScript + Rust**
@@ -27,14 +27,19 @@
 
 ## 下载与安装
 
-正式发布包可使用以下安装器：
+当前已整理并验证的便携发布包：
 
 ```text
-tauri-client/src-tauri/target/release/bundle/nsis/YsnTrans_1.2.5_x64-setup.exe
-tauri-client/src-tauri/target/release/bundle/msi/YsnTrans_1.2.5_x64_en-US.msi
+build/x64_v1.2.7/ScreenshotTranslator_Windows.zip
 ```
 
-如果 Windows SmartScreen 弹出提示，请按未签名桌面软件的标准确认流程继续安装。面向更大范围分发前建议补充代码签名。
+本地开发和 smoke 测试使用的便携目录：
+
+```text
+release/YSN-Screenshot-Translator/YsnTrans.exe
+```
+
+完整安装包由 `build.bat` 或 `npm run tauri build` 生成，位置在 `tauri-client/src-tauri/target/release/bundle/`。如果 Windows SmartScreen 弹出提示，请按未签名桌面软件的标准确认流程继续安装。面向更大范围分发前建议补充代码签名。
 
 ## 快速开始
 
@@ -141,16 +146,23 @@ cargo check
 - `tauri-client/src-tauri/Cargo.toml`
 - `tauri-client/src-tauri/tauri.conf.json`
 
-构建安装包：
+构建便携目录和安装包：
 
 ```bash
-cd tauri-client
-npm run tauri build
+build.bat --no-pause --no-launch
+```
+
+生成或刷新便携 zip：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\pack_release.ps1
 ```
 
 生成产物位于：
 
 ```text
+release/YSN-Screenshot-Translator/
+build/x64_v<version>/
 tauri-client/src-tauri/target/release/bundle/
 ```
 

@@ -5,6 +5,8 @@ import type { FormInstance } from "antd";
 import type {
   ServerChannelStatus,
   TranslationChannel,
+  TranslationChannelActivationStatus,
+  TranslationChannelId,
   TranslationChannelTestStatuses,
 } from "../components/settings/types";
 import type { Config } from "../types/config";
@@ -56,6 +58,8 @@ type SaveSettingsOptions = {
   showMessage?: boolean;
   successMessage?: string;
   syncServer?: boolean;
+  includeTranslationChannelFields?: boolean;
+  throwOnError?: boolean;
 };
 
 const trimTrailingSlash = (value: string) => value.replace(/\/$/, "");
@@ -65,6 +69,26 @@ const DEFAULT_HOTKEYS = {
   hotkey: "Alt+A",
   translateHotkey: "Alt+T",
   recordingHotkey: "Alt+R",
+};
+const TRANSLATION_CHANNEL_FIELDS = new Set([
+  "channel",
+  "baiduAppId",
+  "baiduSecretKey",
+  "newApiBase",
+  "newApiKey",
+  "newApiModel",
+  "newApiPrompt",
+  "newApiDomain",
+  "deeplEndpoint",
+  "deeplApiKey",
+  "deeplFormality",
+]);
+const TRANSLATION_CHANNEL_CONFIG_FIELDS = new Set(Array.from(TRANSLATION_CHANNEL_FIELDS).filter((field) => field !== "channel"));
+const CHANNEL_NAMES: Record<TranslationChannelId, string> = {
+  google: "Google Translate",
+  baidu: "百度翻译",
+  "new-api": "大模型翻译",
+  deepl: "DeepL 翻译",
 };
 const PRIVATE_TRANSLATION_ERROR_PATTERN =
   /https?:\/\/|x-api-key|client[_\s-]*token|ocr\.yousn\.me|serverUrl|lanServerUrl|\b(?:\d{1,3}\.){3}\d{1,3}\b/i;
@@ -78,6 +102,39 @@ const publicTranslationServiceError = (error: unknown) => {
 };
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const hasText = (value: unknown) => String(value || "").trim().length > 0;
+
+const omitTranslationChannelFields = (values: Omit<SettingsFormValues, "autostart">) => {
+  const next = { ...values };
+  TRANSLATION_CHANNEL_FIELDS.forEach((field) => {
+    delete (next as Record<string, unknown>)[field];
+  });
+  return next;
+};
+
+const getMissingChannelFields = (channel: TranslationChannelId, values: SettingsFormValues) => {
+  if (channel === "baidu") {
+    return [
+      !hasText(values.baiduAppId) ? "App ID" : "",
+      !hasText(values.baiduSecretKey) ? "Secret Key" : "",
+    ].filter(Boolean);
+  }
+  if (channel === "new-api") {
+    return [
+      !hasText(values.newApiBase) ? "中转服务地址" : "",
+      !hasText(values.newApiKey) ? "API Key" : "",
+      !hasText(values.newApiModel) ? "模型名称" : "",
+    ].filter(Boolean);
+  }
+  if (channel === "deepl") {
+    return [
+      !hasText(values.deeplEndpoint) ? "DeepL API 地址" : "",
+      !hasText(values.deeplApiKey) ? "API Key" : "",
+    ].filter(Boolean);
+  }
+  return [];
+};
 
 const buildServerUrlCandidates = (values: Pick<SettingsFormValues, "serverUrl" | "lanServerUrl" | "preferLanServer">) => {
   const remoteUrl = values.serverUrl || "";
@@ -130,6 +187,12 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [currentChannel, setCurrentChannel] = useState<string>("google");
+  const [activeChannel, setActiveChannel] = useState<string>("google");
+  const [channelDraftDirty, setChannelDraftDirty] = useState<Partial<Record<TranslationChannelId, boolean>>>({});
+  const [channelActivationStatus, setChannelActivationStatus] = useState<TranslationChannelActivationStatus>({
+    channel: "google",
+    status: "idle",
+  });
   const [channelTestStatuses, setChannelTestStatuses] = useState<TranslationChannelTestStatuses>({});
   const [serverChannelStatus, setServerChannelStatus] = useState<ServerChannelStatus>({});
   const autoSaveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -163,6 +226,11 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       });
       if (parsedConfig.channel) {
         setCurrentChannel(parsedConfig.channel);
+        setActiveChannel(parsedConfig.channel);
+        setChannelActivationStatus({
+          channel: parsedConfig.channel as TranslationChannelId,
+          status: "passed",
+        });
       }
 
       const autostartEnabled = await invoke<boolean>("is_autostart_enabled");
@@ -191,7 +259,18 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       });
       if (serverConfig.status === "success" && serverConfig.active_channel) {
         setCurrentChannel(serverConfig.active_channel);
+        setActiveChannel(serverConfig.active_channel);
         form.setFieldValue("channel", serverConfig.active_channel);
+        setChannelDraftDirty((prev) => ({
+          ...prev,
+          [serverConfig.active_channel as TranslationChannelId]: false,
+        }));
+        setChannelActivationStatus({
+          channel: serverConfig.active_channel as TranslationChannelId,
+          status: "passed",
+          serviceUrl: serverUrl,
+          testedAt: new Date().toISOString(),
+        });
         setServerChannelStatus({
           activeChannel: serverConfig.active_channel,
           serviceUrl: serverUrl,
@@ -210,10 +289,25 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   };
 
   const handleFormChange = (changedValues: Record<string, unknown>) => {
+    const changedKeys = Object.keys(changedValues);
     if (changedValues.channel) {
       setCurrentChannel(String(changedValues.channel));
     }
     if (isLoadingSettingsRef.current) return;
+    const editingChannel = (form.getFieldValue("channel") || currentChannel || "google") as TranslationChannelId;
+    if (changedKeys.some((key) => TRANSLATION_CHANNEL_CONFIG_FIELDS.has(key))) {
+      setChannelDraftDirty((prev) => ({
+        ...prev,
+        [editingChannel]: true,
+      }));
+      setChannelActivationStatus((prev) => (
+        prev.channel === editingChannel && prev.status === "failed"
+          ? { channel: editingChannel, status: "idle" }
+          : prev
+      ));
+    }
+    const hasAutoSaveableChange = changedKeys.some((key) => !TRANSLATION_CHANNEL_FIELDS.has(key));
+    if (!hasAutoSaveableChange) return;
     if (autoSaveTimerRef.current !== null) {
       window.clearTimeout(autoSaveTimerRef.current);
     }
@@ -363,6 +457,18 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     }
   };
 
+  const setChannelLoading = (channel: TranslationChannelId, loading: boolean) => {
+    if (channel === "google") {
+      setIsActivatingGoogle(loading);
+    } else if (channel === "baidu") {
+      setIsTestingBaidu(loading);
+    } else if (channel === "new-api") {
+      setIsTestingNewApi(loading);
+    } else {
+      setIsTestingDeepl(loading);
+    }
+  };
+
   const buildServerChannelPayload = (values: SettingsFormValues): ServerChannelPayload => {
     const channel = values.channel || "google";
     const payload: ServerChannelPayload = { channel, config: {} };
@@ -421,17 +527,26 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
   };
 
   const saveSettingsValues = async (values: SettingsFormValues, options: SaveSettingsOptions = {}) => {
-    const { showMessage = true, successMessage, syncServer = false } = options;
+    const {
+      showMessage = true,
+      successMessage,
+      syncServer = false,
+      includeTranslationChannelFields = false,
+      throwOnError = false,
+    } = options;
     setIsSaving(true);
     try {
       const { autostart: autostartVal, ...rawConfigValues } = values;
+      const rawConfigValuesForSave = includeTranslationChannelFields
+        ? rawConfigValues
+        : omitTranslationChannelFields(rawConfigValues);
       let existingConfig = {};
       try {
         existingConfig = JSON.parse(await invoke<string>("get_config"));
       } catch {}
       const configValues = {
         ...existingConfig,
-        ...rawConfigValues,
+        ...rawConfigValuesForSave,
         useLocalOcr: true,
         fallbackToRemoteOcr: false,
       };
@@ -473,41 +588,143 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
       }
       onConfigSaved();
     } catch (error: unknown) {
+      if (throwOnError) {
+        throw error;
+      }
       message.error(`保存失败：${errorMessage(error)}`);
     } finally {
       setIsSaving(false);
     }
   };
 
-  const activateGoogleChannel = async () => {
-    const values = { ...(form.getFieldsValue(true) as SettingsFormValues), channel: "google" };
-    form.setFieldValue("channel", "google");
-    setCurrentChannel("google");
-    setIsActivatingGoogle(true);
+  const saveAndEnableChannel = async (channel: TranslationChannelId) => {
+    const values = { ...(form.getFieldsValue(true) as SettingsFormValues), channel };
+    const missingFields = getMissingChannelFields(channel, values);
+    if (missingFields.length > 0) {
+      const missingMessage = `请先填写 ${missingFields.join("、")}。`;
+      setChannelActivationStatus({
+        channel,
+        status: "failed",
+        message: missingMessage,
+        testedAt: new Date().toISOString(),
+      });
+      message.warning(missingMessage);
+      return;
+    }
+
+    const serverUrls = buildServerUrlCandidates(values);
+    const clientToken = values.clientToken || "";
+    if (serverUrls.length === 0) {
+      const serviceMessage = "翻译服务未配置，请先填写服务地址。";
+      setChannelActivationStatus({
+        channel,
+        status: "failed",
+        message: serviceMessage,
+        testedAt: new Date().toISOString(),
+      });
+      message.error(serviceMessage);
+      return;
+    }
+
+    setChannelLoading(channel, true);
+    setChannelActivationStatus({
+      channel,
+      status: "testing",
+      testedAt: new Date().toISOString(),
+    });
+    if (channel !== "google") {
+      setChannelTestStatuses((prev) => ({
+        ...prev,
+        [channel]: { status: "testing", testedAt: new Date().toISOString() },
+      }));
+    }
+
     try {
-      const savedServerUrl = await saveServerChannelConfig(values);
-      await saveLocalChannelOnly("google");
+      const { serverUrl, data: resData } = await requestJsonFromCandidates<ChannelTestResponse>(serverUrls, "/api/config/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": clientToken,
+        },
+        body: JSON.stringify(buildServerChannelPayload(values)),
+      });
+
+      if (resData.status !== "success") {
+        throw new Error(resData.error || "通道测试未通过。");
+      }
+
+      form.setFieldValue("channel", channel);
+      setCurrentChannel(channel);
+      await saveSettingsValues(values, {
+        showMessage: false,
+        syncServer: false,
+        includeTranslationChannelFields: true,
+        throwOnError: true,
+      });
+      setActiveChannel(channel);
+      setChannelDraftDirty((prev) => ({
+        ...prev,
+        [channel]: false,
+      }));
+      setChannelActivationStatus({
+        channel,
+        status: "passed",
+        message: resData.result,
+        serviceUrl: serverUrl,
+        testedAt: new Date().toISOString(),
+      });
+      if (channel !== "google") {
+        setChannelTestStatuses((prev) => ({
+          ...prev,
+          [channel]: {
+            status: "passed",
+            message: resData.result,
+            serviceUrl: serverUrl,
+            testedAt: new Date().toISOString(),
+          },
+        }));
+      }
       setServerChannelStatus({
-        activeChannel: "google",
-        serviceUrl: savedServerUrl,
+        activeChannel: channel,
+        serviceUrl: serverUrl,
         checkedAt: new Date().toISOString(),
       });
-      message.success("Google Translate 已设为当前活动通道。");
-      onConfigSaved();
+      message.success(`${CHANNEL_NAMES[channel]} 已保存并启用。`);
     } catch (error: unknown) {
-      const errorMessage = publicTranslationServiceError(error);
-      setServerChannelStatus({
-        error: errorMessage,
-        checkedAt: new Date().toISOString(),
+      const channelError = publicTranslationServiceError(error);
+      setChannelActivationStatus({
+        channel,
+        status: "failed",
+        message: channelError,
+        testedAt: new Date().toISOString(),
       });
-      message.error(`Google 通道启用失败：${errorMessage}`);
+      if (channel !== "google") {
+        setChannelTestStatuses((prev) => ({
+          ...prev,
+          [channel]: {
+            status: "failed",
+            message: channelError,
+            testedAt: new Date().toISOString(),
+          },
+        }));
+      }
+      setServerChannelStatus((prev) => ({
+        ...prev,
+        error: channelError,
+        checkedAt: new Date().toISOString(),
+      }));
+      message.error(`${CHANNEL_NAMES[channel]} 保存并启用失败：${channelError}`);
     } finally {
-      setIsActivatingGoogle(false);
+      setChannelLoading(channel, false);
     }
   };
 
+  const activateGoogleChannel = async () => {
+    await saveAndEnableChannel("google");
+  };
+
   const onFinish = async (values: SettingsFormValues) => {
-    await saveSettingsValues(values, { showMessage: true, syncServer: true });
+    await saveSettingsValues(values, { showMessage: true, syncServer: false });
   };
 
   const applyHotkeyPatch = (patch: Record<string, string>, successMessage: string) => {
@@ -552,11 +769,15 @@ export default function useSettingsController(form: FormInstance, onConfigSaved:
     isFetchingModels,
     availableModels,
     currentChannel,
+    activeChannel,
+    channelDraftDirty,
+    channelActivationStatus,
     channelTestStatuses,
     serverChannelStatus,
     handleFormChange,
     fetchModels,
     activateGoogleChannel,
+    saveAndEnableChannel,
     testChannel,
     onFinish,
     restoreDefaultHotkeys,

@@ -14,6 +14,14 @@ export type TranslationChannelTestStatus = {
 
 export type TranslationChannelTestStatuses = Partial<Record<TranslationChannel, TranslationChannelTestStatus>>;
 
+export type TranslationChannelActivationStatus = {
+  channel?: TranslationChannelId;
+  status: "idle" | "testing" | "passed" | "failed";
+  message?: string;
+  serviceUrl?: string;
+  testedAt?: string;
+};
+
 export type ServerChannelStatus = {
   activeChannel?: string;
   serviceUrl?: string;
@@ -30,10 +38,14 @@ export type SettingsControllerState = {
   isFetchingModels: boolean;
   availableModels: string[];
   currentChannel: string;
+  activeChannel: string;
+  channelDraftDirty: Partial<Record<TranslationChannelId, boolean>>;
+  channelActivationStatus: TranslationChannelActivationStatus;
   channelTestStatuses: TranslationChannelTestStatuses;
   serverChannelStatus: ServerChannelStatus;
   fetchModels: () => void;
   activateGoogleChannel: () => void;
+  saveAndEnableChannel: (channel: TranslationChannelId) => void;
   testChannel: (channel: TranslationChannel) => void;
   restoreDefaultHotkeys: () => void;
   updateHotkeyValue: (field: "hotkey" | "translateHotkey" | "recordingHotkey", value: string) => void;

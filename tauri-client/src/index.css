@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap');
 
 @import "tailwindcss";
 
@@ -159,17 +159,61 @@ html, body, #root {
 
 
 .app-brand-wordmark {
-  font-family: Georgia, 'Times New Roman', 'Microsoft YaHei UI', serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  color: #000000;
+  font-family: 'Plus Jakarta Sans', 'Inter', 'Microsoft YaHei UI', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 23px;
-  font-style: italic;
-  font-weight: 800;
-  letter-spacing: 0.2px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0;
   line-height: 1;
-  background: linear-gradient(135deg, #8b5cf6 0%, #2563eb 45%, #14b8a6 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  text-shadow: 0 8px 24px rgba(99, 102, 241, 0.18);
+  text-rendering: geometricPrecision;
+}
+
+.main-window-drag-region {
+  cursor: default;
+}
+
+.main-window-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding-left: 2px;
+}
+
+.main-window-control {
+  width: 32px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: default;
+  font-size: 11px;
+  line-height: 1;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.main-window-control:hover {
+  background: #eef2f7;
+  color: #0f172a;
+}
+
+.main-window-control-close:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.main-window-control:active {
+  background: #e2e8f0;
 }
 
 .about-center-page {
@@ -338,4 +382,82 @@ html, body, #root {
 .handle-hover:hover {
   transform: scale(1.25);
   transition: transform 120ms var(--ease-spring);
+}
+
+.translation-channel-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: 14px;
+  padding: 8px 10px;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.translation-channel-statusbar.is-pending {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.translation-channel-statusbar.is-enabled {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.translation-channel-statusbar.is-failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.translation-channel-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.translation-channel-dot.is-pending {
+  background: #f59e0b;
+  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.34);
+  animation: translationChannelPulseAmber 1.8s ease-out infinite;
+}
+
+.translation-channel-dot.is-enabled {
+  background: #16a34a;
+  box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.34);
+  animation: translationChannelPulseGreen 1.8s ease-out infinite;
+}
+
+.translation-channel-dot.is-failed {
+  background: #dc2626;
+}
+
+.translation-channel-config-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.translation-channel-note {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+@keyframes translationChannelPulseAmber {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.34); }
+  70% { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+@keyframes translationChannelPulseGreen {
+  0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.34); }
+  70% { box-shadow: 0 0 0 7px rgba(22, 163, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
 }

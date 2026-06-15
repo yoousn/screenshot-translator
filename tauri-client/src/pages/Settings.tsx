@@ -61,17 +61,17 @@ export default function Settings({ onConfigSaved }: SettingsProps) {
         <TranslationChannelCard
           form={form}
           currentChannel={controller.currentChannel}
+          activeChannel={controller.activeChannel}
+          channelDraftDirty={controller.channelDraftDirty}
+          channelActivationStatus={controller.channelActivationStatus}
           availableModels={controller.availableModels}
           isFetchingModels={controller.isFetchingModels}
           isTestingBaidu={controller.isTestingBaidu}
           isTestingNewApi={controller.isTestingNewApi}
           isTestingDeepl={controller.isTestingDeepl}
-          channelTestStatuses={controller.channelTestStatuses}
-          serverChannelStatus={controller.serverChannelStatus}
           isActivatingGoogle={controller.isActivatingGoogle}
           fetchModels={controller.fetchModels}
-          testChannel={controller.testChannel}
-          activateGoogleChannel={controller.activateGoogleChannel}
+          saveAndEnableChannel={controller.saveAndEnableChannel}
         />
         <ScreenshotRecognitionCard />
         <ImageSaveSettingsCard form={form} />
