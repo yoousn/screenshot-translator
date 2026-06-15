@@ -2,7 +2,7 @@
 
 **YsnTrans Screenshot Translator** is a Windows desktop productivity app for fast screenshots, OCR, translation, annotation, pinning, scrolling capture, and screen recording. It is built for users who need to capture information quickly, translate text in context, and keep visual notes without leaving their workflow.
 
-> Default language: English. 中文文档请见 [README.zh-CN.md](README.zh-CN.md).
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 ## Release Status
 
@@ -198,4 +198,4 @@ This repository is public for transparency, learning, review, and personal non-c
 
 See [LICENSE.md](LICENSE.md) for the full terms. In short: you may study, fork privately, and run the project for personal non-commercial use; you may not repackage, redistribute, resell, publish branded builds, claim the project as your own, or use the YsnTrans name/icons/branding without permission.
 
-This repository is maintained by the YsnTrans publisher. Add support and privacy statements before broad public distribution.
+This repository is maintained by yoousn. Add support and privacy statements before broad public distribution.

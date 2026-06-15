@@ -5884,3 +5884,66 @@ References:
 
 ### Next Recommended Chapter
 - Add concise `PRIVACY.md`, `SUPPORT.md`, and `THIRD_PARTY_NOTICES.md`, then decide the model hosting/rollback policy before broader public distribution.
+
+## Chapter 314: Disable Obsolete GitHub Auto Release Build (2026-06-15)
+
+### Goals Completed
+- Investigated why GitHub started building during the release upload flow.
+- Confirmed the build was triggered by the old tag workflow on `v*`, not by manually uploading the setup installer.
+- Removed the obsolete GitHub Actions release workflow that still tried to build and upload a portable zip package.
+- Aligned the release path with the current decision: build the NSIS setup installer locally and upload `YsnTrans_<version>_x64-setup.exe` manually to GitHub Release assets.
+
+### Added Files
+- None.
+
+### Modified Files
+- `docs\COMMERCIAL_CLOSED_LOOP_MASTER_PLAN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- `.github\workflows\build.yml`
+
+### Explicit Non-Goals
+- Did not add a replacement CI workflow.
+- Did not build a new installer.
+- Did not upload release assets.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Confirmed the deleted workflow previously triggered on `push.tags: v*`.
+- Confirmed the deleted workflow still called the outdated portable zip script path and uploaded `release/ScreenshotTranslator_Windows_<tag>.zip`.
+
+### Known Risks
+- Future quality checks and installer builds are now fully local/manual unless a new CI workflow is added later.
+- This deletion only affects GitHub after the change is committed and pushed to the remote repository.
+
+### Next Recommended Chapter
+- Commit and push this workflow deletion when ready, then upload `build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe` manually to the `v1.2.8` GitHub Release.
+
+## Chapter 315: README Language Switch And Maintainer Copy Polish (2026-06-15)
+
+### Goals Completed
+- Replaced the verbose README language notice with direct `English` and `简体中文` links.
+- Updated the Chinese README language switch to the same direct link style.
+- Corrected maintainer wording from the generic YsnTrans publisher label to `yoousn`.
+
+### Added Files
+- None.
+
+### Modified Files
+- `README.md`
+- `README.zh-CN.md`
+- `docs\IMPLEMENTATION_CHAPTERS.md`
+
+### Deleted Files
+- None.
+
+### Explicit Non-Goals
+- Did not add full privacy, support, or third-party notices in this chapter.
+- Did not commit, push, tag, or create a branch.
+
+### Validation
+- Checked the edited README language and maintainer sections manually.
+
+### Next Recommended Chapter
+- Commit and push the README polish together with the deleted obsolete GitHub workflow when ready.

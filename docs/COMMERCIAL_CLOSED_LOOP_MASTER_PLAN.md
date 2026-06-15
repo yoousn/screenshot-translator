@@ -281,6 +281,7 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 - Chapter 310 已按用户要求清理构建产物：`build`、`release`、`tauri-client\src-tauri\target`、`tauri-client\dist` 和 `tauri-client\node_modules\.vite` 已删除；当前工作区不保留本地安装包、便携包、release exe 或 Rust/Tauri 编译缓存。
 - Chapter 311 已继续压缩工作区体积：删除可重建的 `server\.venv`，并运行 `git gc --prune=now` 与 `git lfs prune`；当前大头主要是 `.git` 历史/LFS、`tauri-client\node_modules`、RapidOCR runner、FFmpeg 和 OCR 模型。
 - 便携 zip 不再作为当前分发物；README 主安装路径只指向 GitHub Release 的 setup 安装包。
+- Chapter 314 已删除旧 GitHub Actions 自动发布 workflow；后续推送 `v*` tag 不再触发云端构建，也不再尝试生成/上传旧便携 zip。
 - Chapter 313 已生成 `1.2.8` setup 安装包：`build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`，SHA256 `DBCC35ACA17012C81AF27BF155C052164223D52B61F8E3358B3FA2FC2454344E`。
 - 当前实际运行中的 app 来自 `C:\Users\Administrator\AppData\Local\YsnTrans\YsnTrans.exe`，本轮没有关闭它，也没有运行会杀进程的完整 `scripts\build\build.bat`。
 - Chapter 309 已整理根目录：用户入口 `README.md`、`app.py`、`启动部署助手.bat`、`ui.html` 保留在根目录；构建、质检、维护、部署脚本分别移入 `scripts\build`、`scripts\quality`、`scripts\maintenance`、`scripts\deploy`；历史备份和一次性清单移入 `docs\archive\root-cleanup`。
@@ -313,6 +314,7 @@ WebView 后面再接管工具栏、OCR、翻译、编辑
 - 便携 zip 不再作为当前分发物；README 主安装路径只指向 GitHub Release 的 setup 安装包。
 - 当前待上传安装包：`build\x64_v1.2.8\YsnTrans_1.2.8_x64-setup.exe`。
 - 发布新版本时使用 `cd tauri-client; $env:CARGO_BUILD_JOBS='1'; $env:RUST_MIN_STACK='33554432'; npm run tauri -- build --bundles nsis` 只构建 NSIS setup 安装包，再把生成的 `YsnTrans_<version>_x64-setup.exe` 上传到对应 GitHub Release。
+- 仓库不再保留 tag 自动构建/自动发布 workflow；Release 资产由本地构建后手动上传。
 - 本段不再要求补 smoke/hash 记录；正式对外发版前仍建议重新同步构建并检查安装体验。
 
 ## 6.5 历史风险登记（2026-06-03，Chapter 148 后）
